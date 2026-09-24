@@ -1069,6 +1069,7 @@ class TestPublishEpisode:
         # Step 7: provider readback (the /update above is the go-live call)
         mock_session.request.side_effect = [
             resolve_resp,
+            _mock_graphql_listing_resp([]),  # #679 audio pre-create snapshot
             create_resp,
             upload_url_resp,
             upload_resp,
@@ -1084,15 +1085,17 @@ class TestPublishEpisode:
         assert result.status == "published"
         assert result.anchor_episode_id == 12345
         assert result.error is None
-        create_call = mock_session.request.call_args_list[1]
+        snapshot_call = mock_session.request.call_args_list[1]
+        assert snapshot_call.kwargs["json"]["operationName"] == "WebGetIndexedEpisodeList"
+        create_call = mock_session.request.call_args_list[2]
         assert create_call.kwargs["json"] == {"hourOffset": 0}
-        upload_call = mock_session.request.call_args_list[3]
+        upload_call = mock_session.request.call_args_list[4]
         assert upload_call.kwargs["headers"]["Content-Type"] == "audio/wav"
         assert upload_call.kwargs["data"] == wav_file.read_bytes()
-        signed_url_call = mock_session.request.call_args_list[2]
+        signed_url_call = mock_session.request.call_args_list[3]
         assert signed_url_call.kwargs["params"]["filename"] == wav_file.name
         assert signed_url_call.kwargs["params"]["type"] == "audio/wav"
-        process_call = mock_session.request.call_args_list[4]
+        process_call = mock_session.request.call_args_list[5]
         assert process_call.kwargs["json"]["episodeId"] == 12345
         assert process_call.kwargs["json"]["stationId"] == 1
         assert process_call.kwargs["json"]["userId"] == 2
@@ -1116,6 +1119,7 @@ class TestPublishEpisode:
 
         responses = [
             _mock_json_resp({"stationId": "1", "userId": "2"}),
+            _mock_graphql_listing_resp([]),  # #679 audio pre-create snapshot
             _mock_json_resp({"episodeId": 999}),
             _mock_json_resp({"signedUrl": "https://x.com/u", "uploadId": "up1"}),
             _mock_resp_with_headers({"ETag": '"e1"'}),
@@ -1163,6 +1167,7 @@ class TestPublishEpisode:
         mock_build.return_value = mock_session
         mock_session.request.side_effect = [
             _mock_json_resp({"stationId": "1", "userId": "2"}),
+            _mock_graphql_listing_resp([]),  # #679 audio pre-create snapshot
             _mock_json_resp({"episodeId": 999}),
             _mock_json_resp({"signedUrl": "https://x.com/u", "uploadId": "up1"}),
             _mock_resp_with_headers({"ETag": '"e1"'}),
@@ -1191,7 +1196,7 @@ class TestPublishEpisode:
 
         assert result.status == "draft"
         assert result.anchor_episode_id == 999
-        assert mock_session.request.call_count == 7
+        assert mock_session.request.call_count == 8
         metadata_call = mock_session.request.call_args_list[-1]
         assert metadata_call.kwargs["json"]["title"] == "2026-W24: Signal"
         assert metadata_call.kwargs["json"]["description"] == "<p>Summary</p><p>Credits</p>"
@@ -1214,6 +1219,7 @@ class TestPublishEpisode:
         mock_build.return_value = mock_session
         mock_session.request.side_effect = [
             _mock_json_resp({"stationId": "1", "userId": "2"}),
+            _mock_graphql_listing_resp([]),  # #679 audio pre-create snapshot
             _mock_json_resp({"episodeId": 4242}),
             _mock_json_resp({"signedUrl": "https://x.com/u", "uploadId": "up1"}),
             _mock_resp_with_headers({"ETag": '"e1"'}),
@@ -1233,8 +1239,8 @@ class TestPublishEpisode:
 
         assert result.status == "draft"
         assert result.anchor_episode_id == 4242
-        # No publish step: metadata (7th) is the last request, no /publish call.
-        assert mock_session.request.call_count == 7
+        # No publish step: metadata (8th) is the last request, no /publish call.
+        assert mock_session.request.call_count == 8
         metadata_call = mock_session.request.call_args_list[-1]
         assert metadata_call.kwargs["json"]["isPublished"] is False
         assert "publishOn" not in metadata_call.kwargs["json"]
@@ -1253,6 +1259,7 @@ class TestPublishEpisode:
         mock_build.return_value = mock_session
         mock_session.request.side_effect = [
             _mock_json_resp({"stationId": "1", "userId": "2"}),
+            _mock_graphql_listing_resp([]),  # #679 audio pre-create snapshot
             _mock_json_resp({"episodeId": 555}),
             _mock_json_resp({"signedUrl": "https://x.com/u", "uploadId": "up1"}),
             _mock_resp_with_headers({"ETag": '"e1"'}),
@@ -1270,7 +1277,7 @@ class TestPublishEpisode:
         )
 
         assert result.status == "draft"
-        assert mock_session.request.call_count == 7
+        assert mock_session.request.call_count == 8
         metadata_call = mock_session.request.call_args_list[-1]
         assert metadata_call.kwargs["json"]["isPublished"] is False
         assert "publishOn" not in metadata_call.kwargs["json"]
@@ -1319,6 +1326,7 @@ class TestPublishEpisode:
         mock_build.return_value = mock_session
         mock_session.request.side_effect = [
             _mock_json_resp({"stationId": "1", "userId": "2"}),
+            _mock_graphql_listing_resp([]),  # #679 audio pre-create snapshot
             _mock_json_resp({"id": 321}),
             _mock_json_resp({"signedUrl": "https://x.com/u", "uploadId": "up1"}),
             _mock_resp_with_headers({"ETag": '"e1"'}),
@@ -1344,6 +1352,7 @@ class TestPublishEpisode:
         mock_build.return_value = mock_session
         mock_session.request.side_effect = [
             _mock_json_resp({"stationId": "1", "userId": "2"}),
+            _mock_graphql_listing_resp([]),  # #679 audio pre-create snapshot
             _mock_json_resp({"id": 321}),
             _mock_json_resp({"signedUrl": "https://x.com/u", "uploadId": "up1"}),
             _mock_resp_with_headers({"ETag": '"e1"'}),
@@ -1375,6 +1384,7 @@ class TestPublishEpisode:
         mock_build.return_value = mock_session
         mock_session.request.side_effect = [
             _mock_json_resp({"stationId": "1", "userId": "2"}),
+            _mock_graphql_listing_resp([]),  # #679 audio pre-create snapshot
             _mock_json_resp({"id": 321}),
             _mock_json_resp({"signedUrl": "https://x.com/u", "uploadId": "up1"}),
             _mock_resp_with_headers({"ETag": '"e1"'}),
@@ -1419,6 +1429,7 @@ class TestPublishEpisode:
         mock_build.return_value = mock_session
         mock_session.request.side_effect = [
             _mock_json_resp({"stationId": "1", "userId": "2"}),
+            _mock_graphql_listing_resp([]),  # #679 audio pre-create snapshot
             _mock_json_resp({"episodeId": 999}),
             _mock_json_resp({"signedUrl": "https://x.com/u", "uploadId": "up1"}),
             _mock_resp_with_headers({"ETag": '"e1"'}),
@@ -1439,7 +1450,7 @@ class TestPublishEpisode:
         )
 
         assert result.status == "published"
-        upload_call = mock_session.request.call_args_list[3]
+        upload_call = mock_session.request.call_args_list[4]
         assert upload_call.kwargs["headers"]["Content-Type"] == "audio/mpeg"
         assert upload_call.kwargs["data"] == mp3_file.read_bytes()
 
@@ -7480,12 +7491,20 @@ class TestAmbiguousCreateAtCallerLevel:
         assert len(_create_posts(calls)) == 1
 
     def test_audio_path_create_is_also_single_shot(self, tmp_path, monkeypatch):
-        """``publish_episode`` never reconciles, so it must not retry the create."""
+        """The audio create is single-shot: verification re-reads, never re-POSTs (#679)."""
         import podcaster.publish as pub
 
         self._env(monkeypatch)
         monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "true")
-        session, calls = _scripted_session([_mock_error_resp(503, "unavailable")])
+        monkeypatch.setattr(pub.time, "sleep", lambda *_: None)
+        session, calls = _scripted_session(
+            [
+                _mock_graphql_listing_resp(),
+                _mock_error_resp(503, "unavailable"),
+                _mock_graphql_listing_resp(),
+                _mock_graphql_listing_resp(),
+            ]
+        )
         monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
         monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
 
@@ -7500,7 +7519,10 @@ class TestAmbiguousCreateAtCallerLevel:
         )
 
         assert result.status == "failed"
+        assert result.outcome == "publication_unknown"
+        assert result.details["create_verification"]["reason"] == "no_new_draft_observed"
         assert len(_create_posts(calls)) == 1
+        assert len(calls) == 4  # snapshot, create, two verification reads; nothing extra
 
 
 class TestResolveLegacyIds:

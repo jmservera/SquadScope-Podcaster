@@ -19,3 +19,19 @@
 - 2026-06-07T20:52:01.950+00:00: Reviewer revision for PR #11/#7 caps deployment Function App names at 35 characters in workflow/Bicep so derived App Service Plan (`-plan`) and Log Analytics (`-law`) names remain Azure-compliant; optional app/storage overrides remain supported but unsafe values fail before deploy.
 
 📌 Team update (2026-06-07T20:52:01Z): Non-Bender PR #11 revision approved; naming constraints prevent Azure silent failures. CI green; ready for live prod/OIDC deploy and endpoint smoke test. — consolidated by Scribe from Bender, Hermes, Fry
+
+📌 Team update (2026-09-21T22:12:12.721+00:00): The durable lifecycle CAS-before-manifest-parsing fix was accepted and included in final approved commit `3b25ce995b55b140c9fd452b843fe901a0d14310`. Six requested threads were resolved; four new/unrelated threads remain and PR #682 was not merged.
+
+📌 Team update (2026-09-22T07:47:54.369+00:00): Final PR #682 classification approved head `cfb0bb925838cf909bc6842743f18fa2147b3d1c`: OPEN, MERGEABLE, CLEAN, 15/15 checks passed, 0 unresolved threads, operator-only and unmerged. Preserve strict reviewer lockout: a rejection transfers revision ownership to a different agent, followed by independent re-review; unsupported new blockers should be rejected rather than expanded into scope.
+
+📌 Team update (2026-09-22T14:52:36.169+00:00): PR #682 final remediation completed and was independently accepted after metadata invalidation was restored. Coordinator pushed final commit `2ca66d4d33d8ff5efda11ea9e7e5c6ff1bd041b5`; all hosted checks passed. The PR remains unmerged; no deployment or provider mutation occurred, and PR #684 was untouched.
+
+📌 Team update (2026-09-22T17:40:25.729+00:00): Leela independently corrected Bender's rejected PR #684 provider work, but concurrent remote movement prevented push; Fry found two additional defects and enforced Leela's lockout. Later independent revisions reached approved commit `c8a4922a78af09ebc6c28cc69d795f035793cbcd`.
+
+📌 Team update (2026-09-22T21:35:50.453+00:00): Leela independently revised Hermes-rejected PR #684 work, reconciled concurrent remote commits, finalized evidence, and pushed exact final SHA `ac7bbdb32c762b32be7d4cd388ce42177c5a6f96`. PR #684 remains draft and blocked behind operator-only #682; P05/P06 remain open, with no merge, deployment, dispatch, provider mutation, or #682 change.
+
+📌 Team update (2026-09-22T19:38:30.536+00:00): PR #684 delivery candidate reached f164977089d76905d957c32eb071777b8371da58 after independent locked revisions, exact-head acceptance, and full validation; scheduler notification repair and due reconciliation use independent bounded cursors. — decided by Bender
+
+📌 Team update (2026-09-23T14:19:30.910+00:00): jmservera externally merged PR #686 at 2026-09-23T15:40:18Z as `5f31a7064568c323f3127042578f14c5e0693a31` after final head `a7cf44cec4f25ee43ca01a116843176144622368` passed all 13 exact-head checks. Fry's final verdict remained REJECT because duplicate episode identity across pages can hide a missing item and falsely prove absence; documentation also conflicts on cursor pagination and verification state. The remote branch was deleted and four review threads remain unresolved. — final review by Fry
+
+📌 Team update (2026-09-23T18:53:26.430+00:00): Leela recovered the post-merge PR #693 safety gap through corrective PR #695. After Fry rejected `9f7abaf8`, Leela moved the fail-closed guard before all credential/provider access in `62880f57`, strengthened tests, resolved the thread, and squash-merged the approved PR as `c52782e3c683647da1c1c1321e2a1f8c63141872` at 2026-09-23T19:20:21Z. — approved by Fry
