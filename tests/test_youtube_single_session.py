@@ -233,6 +233,8 @@ def test_exhausted_chunk_retries_fail_without_reinit(large_video, config):
         upload_to_youtube(large_video, "t", "d", config, transport=fake, raise_on_failure=True)
 
     assert raised.value.stage == "upload_chunked"
+    assert raised.value.code == "youtube_chunked_http_503"
+    assert raised.value.retryable is True
     assert len(fake.init_posts) == 1
     assert set(fake.put_urls) == {"https://upload.example/session-1"}
 
