@@ -423,8 +423,8 @@ set.
 ### Audio path: exact draft reconciliation after an ambiguous create (#679)
 
 The audio path in `publish_episode` still sends a **single** create POST and
-never a second one. Before that POST it reads one station-scoped listing
-(`_audio_pre_create_snapshot`, skipped when `PODCASTER_SPOTIFY_RECONCILE=0`).
+never a second one. Before that POST it reads one show-scoped listing
+(`_audio_pre_create_snapshot`, keyed by `spotify:show:{show_id}`; skipped when `PODCASTER_SPOTIFY_RECONCILE=0`).
 If that listing fails, the create still goes ahead, but an ambiguous result
 can't be recovered. If the create is ambiguous, `_recover_ambiguous_audio_create`
 re-reads the listing at most `_AMBIGUOUS_CREATE_READS` times, waiting

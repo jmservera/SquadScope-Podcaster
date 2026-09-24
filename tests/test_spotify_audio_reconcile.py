@@ -170,6 +170,17 @@ def test_contradictory_candidate_state_remains_unknown(audio_env):
     assert result.details["create_verification"]["unclassifiable"] == 1
 
 
+def test_candidate_without_any_title_field_is_unclassifiable(audio_env):
+    no_title_field = {"episodeId": 45, "isDraft": True}
+    audio_env["listing"].side_effect = [_listing(), _listing(no_title_field)]
+
+    result = _publish(audio_env, MemoryStorage())
+
+    _assert_fail_closed(result, audio_env, reason="multiple_or_unclassifiable_candidates")
+    assert result.details["create_verification"]["candidates"] == []
+    assert result.details["create_verification"]["unclassifiable"] == 1
+
+
 def test_new_draft_matching_title_alone_is_not_adopted(audio_env):
     audio_env["listing"].side_effect = [
         _listing(),

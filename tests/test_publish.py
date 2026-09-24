@@ -7491,12 +7491,20 @@ class TestAmbiguousCreateAtCallerLevel:
         assert len(_create_posts(calls)) == 1
 
     def test_audio_path_create_is_also_single_shot(self, tmp_path, monkeypatch):
-        """``publish_episode`` never reconciles, so it must not retry the create."""
+        """The audio create is single-shot: verification re-reads, never re-POSTs (#679)."""
         import podcaster.publish as pub
 
         self._env(monkeypatch)
         monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "true")
-        session, calls = _scripted_session([_mock_error_resp(503, "unavailable")])
+        monkeypatch.setattr(pub.time, "sleep", lambda *_: None)
+        session, calls = _scripted_session(
+            [
+                _mock_graphql_listing_resp(),
+                _mock_error_resp(503, "unavailable"),
+                _mock_graphql_listing_resp(),
+                _mock_graphql_listing_resp(),
+            ]
+        )
         monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
         monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
 
@@ -7511,7 +7519,10 @@ class TestAmbiguousCreateAtCallerLevel:
         )
 
         assert result.status == "failed"
+        assert result.outcome == "publication_unknown"
+        assert result.details["create_verification"]["reason"] == "no_new_draft_observed"
         assert len(_create_posts(calls)) == 1
+        assert len(calls) == 4  # snapshot, create, two verification reads; nothing extra
 
 
 class TestResolveLegacyIds:

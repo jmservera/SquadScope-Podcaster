@@ -1432,6 +1432,10 @@ def _new_untitled_draft_ids(data: Any, known_ids: set[int]) -> tuple[list[int], 
             if anchor_id is None:
                 opaque += 1
             continue
+        if not any(key in episode for key in _TITLE_KEYS):
+            # No title field at all is schema drift, not proof of an untitled draft.
+            opaque += 1
+            continue
         raw_title = next(
             (episode[key] for key in _TITLE_KEYS if episode.get(key) is not None),
             None,
@@ -1603,7 +1607,7 @@ def _audio_pre_create_snapshot(
     user_id: str,
     show_id: str | None,
 ) -> ProviderSnapshot | None:
-    """Station-scoped listing snapshot taken before an audio draft create.
+    """Show-scoped listing snapshot taken before an audio draft create.
 
     Best effort: a listing this code cannot prove complete only removes the
     ability to recover an ambiguous create later (it stays
@@ -1647,7 +1651,7 @@ def _recover_ambiguous_audio_create(
 
     The audio create has no provider idempotency key, so the only immutable
     handle on the draft is its episode id, and the only proof that an id belongs
-    to *this* create is that it was absent from a complete, station-scoped
+    to *this* create is that it was absent from a complete, show-scoped
     pre-create listing and is still an untitled draft. The listing is read at
     most :data:`_AMBIGUOUS_CREATE_READS` times, spaced by
     :data:`_AMBIGUOUS_CREATE_SETTLE_SECONDS`. Exactly one such candidate with no
@@ -4216,7 +4220,7 @@ def publish_episode(
 
         # Step 2: Create draft episode. Mark the mutation first: an ambiguous
         # create may have created a draft even though it raised. The
-        # station-scoped pre-create snapshot is what lets an ambiguous create
+        # show-scoped pre-create snapshot is what lets an ambiguous create
         # be proven (#679) instead of left unknown.
         pre_create_snapshot = _audio_pre_create_snapshot(
             session, station_id, user_id=user_id, show_id=show_id
