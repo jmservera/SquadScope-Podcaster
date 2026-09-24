@@ -377,3 +377,53 @@ def test_reconcile_callback_failure_keeps_binding_without_second_upload(video_fi
     assert any("YouTube reconcile evidence error" in err for err in result.errors)
     assert not any("evidence store unavailable" in err for err in result.errors)
     assert all(method == "GET" or "oauth2" in url for method, url in fake.calls)
+
+
+def test_required_reconcile_callback_failure_fails_required_delivery(video_file):
+    fake = FakeYouTubeReadback([_video("vid-1", [TAG])])
+
+    def failing_callback(platform, record):
+        raise RuntimeError("evidence store unavailable")
+
+    result = distribute_video(
+        video_file,
+        "job-2026-W39-en",
+        "Same title",
+        "desc",
+        60.0,
+        _config(youtube_required=True),
+        transport=fake,
+        published={"youtube": _unknown_record()},
+        on_published=failing_callback,
+        publish_run_id="run-abc",
+        publication_identity_context=IDENTITY,
+    )
+    assert result.youtube_id == "vid-1"
+    assert result.youtube_required_failed is True
+    assert result.status == "failed"
+    assert result.youtube_failure_code == "youtube_reconcile_evidence_failed"
+    assert result.youtube_failure_retryable is False
+    assert result.provider_records["youtube"]["retry_blocked"] is True
+    assert all(method == "GET" or "oauth2" in url for method, url in fake.calls)
+
+
+def test_required_reconcile_success_completes_required_delivery(video_file):
+    fake = FakeYouTubeReadback([_video("vid-1", [TAG])])
+    published: list = []
+    result = distribute_video(
+        video_file,
+        "job-2026-W39-en",
+        "Same title",
+        "desc",
+        60.0,
+        _config(youtube_required=True),
+        transport=fake,
+        published={"youtube": _unknown_record()},
+        on_published=lambda platform, rec: published.append((platform, rec)),
+        publish_run_id="run-abc",
+        publication_identity_context=IDENTITY,
+    )
+    assert result.youtube_id == "vid-1"
+    assert result.youtube_required_failed is False
+    assert result.youtube_failure_code is None
+    assert published and published[0][1]["video_id"] == "vid-1"

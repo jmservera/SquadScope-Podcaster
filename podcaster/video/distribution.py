@@ -1377,7 +1377,11 @@ def distribute_video(
         except Exception as exc:
             logger.warning("Playlist add skipped for %s: %s", result.youtube_id, exc)
 
-    if config.youtube_required and result.youtube_id is None:
+    # A bound video ID does not satisfy required delivery when a required failure
+    # was recorded after binding (e.g. evidence persistence failed, #708 review).
+    if config.youtube_required and (
+        result.youtube_id is None or youtube_required_failure is not None
+    ):
         result.youtube_required_failed = True
         if youtube_required_failure is None:
             if not youtube_active:
