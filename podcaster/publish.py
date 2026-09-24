@@ -2710,7 +2710,15 @@ def _spotify_video_unresolved_create_intent_snapshot(
 def _spotify_video_create_retry_authorized(
     document: Mapping[str, Any] | None,
     identity: PublicationIdentity,
+    *,
+    require_definite_rejection: bool = False,
 ) -> bool:
+    """Whether the latest identity-matching record re-arms a Spotify video create.
+
+    ``require_definite_rejection`` is used when reconciliation is disabled: with
+    no listing check, only a definite provider rejection of the create proves
+    nothing was created, so an unknown outcome never authorizes a blind create.
+    """
     records = document.get("records") if isinstance(document, Mapping) else None
     if not isinstance(records, list):
         return False
@@ -2728,7 +2736,14 @@ def _spotify_video_create_retry_authorized(
             continue
         if record.get("operation") in {"upload_intent", "create_episode_intent"}:
             return False
-        return record.get("retry_blocked") is False
+        if record.get("retry_blocked") is not False:
+            return False
+        if require_definite_rejection:
+            return (
+                record.get("operation") == "create_episode_failure"
+                and record.get("code") in _DEFINITE_CREATE_REJECTION_CODES
+            )
+        return True
     return False
 
 
@@ -2746,6 +2761,10 @@ def upload_video_to_episode(
     episode_number: int | None = None,
     publication_storage: StorageBackend | None = None,
     publication_identity_context: PublicationIdentity | None = None,
+    publish_behavior: str = "draft",
+    publish_on: datetime | None = None,
+    episode_type: str = "full",
+    explicit: bool = False,
 ) -> PublishResult:
     """Publish a video as a NEW separate Spotify episode draft (#340).
 
@@ -2761,8 +2780,12 @@ def upload_video_to_episode(
     ``season_number`` and ``episode_number`` are forwarded to Spotify's episode
     metadata so the video episode carries the same numbering as the audio episode.
 
+    ``publish_behavior``/``publish_on`` default to a draft. A live behavior makes
+    the final ``/update`` the go-live mutation (#700) and classifies the outcome
+    from ``/overview`` readback; ``details["go_live_attempted"]`` is then set.
+
     Returns a PublishResult; ``anchor_episode_id`` is the NEW video episode id,
-    status is "draft" on success and "failed" otherwise.
+    status is "draft"/"scheduled"/"published" on success and "failed" otherwise.
     """
     identity_title = title.strip() if isinstance(title, str) else ""
     if not identity_title:
@@ -2834,6 +2857,7 @@ def upload_video_to_episode(
         create_retry_authorized = _spotify_video_create_retry_authorized(
             prior_evidence,
             publication_identity_context,
+            require_definite_rejection=not reconcile_enabled,
         )
         try:
             unresolved_create_intent_snapshot = _spotify_video_unresolved_create_intent_snapshot(
@@ -3245,40 +3269,119 @@ def upload_video_to_episode(
             parts_etags=parts_etags,
         )
 
-        _set_metadata(
-            session,
-            video_anchor_id,
-            user_id,
-            title=video_title,
-            description=video_description,
-            publish_behavior="draft",
-            publish_on=None,
-            season_number=season_number,
-            episode_number=episode_number,
-        )
+        # For live behaviors this ``/update`` call (with ``isPublished``/
+        # ``publishOn``) is itself the go-live mutation (#688/#700).
+        live_requested = publish_behavior != "draft"
+        effective_publish_on = publish_on if live_requested else None
+        result_details: dict[str, Any] = {
+            "station_id": station_id,
+            "upload_id": upload_id,
+            "content_type": content_type,
+            "audio_anchor_id": anchor_id,
+            "title": video_title,
+        }
+        if live_requested:
+            result_details["go_live_attempted"] = True
+        metadata_error: SpotifyPublishError | None = None
+        try:
+            _set_metadata(
+                session,
+                video_anchor_id,
+                user_id,
+                title=video_title,
+                description=video_description,
+                publish_behavior=publish_behavior,
+                publish_on=effective_publish_on,
+                season_number=season_number,
+                episode_number=episode_number,
+                episode_type=episode_type,
+                explicit=explicit,
+            )
+        except SpotifyCredentialExpiredError:
+            raise
+        except SpotifyPublishError as exc:
+            if not live_requested:
+                raise
+            # Ambiguous go-live response: the update may still have applied
+            # (false-failure class). Decide from provider readback below.
+            metadata_error = exc
+            logger.warning(
+                "Spotify video go-live update for episode %d returned an ambiguous "
+                "failure (%s); reading provider state back before classifying",
+                video_anchor_id,
+                type(exc).__name__,
+            )
+        video_outcome = DRAFT_CREATED
+        if live_requested:
+            confirmed = _get_episode_publication_state(session, video_anchor_id, user_id=user_id)
+            if metadata_error is not None and not (
+                confirmed is True and effective_publish_on is None
+            ):
+                # Not confirmed live: a confirmed draft keeps the uploaded outcome;
+                # anything else stays unknown. Both are retry-blocked.
+                logger.error("Spotify video go-live failed: %s", metadata_error)
+                return PublishResult(
+                    anchor_episode_id=video_anchor_id,
+                    status="failed",
+                    error=str(metadata_error),
+                    outcome=UPLOADED if confirmed is False else PUBLICATION_UNKNOWN,
+                    publish_run_id=(
+                        publication_identity_context.publish_run_id
+                        if publication_identity_context is not None
+                        else None
+                    ),
+                    details={
+                        **result_details,
+                        "ambiguous_go_live_response": str(metadata_error),
+                        "retry_blocked": True,
+                    },
+                )
+            if metadata_error is not None:
+                result_details["ambiguous_go_live_response"] = str(metadata_error)
+            if confirmed is True and effective_publish_on is None:
+                video_outcome = PUBLISHED
+            elif confirmed is False:
+                video_outcome = (
+                    DRAFT_CREATED if effective_publish_on is not None else MANUAL_HANDOFF_REQUIRED
+                )
+            else:
+                video_outcome = PUBLICATION_UNKNOWN
 
-        logger.info(
-            "Video published as new episode draft anchorId=%d "
-            "(audio episode anchorId=%s untouched, %d bytes)",
-            video_anchor_id,
-            anchor_id,
-            len(file_data),
+        status = (
+            "draft"
+            if not live_requested
+            else ("scheduled" if effective_publish_on else "published")
         )
+        error: str | None = None
+        if status == "published" and video_outcome != PUBLISHED:
+            # Never report "published" unless provider readback confirmed it.
+            status = "failed"
+            error = (
+                f"Spotify go-live for video episode {video_anchor_id} not confirmed by "
+                f"provider readback (outcome={video_outcome}); manual verification required."
+            )
+            logger.warning("%s", error)
+            result_details["retry_blocked"] = True
+        else:
+            logger.info(
+                "Video published as new Spotify episode anchorId=%d status=%s "
+                "(audio episode anchorId=%s untouched, %d bytes)",
+                video_anchor_id,
+                status,
+                anchor_id,
+                len(file_data),
+            )
         return PublishResult(
             anchor_episode_id=video_anchor_id,
-            status="draft",
+            status=status,
+            error=error,
+            outcome=video_outcome,
             publish_run_id=(
                 publication_identity_context.publish_run_id
                 if publication_identity_context is not None
                 else None
             ),
-            details={
-                "station_id": station_id,
-                "upload_id": upload_id,
-                "content_type": content_type,
-                "audio_anchor_id": anchor_id,
-                "title": video_title,
-            },
+            details=result_details,
         )
     except SpotifyCredentialExpiredError as exc:
         logger.error(
@@ -3858,6 +3961,10 @@ def publish_episode(
             episode_number=episode_number,
             publication_storage=publication_storage,
             publication_identity_context=publication_identity_context,
+            publish_behavior=publish_behavior,
+            publish_on=resolved_publish_on,
+            episode_type=episode_type,
+            explicit=explicit,
         )
         if video_result.anchor_episode_id is None or video_result.dry_run:
             # No draft id: upload_video_to_episode already recorded the durable
@@ -3867,11 +3974,16 @@ def publish_episode(
         # signal through the same single finalizer as the audio path.
         anchor_id = video_result.anchor_episode_id
         mutation_started = True
-        if video_result.status == "failed":
+        go_live_attempted = bool(video_result.details.get("go_live_attempted"))
+        if video_result.status == "failed" and (
+            not go_live_attempted or "ambiguous_go_live_response" in video_result.details
+        ):
             video_result.outcome = video_result.outcome or PUBLICATION_UNKNOWN
             return _finalize_with_evidence(video_result, "provider_mutation_failure")
         video_result.outcome = video_result.outcome or DRAFT_CREATED
-        return _finalize_with_evidence(video_result, "draft_setup")
+        return _finalize_with_evidence(
+            video_result, "publish" if go_live_attempted else "draft_setup"
+        )
 
     if publication_storage is not None and publication_identity_context is not None:
         try:

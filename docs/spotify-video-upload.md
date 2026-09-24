@@ -487,6 +487,21 @@ read-only and never create. Failures raised while recovering an ambiguous create
 or while resolving an earlier intent, stay unknown (`publication_unknown`,
 `retry_blocked=false`, never "failed").
 
+With `PODCASTER_SPOTIFY_RECONCILE=0` there is no listing check, so only a
+definite rejection of the create that is written with `retry_blocked=false`
+(today only `create_episode_failure` with `code=credentials_expired`) re-arms a
+create without the override. Any other `retry_blocked=false` record, such as an
+unknown outcome, fails closed as `unreconciled_create_not_authorized`.
+
+When `publish_episode` routes an MP4 through this create-safe video flow, a
+live `publish_mode` (`immediate`/`scheduled`, with `SPOTIFY_ALLOW_LIVE_PUBLISH`)
+is applied by the final `/update` (`isPublished`/`publishOn`). The outcome is
+then classified from `/overview` readback, exactly as on the audio path (#700),
+and recorded as `publish`. An ambiguous `/update` failure that readback does not
+confirm as live is recorded as `provider_mutation_failure` (`uploaded` or
+`publication_unknown`, retry-blocked). The result is never reported as published
+without readback confirmation.
+
 Persisted create-safety fields (`create_provenance`, `snapshot_completeness`,
 `mutation_possibility`, `snapshot_evidence_source`) are parsed through one
 closed-set parser that accepts only an exact string naming a member. A present

@@ -533,6 +533,152 @@ class TestPublishEpisode:
         assert result.outcome == "publication_unknown"
         assert result.details["retry_blocked"] is True
 
+    def _run_mp4_go_live(
+        self,
+        monkeypatch,
+        mp3_file,
+        *,
+        publish_mode="immediate",
+        publish_on=None,
+        metadata_error=None,
+        readback=True,
+    ):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_ALLOW_LIVE_PUBLISH", "true")
+        storage = MemoryStorage()
+        identity = PublicationIdentity("job-1", "2026-W37", "1", "a" * 64, "b" * 64)
+        mp3_file.with_suffix(".mp4").write_bytes(b"video")
+        session = MagicMock()
+        session.request.return_value = _mock_graphql_listing_resp()
+        monkeypatch.setattr(pub, "_build_session", lambda *args: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("station-1", "7"))
+        monkeypatch.setattr(pub, "_create_episode", MagicMock(return_value=12345))
+        monkeypatch.setattr(pub, "_claim_draft_title", MagicMock())
+        monkeypatch.setattr(
+            pub,
+            "_get_upload_url",
+            lambda *args, **kwargs: ([{"partNumber": 1, "url": "https://gcs/part"}], "up1"),
+        )
+        monkeypatch.setattr(
+            pub, "_upload_video_multipart", lambda *args: [{"partNumber": 1, "etag": "e1"}]
+        )
+        monkeypatch.setattr(pub, "_process_upload", MagicMock())
+        metadata = MagicMock(side_effect=metadata_error)
+        monkeypatch.setattr(pub, "_set_metadata", metadata)
+        readback_mock = MagicMock(return_value=readback)
+        monkeypatch.setattr(pub, "_get_episode_publication_state", readback_mock)
+
+        result = publish_episode(
+            mp3_file,
+            "Title",
+            "Description",
+            publish_on=publish_on,
+            spotify_publish_config=SpotifyPublishConfig(
+                publish_mode=publish_mode, upload_format="mp3"
+            ),
+            publication_storage=storage,
+            publication_identity_context=identity,
+        )
+        return result, _evidence_records(storage), metadata, readback_mock
+
+    def test_spotify_mp4_immediate_goes_live_via_update_and_readback(
+        self, monkeypatch, mp3_file, spotify_env
+    ):
+        """#700 go-live must survive the create-safe MP4 route."""
+        result, records, metadata, readback = self._run_mp4_go_live(monkeypatch, mp3_file)
+
+        assert result.status == "published"
+        assert result.outcome == "published"
+        assert metadata.call_count == 1
+        assert metadata.call_args.kwargs["publish_behavior"] == "immediate"
+        readback.assert_called_once()
+        assert readback.call_args.args[1] == 12345
+        assert [r["operation"] for r in records][-1] == "publish"
+        assert records[-1]["outcome"] == "published"
+        assert records[-1]["media_kind"] == "video"
+        assert records[-1]["provider_artifact_id"] == "12345"
+
+    def test_spotify_mp4_immediate_false_failure_is_published_from_readback(
+        self, monkeypatch, mp3_file, spotify_env
+    ):
+        import podcaster.publish as pub
+
+        result, records, _metadata, _readback = self._run_mp4_go_live(
+            monkeypatch, mp3_file, metadata_error=pub.SpotifyPublishError("404")
+        )
+
+        assert result.status == "published"
+        assert result.outcome == "published"
+        assert "ambiguous_go_live_response" in result.details
+        assert records[-1]["operation"] == "publish"
+
+    @pytest.mark.parametrize(
+        ("readback", "outcome"), ((False, "uploaded"), (None, "publication_unknown"))
+    )
+    def test_spotify_mp4_ambiguous_go_live_not_confirmed_stays_blocked(
+        self, monkeypatch, mp3_file, spotify_env, readback, outcome
+    ):
+        import podcaster.publish as pub
+
+        result, records, _metadata, _readback = self._run_mp4_go_live(
+            monkeypatch,
+            mp3_file,
+            metadata_error=pub.SpotifyPublishError("404"),
+            readback=readback,
+        )
+
+        assert result.status == "failed"
+        assert result.outcome == outcome
+        assert result.details["retry_blocked"] is True
+        assert records[-1]["operation"] == "provider_mutation_failure"
+        assert records[-1]["retry_blocked"] is True
+
+    @pytest.mark.parametrize(
+        ("readback", "outcome"),
+        ((False, "manual_handoff_required"), (None, "publication_unknown")),
+    )
+    def test_spotify_mp4_unconfirmed_go_live_is_never_reported_published(
+        self, monkeypatch, mp3_file, spotify_env, readback, outcome
+    ):
+        result, records, _metadata, _readback = self._run_mp4_go_live(
+            monkeypatch, mp3_file, readback=readback
+        )
+
+        assert result.status == "failed"
+        assert result.outcome == outcome
+        assert "not confirmed" in result.error
+        assert result.details["retry_blocked"] is True
+        assert records[-1]["operation"] == "publish"
+        assert records[-1]["retry_blocked"] is True
+
+    def test_spotify_mp4_scheduled_sets_publish_on(self, monkeypatch, mp3_file, spotify_env):
+        from datetime import datetime, timezone
+
+        when = datetime(2030, 1, 1, 9, 0, tzinfo=timezone.utc)
+        result, records, metadata, _readback = self._run_mp4_go_live(
+            monkeypatch, mp3_file, publish_mode="scheduled", publish_on=when, readback=False
+        )
+
+        assert result.status == "scheduled"
+        assert result.outcome == "draft_created"
+        assert metadata.call_args.kwargs["publish_behavior"] == "scheduled"
+        assert metadata.call_args.kwargs["publish_on"] is not None
+        assert records[-1]["operation"] == "publish"
+
+    def test_spotify_mp4_draft_mode_keeps_draft_without_readback(
+        self, monkeypatch, mp3_file, spotify_env
+    ):
+        result, records, metadata, readback = self._run_mp4_go_live(
+            monkeypatch, mp3_file, publish_mode="draft"
+        )
+
+        assert result.status == "draft"
+        assert result.outcome == "draft_created"
+        assert metadata.call_args.kwargs["publish_behavior"] == "draft"
+        readback.assert_not_called()
+        assert records[-1]["operation"] == "draft_setup"
+
     def test_spotify_unparseable_create_response_leaves_intent_marker(
         self, monkeypatch, mp3_file, spotify_env
     ):
@@ -1868,9 +2014,10 @@ class TestUploadVideoToEpisode:
             identity,
             platform="spotify",
             media_kind="video",
-            operation="retry_authorization",
-            outcome=pub.PUBLICATION_UNKNOWN,
+            operation="create_episode_failure",
+            outcome=pub.MANUAL_HANDOFF_REQUIRED,
             retry_blocked=False,
+            code="credentials_expired",
         )
         monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
         build_session = MagicMock()
@@ -1901,7 +2048,7 @@ class TestUploadVideoToEpisode:
         claim_title.assert_not_called()
         upload.assert_not_called()
         assert [record["operation"] for record in _evidence_records(storage)] == [
-            "retry_authorization"
+            "create_episode_failure"
         ]
 
     def test_retry_authorized_create_persists_upload_dispatch_safety_before_create(
@@ -1916,9 +2063,10 @@ class TestUploadVideoToEpisode:
             identity,
             platform="spotify",
             media_kind="video",
-            operation="retry_authorization",
-            outcome=pub.PUBLICATION_UNKNOWN,
+            operation="create_episode_failure",
+            outcome=pub.MANUAL_HANDOFF_REQUIRED,
             retry_blocked=False,
+            code="credentials_expired",
         )
         monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
         monkeypatch.setenv("SP_DC", "dc")
@@ -1957,7 +2105,7 @@ class TestUploadVideoToEpisode:
         assert result.status == "failed"
         assert result.anchor_episode_id == 777
         assert [record["operation"] for record in _evidence_records(storage)] == [
-            "retry_authorization",
+            "create_episode_failure",
             "create_episode_intent",
             "create_episode",
         ]
@@ -4172,6 +4320,65 @@ class TestUploadVideoToEpisode:
         assert records[2]["details"]["pre_create_episode_ids"] == [555]
         assert records[2]["details"]["snapshot_completeness"] == "complete"
 
+    @pytest.mark.parametrize(
+        ("operation", "code"),
+        (
+            ("credential_failure", "create_outcome_unknown"),
+            ("retry_authorization", None),
+            ("create_episode_failure", None),
+            ("create_episode_failure", "ambiguous_create"),
+        ),
+    )
+    def test_reconcile_disabled_unknown_outcome_never_authorizes_blind_create(
+        self, tmp_path, monkeypatch, operation, code
+    ):
+        """Without a listing check only a definite rejection re-arms a create."""
+        import podcaster.publish as pub
+
+        storage = MemoryStorage()
+        identity = PublicationIdentity("job-1", "2026-W37", "1", "a" * 64, "b" * 64)
+        pub.claim_evidence(
+            storage,
+            identity,
+            platform="spotify",
+            media_kind="video",
+            operation="create_episode_intent",
+        )
+        pub.append_evidence(
+            storage,
+            identity,
+            platform="spotify",
+            media_kind="video",
+            operation=operation,
+            outcome=pub.PUBLICATION_UNKNOWN,
+            mutation_attempted=False,
+            retry_blocked=False,
+            code=code,
+        )
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
+        monkeypatch.delenv("PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE", raising=False)
+        session = MagicMock()
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+        create = MagicMock(return_value=777)
+        monkeypatch.setattr(pub, "_create_episode", create)
+        self._patch_successful_video_upload(monkeypatch, pub, {})
+
+        result = pub.upload_video_to_episode(
+            self._video(tmp_path),
+            555,
+            title="My Show",
+            publication_storage=storage,
+            publication_identity_context=identity,
+        )
+
+        assert result.status == "failed"
+        assert result.details["code"] == "unreconciled_create_not_authorized"
+        create.assert_not_called()
+
     def test_reconcile_disabled_authorized_retry_reaches_create_once(self, tmp_path, monkeypatch):
         import podcaster.publish as pub
 
@@ -4196,11 +4403,11 @@ class TestUploadVideoToEpisode:
             identity,
             platform="spotify",
             media_kind="video",
-            operation="credential_failure",
-            outcome=pub.PUBLICATION_UNKNOWN,
+            operation="create_episode_failure",
+            outcome=pub.MANUAL_HANDOFF_REQUIRED,
             mutation_attempted=False,
             retry_blocked=False,
-            code="create_outcome_unknown",
+            code="credentials_expired",
         )
         monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
         monkeypatch.setenv("SP_DC", "dc")
@@ -4229,7 +4436,7 @@ class TestUploadVideoToEpisode:
         records = _evidence_records(storage)
         assert [record["operation"] for record in records] == [
             "create_episode_intent",
-            "credential_failure",
+            "create_episode_failure",
             "create_episode_intent",
             "create_episode",
         ]
