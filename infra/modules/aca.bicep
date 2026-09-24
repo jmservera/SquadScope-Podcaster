@@ -110,6 +110,8 @@ param podcastAutoPublish string = 'false'
 param spotifyAllowLivePublish string = 'false'
 param spotifyVideoAllowLivePublish string = 'false'
 param spotifyVideoPublishMode string = 'draft'
+@description('Whether the video job publishes to YouTube. Passed to the synthesis job only so its listener-facing target check is accurate; it never uploads.')
+param videoYoutubeEnabled string = 'false'
 
 @description('Whether VNet integration is enabled. Requires environment recreation if enabling on an existing deployment.')
 param deployVnet bool = false
@@ -338,6 +340,10 @@ resource synthesisJob 'Microsoft.App/jobs@2025-01-01' = {
             {
               name: 'SPOTIFY_VIDEO_PUBLISH_MODE'
               value: spotifyVideoPublishMode
+            }
+            {
+              name: 'VIDEO_YOUTUBE_ENABLED'
+              value: videoYoutubeEnabled
             }
             {
               name: 'SPOTIFY_PUBLISH_ENABLED'

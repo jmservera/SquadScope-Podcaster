@@ -39,8 +39,8 @@ video to an episode that already has audio. The video path never reads
   - YouTube;
   - video generation with a live-authorized Spotify video, meaning
     `SPOTIFY_VIDEO_PUBLISH_MODE=live` and
-    `SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH=true`. The synthesis job receives both
-    variables.
+    `SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH=true`. The synthesis job receives these
+    variables and `VIDEO_YOUTUBE_ENABLED`, for this check only.
 - **Review approval** (`/api/review`, `podcast-review-gate.yml`): the approval
   is recorded but no audio publish is attempted. The job becomes
   `review_approved`, not `publish_failed`, and `publishing.eligible` stays
