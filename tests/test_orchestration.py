@@ -344,9 +344,7 @@ def test_prepare_audio_files_rejects_unsafe_local_artifact_path(tmp_path: Path) 
         _prepare_audio_files(storage, manifest, _job_id())
 
 
-def test_prepare_audio_files_rejects_unsafe_remote_job_id(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_prepare_audio_files_rejects_unsafe_remote_job_id(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
     manifest = _synthesized_manifest()
     storage = _RemoteStorageStub({"jobs/ok/audio/ok.mp3": b"mp3"})

@@ -89,15 +89,18 @@ def _approved_media_roots() -> tuple[Path, ...]:
             roots.append(Path(configured))
     resolved: list[Path] = []
     for root in roots:
-        root_path = root.resolve(strict=False)
+        root_path = Path(os.path.realpath(os.fspath(root)))
         if root_path not in resolved:
             resolved.append(root_path)
     return tuple(resolved)
 
 
 def _resolve_publish_media_path(path: Path, label: str) -> Path:
-    candidate = Path(path).resolve(strict=False)
-    if any(candidate.is_relative_to(root) for root in _approved_media_roots()):
+    candidate = Path(os.path.realpath(os.fspath(path)))
+    if any(
+        os.path.commonpath([os.fspath(root), os.fspath(candidate)]) == os.fspath(root)
+        for root in _approved_media_roots()
+    ):
         return candidate
     raise ValueError(f"{label} file must be under an approved media root")
 
@@ -114,6 +117,8 @@ def _optional_nonempty_publish_media_file(path: Path, label: str) -> Path | None
     if candidate.exists() and candidate.stat().st_size > 0:
         return candidate
     return None
+
+
 _SPOTIFY_CREATORS_GRAPHQL_URL = "https://creators-graph.spotify.com/v2/graph-pq"
 _SPOTIFY_EPISODE_LIST_OPERATION = "WebGetIndexedEpisodeList"
 _SPOTIFY_EPISODE_LIST_HASH = "da95dd0d5c5e3ffed3150f34f1d9674b6cd3548cdf59a49a37e1a65b325c9e98"

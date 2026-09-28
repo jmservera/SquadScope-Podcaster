@@ -1041,20 +1041,20 @@ def _normalize_blob_reference(value: str, *, allow_trailing_slash: bool) -> str:
 
 
 def _safe_local_root(root: Path) -> Path:
-    return root.resolve(strict=False)
+    return Path(os.path.realpath(os.fspath(root)))
 
 
 def _safe_local_blob_path(root: Path, safe_blob_path: str) -> Path:
     root_path = _safe_local_root(root)
-    candidate = (root_path / safe_blob_path).resolve(strict=False)
-    if not candidate.is_relative_to(root_path):
+    candidate = Path(os.path.realpath(os.path.join(os.fspath(root_path), safe_blob_path)))
+    if os.path.commonpath([os.fspath(root_path), os.fspath(candidate)]) != os.fspath(root_path):
         raise ValueError("artifact path escapes storage root")
     return candidate
 
 
 def _relative_to_root(path: Path, root: Path) -> Path:
-    resolved = path.resolve(strict=False)
-    if not resolved.is_relative_to(root):
+    resolved = Path(os.path.realpath(os.fspath(path)))
+    if os.path.commonpath([os.fspath(root), os.fspath(resolved)]) != os.fspath(root):
         raise ValueError("artifact path escapes storage root")
     return resolved.relative_to(root)
 
