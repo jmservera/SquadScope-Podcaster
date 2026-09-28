@@ -267,6 +267,11 @@ class _CaptureDeadline:
         return max(1, int(remaining * 1000))
 
 
+def _new_site_deadline() -> _CaptureDeadline:
+    """Return a deadline governed by VIDEO_SITE_CAPTURE_DEADLINE_SECONDS."""
+    return _CaptureDeadline.from_seconds(SITE_CAPTURE_DEADLINE_SECONDS)
+
+
 # --- Screenshot-based (hyperframe) capture (issue #387) ---
 #
 # Playwright's screencast (page.video) encodes VP8 in real time, which is lossy
@@ -2213,7 +2218,7 @@ def _record_generic_segment(
                     page,
                     record_seconds,
                     capturer,
-                    deadline=_CaptureDeadline.from_seconds(record_seconds),
+                    deadline=_new_site_deadline(),
                 )
             except Exception:
                 logger.exception(
@@ -2418,7 +2423,7 @@ def _record_segment(
                 repo,
                 record_seconds,
                 capturer,
-                _CaptureDeadline.from_seconds(record_seconds),
+                _new_site_deadline(),
             )
             if pages_url is not None:
                 website_url = pages_url
@@ -2467,7 +2472,7 @@ def _record_segment(
                             page,
                             record_seconds,
                             capturer,
-                            _CaptureDeadline.from_seconds(record_seconds),
+                            _new_site_deadline(),
                         )
                         if (
                             capturer is not None
@@ -2509,27 +2514,40 @@ def _record_segment(
                         # from the GitHub repo (e.g. an HTTP >= 400 response
                         # still loads a page); go back so the GitHub flow records
                         # the right page.
-                        try:
-                            page.goto(
+                        if not _try_navigate_repo(page, repo.url):
+                            logger.warning(
+                                "GitHub repo fallback failed for %s; rendering URL card",
                                 repo.url,
-                                wait_until="networkidle",
-                                timeout=NETWORK_IDLE_TIMEOUT_MS,
                             )
-                        except Exception:
-                            pass
-                        page.wait_for_timeout(PAGE_SETTLE_MS)
-                        _dismiss_overlays(page)
+                            is_fallback = True
+                            recovery_path = "fallback"
+                            _render_url_card(
+                                page,
+                                repo.owner,
+                                repo.name,
+                                record_seconds,
+                                capturer,
+                            )
+                            website_url = None
+                            return_path_ready = False
+                        else:
+                            page.wait_for_timeout(PAGE_SETTLE_MS)
+                            _dismiss_overlays(page)
+                            return_path_ready = True
+                    else:
+                        return_path_ready = True
                     website_url = None
-                    _prepare_page_for_recording(page)
-                    # README-first scroll for GitHub repo pages; falls back to a
-                    # plain deterministic scroll for non-GitHub pages / no README
-                    # (issue #415).
-                    _scroll_github_readme(
-                        page,
-                        record_seconds,
-                        capturer,
-                        _CaptureDeadline.from_seconds(record_seconds),
-                    )
+                    if return_path_ready:
+                        _prepare_page_for_recording(page)
+                        # README-first scroll for GitHub repo pages; falls back to a
+                        # plain deterministic scroll for non-GitHub pages / no README
+                        # (issue #415).
+                        _scroll_github_readme(
+                            page,
+                            record_seconds,
+                            capturer,
+                            _new_site_deadline(),
+                        )
             except Exception:
                 # Keep the successfully recorded repo page; do not render a
                 # fallback on top of it (issue #381).

@@ -66,6 +66,8 @@ ENV_FAKE_BROWSER = "PODCASTER_RECORDER_FAKE_BROWSER"
 #: mid-flight (RFC §8).
 ENV_CLIP_VISIBILITY_TIMEOUT = "PODCASTER_CLIP_VISIBILITY_TIMEOUT"
 DEFAULT_CLIP_VISIBILITY_TIMEOUT = 900
+ENV_RECORDER_MAX_MESSAGES = "PODCASTER_RECORDER_MAX_MESSAGES"
+DEFAULT_RECORDER_MAX_MESSAGES = 1
 
 _JSON_CONTENT_TYPE = "application/json; charset=utf-8"
 _WEBM_CONTENT_TYPE = "video/webm"
@@ -522,18 +524,30 @@ def _visibility_timeout(env: Mapping[str, str]) -> int:
     return value if value > 0 else DEFAULT_CLIP_VISIBILITY_TIMEOUT
 
 
+def _max_messages(env: Mapping[str, str]) -> int:
+    raw = env.get(ENV_RECORDER_MAX_MESSAGES, "")
+    if not raw.strip():
+        return DEFAULT_RECORDER_MAX_MESSAGES
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return DEFAULT_RECORDER_MAX_MESSAGES
+    return value if value > 0 else DEFAULT_RECORDER_MAX_MESSAGES
+
+
 def drain(
     queue: Any,
     scratch: StorageBackend,
     *,
-    max_messages: int = 256,
+    max_messages: int | None = None,
     env: Mapping[str, str] | None = None,
 ) -> list[ClipOutcome]:
     """Process clip messages until the queue drains or *max_messages* is hit."""
     env = env if env is not None else os.environ
     visibility = _visibility_timeout(env)
+    limit = _max_messages(env) if max_messages is None else max_messages
     outcomes: list[ClipOutcome] = []
-    while len(outcomes) < max_messages:
+    while len(outcomes) < limit:
         messages = queue.receive_messages(max_messages=1, visibility_timeout=visibility)
         if not messages:
             break

@@ -356,12 +356,26 @@ def test_drain_processes_until_empty(tmp_path) -> None:
     queue.inbox = [_message(0), _message(1)]
     env = {"PODCASTER_RECORDER_FAKE_BROWSER": "1"}
 
-    outcomes = recorder.drain(queue, scratch, env=env)
+    outcomes = recorder.drain(queue, scratch, max_messages=256, env=env)
 
     assert [o.status for o in outcomes] == [OUTCOME_RECORDED, OUTCOME_RECORDED]
     assert len(queue.deleted) == 2
     assert scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 0))
     assert scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
+
+
+def test_drain_defaults_to_one_message_per_execution(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    queue = FakeQueue()
+    queue.inbox = [_message(0), _message(1)]
+    env = {"PODCASTER_RECORDER_FAKE_BROWSER": "1"}
+
+    outcomes = recorder.drain(queue, scratch, env=env)
+
+    assert [o.clip_index for o in outcomes] == [0]
+    assert len(queue.deleted) == 1
+    assert len(queue.inbox) == 1
 
 
 def test_fake_browser_env_selects_fake_recorder(monkeypatch) -> None:

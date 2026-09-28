@@ -58,6 +58,7 @@ from podcaster.video.video_gen import (
     _navigate_to_website,
     _navigate_with_recovery,
     _neutralize_fixed_sticky,
+    _new_site_deadline,
     _pad_frames,
     _page_has_content,
     _prepare_page_for_recording,
@@ -1202,6 +1203,31 @@ class TestRecordSegment:
         assert result.is_fallback is False
         assert result.video_path.exists()
 
+    def test_website_capture_failure_uses_url_card_when_repo_recovery_fails(self, tmp_path):
+        browser, out_dir = self._mock_browser(tmp_path)
+        segment = _make_segment(owner="Aureliengmz", name="clearwater", duration=2.0)
+
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=True),
+            patch(
+                "podcaster.video.video_gen._extract_website_url",
+                return_value="https://aureliengmz.github.io/clearwater/",
+            ),
+            patch("podcaster.video.video_gen._navigate_to_website", return_value=True),
+            patch("podcaster.video.video_gen._try_navigate_repo", side_effect=[True, False]),
+            patch(
+                "podcaster.video.video_gen._scroll_github_readme",
+                side_effect=RuntimeError("TargetClosedError"),
+            ),
+        ):
+            result = _record_segment(browser, segment, out_dir)
+
+        assert result.is_fallback is True
+        assert result.recovery_path == "fallback"
+        assert result.website_url is None
+        assert result.video_path.exists()
+
     def test_finalization_without_screenshots_renders_fallback_card(self, tmp_path):
         browser, out_dir = self._mock_browser(tmp_path)
         page = browser.new_context.return_value.new_page.return_value
@@ -1270,6 +1296,13 @@ class TestBoundedSiteRecordSeconds:
             patch("podcaster.video.video_gen.SITE_CAPTURE_DEADLINE_SECONDS", 0),
         ):
             assert bounded_site_record_seconds(1440.0) == 600.0
+            assert _new_site_deadline().deadline_at is None
+
+    def test_deadline_uses_site_setting_not_record_duration(self):
+        with patch("podcaster.video.video_gen.SITE_CAPTURE_DEADLINE_SECONDS", 120):
+            deadline = _new_site_deadline()
+        assert deadline.deadline_at is not None
+        assert 110_000 <= deadline.remaining_ms() <= 120_000
 
 
 @pytest.mark.usefixtures("stub_compose")
