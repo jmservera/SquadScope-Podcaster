@@ -314,6 +314,24 @@ def test_process_message_transient_error_leaves_message(tmp_path) -> None:
     assert queue.deleted == []  # left for redelivery / eventual poison
 
 
+def test_process_message_retry_cap_writes_fallback_after_failure(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    queue = FakeQueue()
+
+    def _boom(segment, output_dir):
+        raise RuntimeError("deterministic browser failure")
+
+    message = _message(1, dequeue_count=MAX_DEQUEUE_COUNT - 1)
+    outcome = process_clip_message(message, scratch=scratch, queue=queue, record_segment=_boom)
+
+    assert outcome.status == OUTCOME_FALLBACK
+    assert queue.deleted == [message]
+    manifest = json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 1)))
+    assert manifest["is_fallback"] is True
+    assert "recording failed" in manifest["failure_reason"]
+
+
 def test_drain_processes_until_empty(tmp_path) -> None:
     scratch = _scratch(tmp_path)
     _stage_clipset(scratch)
@@ -347,7 +365,7 @@ def test_fake_record_segment_writes_clip(tmp_path) -> None:
 
 
 def test_fake_record_segment_caps_long_duration(tmp_path, monkeypatch) -> None:
-    # An over-long segment is reported at the per-clip recording cap (issue #592)
+    # An over-long segment is reported at the per-site recording deadline
     # so the manifest's duration_ms matches the realized (truncated) clip and the
     # editor's EDL never seeks past the clip's end.
     import podcaster.video.video_gen as vg
@@ -355,4 +373,4 @@ def test_fake_record_segment_caps_long_duration(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(vg, "MAX_CLIP_RECORD_SECONDS", 600)
     segment = VideoSegment(start_seconds=0.0, duration_seconds=1440.0)
     result = recorder._fake_record_segment(segment, tmp_path)
-    assert result.duration_ms == 600_000
+    assert result.duration_ms == 120_000

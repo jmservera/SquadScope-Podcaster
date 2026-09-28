@@ -70,6 +70,7 @@ from podcaster.video.video_gen import (
     _smooth_scroll,
     _try_navigate_repo,
     _try_record_project_site,
+    bounded_site_record_seconds,
     capped_record_seconds,
     record_episode,
 )
@@ -1164,6 +1165,65 @@ class TestRecordSegment:
         assert result.is_fallback is False
         assert result.video_path.exists()
 
+    def test_falls_back_to_github_when_website_capture_fails(self, tmp_path):
+        browser, out_dir = self._mock_browser(tmp_path)
+        page = browser.new_context.return_value.new_page.return_value
+        page.goto.return_value = MagicMock(status=200)
+        segment = _make_segment(owner="Aureliengmz", name="clearwater", duration=2.0)
+
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=True),
+            patch(
+                "podcaster.video.video_gen._extract_website_url",
+                return_value="https://aureliengmz.github.io/clearwater/",
+            ),
+            patch("podcaster.video.video_gen._navigate_to_website", return_value=True),
+            patch(
+                "podcaster.video.video_gen._scroll_github_readme",
+                side_effect=[RuntimeError("TargetClosedError"), None],
+            ) as scroll,
+        ):
+            result = _record_segment(browser, segment, out_dir)
+
+        assert scroll.call_count == 2
+        assert page.goto.call_args_list[-1].args[0] == "https://github.com/Aureliengmz/clearwater"
+        assert result.website_url is None
+        assert result.is_fallback is False
+        assert result.video_path.exists()
+
+    def test_finalization_without_screenshots_renders_fallback_card(self, tmp_path):
+        browser, out_dir = self._mock_browser(tmp_path)
+        page = browser.new_context.return_value.new_page.return_value
+        page.goto.return_value = MagicMock(status=200)
+        segment = _make_segment(owner="slow", name="closed-page", duration=2.0)
+
+        def fake_compose(capturer, duration_seconds, output_path):
+            if fake_compose.calls == 0:
+                fake_compose.calls += 1
+                raise RuntimeError(
+                    "No screenshots captured for screenshot-based segment composition"
+                )
+            Path(output_path).write_bytes(b"\x00\x00\x00\x18ftypmp42stub")
+            return Path(output_path)
+
+        fake_compose.calls = 0
+
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
+            patch("podcaster.video.video_gen._extract_website_url", return_value=None),
+            patch(
+                "podcaster.video.video_gen._compose_screenshot_segment",
+                side_effect=fake_compose,
+            ),
+        ):
+            result = _record_segment(browser, segment, out_dir)
+
+        assert result.is_fallback is True
+        assert result.recovery_path == "fallback"
+        assert result.video_path.exists()
+
 
 # --- Per-clip recording duration cap (issue #592) ---
 
@@ -1184,6 +1244,22 @@ class TestCappedRecordSeconds:
             assert capped_record_seconds(1440.0) == 1440.0
         with patch("podcaster.video.video_gen.MAX_CLIP_RECORD_SECONDS", -1):
             assert capped_record_seconds(1440.0) == 1440.0
+
+
+class TestBoundedSiteRecordSeconds:
+    def test_applies_site_deadline_after_clip_cap(self):
+        with (
+            patch("podcaster.video.video_gen.MAX_CLIP_RECORD_SECONDS", 600),
+            patch("podcaster.video.video_gen.SITE_CAPTURE_DEADLINE_SECONDS", 120),
+        ):
+            assert bounded_site_record_seconds(1440.0) == 120.0
+
+    def test_deadline_can_be_disabled(self):
+        with (
+            patch("podcaster.video.video_gen.MAX_CLIP_RECORD_SECONDS", 600),
+            patch("podcaster.video.video_gen.SITE_CAPTURE_DEADLINE_SECONDS", 0),
+        ):
+            assert bounded_site_record_seconds(1440.0) == 600.0
 
 
 @pytest.mark.usefixtures("stub_compose")
@@ -1217,7 +1293,7 @@ class TestRecordingCap:
 
         seen: dict[str, float] = {}
 
-        def _capture_scroll(page, duration_seconds, capturer=None):
+        def _capture_scroll(page, duration_seconds, capturer=None, deadline=None):
             seen["scroll"] = duration_seconds
 
         real_finalize = None
@@ -1231,6 +1307,7 @@ class TestRecordingCap:
 
         with (
             patch("podcaster.video.video_gen.MAX_CLIP_RECORD_SECONDS", 600),
+            patch("podcaster.video.video_gen.SITE_CAPTURE_DEADLINE_SECONDS", 120),
             patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
             patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
             patch("podcaster.video.video_gen._extract_website_url", return_value=None),
@@ -1239,9 +1316,9 @@ class TestRecordingCap:
         ):
             result = _record_segment(browser, segment, out_dir, check_accessibility=False)
 
-        # Recording (scroll) and finalize both clamp to the 600s cap, not 1440s.
-        assert seen["scroll"] == 600.0
-        assert seen["finalize"] == 600.0
+        # Recording (scroll) and finalize both clamp to the tighter site deadline.
+        assert seen["scroll"] == 120.0
+        assert seen["finalize"] == 120.0
         # A valid clip is still produced — the clip is never failed (issue #592).
         assert result.video_path.exists()
         assert result.is_fallback is False
@@ -1252,7 +1329,7 @@ class TestRecordingCap:
 
         seen: dict[str, float] = {}
 
-        def _capture_scroll(page, duration_seconds, capturer=None):
+        def _capture_scroll(page, duration_seconds, capturer=None, deadline=None):
             seen["scroll"] = duration_seconds
 
         with (
@@ -1275,13 +1352,14 @@ class TestRecordingCap:
 
         with (
             patch("podcaster.video.video_gen.MAX_CLIP_RECORD_SECONDS", 600),
+            patch("podcaster.video.video_gen.SITE_CAPTURE_DEADLINE_SECONDS", 120),
             patch("podcaster.video.video_gen._render_generic_background") as bg,
         ):
             bg.side_effect = lambda page, d, cap, brand_name=None: seen.__setitem__("bg", d)
             result = _record_segment(browser, segment, out_dir)
 
-        # Static generic background hold is clamped to the cap, valid clip made.
-        assert seen["bg"] == 600.0
+        # Static generic background hold is clamped to the tighter site deadline.
+        assert seen["bg"] == 120.0
         assert result.video_path.exists()
 
 

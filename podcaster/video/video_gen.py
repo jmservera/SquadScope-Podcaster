@@ -159,6 +159,16 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+# Hard wall-clock bound for recording any one site (repo page or project
+# website). Some GitHub Pages apps keep the browser busy long enough that ACA
+# eventually kills the container, surfacing as a late Playwright TargetClosedError.
+DEFAULT_SITE_CAPTURE_DEADLINE_SECONDS = 120
+SITE_CAPTURE_DEADLINE_SECONDS = _env_int(
+    "VIDEO_SITE_CAPTURE_DEADLINE_SECONDS",
+    DEFAULT_SITE_CAPTURE_DEADLINE_SECONDS,
+)
+
+
 # Bounded per-task retries for browser recording (issue #483).  A single
 # segment whose recording fails transiently (flaky navigation, browser hiccup)
 # is retried in isolation rather than aborting the whole episode.  Recording is
@@ -212,6 +222,41 @@ def capped_record_seconds(duration_seconds: float) -> float:
         cap,
     )
     return float(cap)
+
+
+def bounded_site_record_seconds(duration_seconds: float) -> float:
+    """Clamp a segment's realized recording duration to the per-site deadline."""
+    seconds = capped_record_seconds(duration_seconds)
+    deadline = SITE_CAPTURE_DEADLINE_SECONDS
+    if deadline <= 0 or seconds <= deadline:
+        return seconds
+    logger.warning(
+        "Capping site capture duration from %.1fs to %ds "
+        "(VIDEO_SITE_CAPTURE_DEADLINE_SECONDS); downstream composition will fit "
+        "the realized clip to its planned slot",
+        seconds,
+        deadline,
+    )
+    return float(deadline)
+
+
+class CaptureDeadlineExceeded(RuntimeError):
+    """Raised when per-site capture exceeds its wall-clock deadline."""
+
+
+@dataclass
+class _CaptureDeadline:
+    deadline_at: float | None
+
+    @classmethod
+    def from_seconds(cls, seconds: float) -> "_CaptureDeadline":
+        if seconds <= 0:
+            return cls(None)
+        return cls(time.monotonic() + seconds)
+
+    def check(self, label: str) -> None:
+        if self.deadline_at is not None and time.monotonic() >= self.deadline_at:
+            raise CaptureDeadlineExceeded(f"site capture deadline exceeded while {label}")
 
 
 # --- Screenshot-based (hyperframe) capture (issue #387) ---
@@ -1356,6 +1401,7 @@ def _run_scroll_positions(
     positions: "list[int]",
     capturer: "_Capturer | None",
     tick_interval_ms: int,
+    deadline: "_CaptureDeadline | None" = None,
 ) -> None:
     """Drive the page through *positions* (absolute Y), one frame each (#413).
 
@@ -1363,6 +1409,8 @@ def _run_scroll_positions(
     tick interval per position so the motion plays back in real time.
     """
     for y in positions:
+        if deadline is not None:
+            deadline.check("scrolling page")
         page.evaluate(f"window.scrollTo(0, {y})")
         if capturer is not None:
             capturer.frame(page)
@@ -1379,6 +1427,7 @@ def _smooth_scroll(
     end_y: "float | None" = None,
     easing: str = "linear",
     max_px_per_frame: int = READING_PX_PER_FRAME,
+    deadline: "_CaptureDeadline | None" = None,
 ) -> None:
     """Deterministically scroll the page over the given duration (issue #413).
 
@@ -1403,6 +1452,8 @@ def _smooth_scroll(
     the frame count equals ``duration_seconds * SCREENSHOT_CAPTURE_FPS`` so the
     captured motion plays back at exactly the segment duration.
     """
+    if deadline is not None:
+        deadline.check("starting smooth scroll")
     total_ticks, tick_rate = _scroll_frame_count(duration_seconds, capturer)
     if total_ticks <= 0:
         # Duration is positive but too short for a full tick.
@@ -1431,6 +1482,8 @@ def _smooth_scroll(
         per_frame_cap = min(max(1, max_px_per_frame), MAX_READING_PX_PER_FRAME)
         scroll_easing = "linear"
         max_scroll = int(viewport_height * MAX_SCROLL_VIEWPORT_MULTIPLIER)
+        if deadline is not None:
+            deadline.check("measuring page height")
         scroll_height = page.evaluate("document.documentElement.scrollHeight")
         page_scroll_distance = max(0, scroll_height - viewport_height)
         effective_scroll = min(page_scroll_distance, max_scroll)
@@ -1446,11 +1499,13 @@ def _smooth_scroll(
             page.wait_for_timeout(int(duration_seconds * 1000))
             return
         for _ in range(total_ticks):
+            if deadline is not None:
+                deadline.check("capturing static page")
             capturer.frame(page)
         return
 
     positions = _scroll_positions(s_y, e_y, total_ticks, scroll_easing)
-    _run_scroll_positions(page, positions, capturer, tick_interval_ms)
+    _run_scroll_positions(page, positions, capturer, tick_interval_ms, deadline)
 
     if capturer is not None:
         # Frame count (total_ticks) already encodes the duration at the
@@ -1609,6 +1664,7 @@ def _scroll_github_readme(
     page: Page,
     duration_seconds: float,
     capturer: "_Capturer | None" = None,
+    deadline: "_CaptureDeadline | None" = None,
 ) -> None:
     """README-first scroll for a GitHub repo page (issue #415).
 
@@ -1619,25 +1675,27 @@ def _scroll_github_readme(
     """
     try:
         if not _is_github_repo_root(getattr(page, "url", None)):
-            _smooth_scroll(page, duration_seconds, capturer)
+            _smooth_scroll(page, duration_seconds, capturer, deadline=deadline)
             return
     except Exception:  # noqa: BLE001 — treat detection failure as "not a repo root"
-        _smooth_scroll(page, duration_seconds, capturer)
+        _smooth_scroll(page, duration_seconds, capturer, deadline=deadline)
         return
 
     total_frames, tick_rate = _scroll_frame_count(duration_seconds, capturer)
     if total_frames <= 0:
-        _smooth_scroll(page, duration_seconds, capturer)
+        _smooth_scroll(page, duration_seconds, capturer, deadline=deadline)
         return
 
     viewport_height = page.viewport_size["height"] if page.viewport_size else HEIGHT
 
     try:
+        if deadline is not None:
+            deadline.check("detecting README position")
         metrics = page.evaluate(_README_METRICS_JS)
     except Exception:  # noqa: BLE001 — fall back to a plain scroll on JS errors
         metrics = None
     if not isinstance(metrics, dict) or metrics.get("readmeY") is None:
-        _smooth_scroll(page, duration_seconds, capturer)
+        _smooth_scroll(page, duration_seconds, capturer, deadline=deadline)
         return
 
     doc_scrollable = int(metrics.get("scrollable") or 0)
@@ -1648,7 +1706,7 @@ def _scroll_github_readme(
     readme_y = min(readme_y, max(0, doc_scrollable))
     # README already near the top → a normal reading scroll is the right thing.
     if readme_y <= viewport_height * 0.5:
-        _smooth_scroll(page, duration_seconds, capturer)
+        _smooth_scroll(page, duration_seconds, capturer, deadline=deadline)
         return
 
     # Convert the seconds-based hold/jump budgets to frame counts at the *live*
@@ -1665,7 +1723,7 @@ def _scroll_github_readme(
         jump_frames=jump_frames,
     )
     if not plan:
-        _smooth_scroll(page, duration_seconds, capturer)
+        _smooth_scroll(page, duration_seconds, capturer, deadline=deadline)
         return
 
     logger.info(
@@ -1674,7 +1732,7 @@ def _scroll_github_readme(
         plan[-1],
     )
     tick_interval_ms = int(1000 / tick_rate)
-    _run_scroll_positions(page, plan, capturer, tick_interval_ms)
+    _run_scroll_positions(page, plan, capturer, tick_interval_ms, deadline)
 
     if capturer is not None:
         return
@@ -2107,7 +2165,7 @@ def _record_generic_segment(
     page: Page = context.new_page()
     # Cap the effective recording length (issue #592); the partial clip is fit
     # to its planned slot during composition.
-    record_seconds = capped_record_seconds(segment.duration_seconds)
+    record_seconds = bounded_site_record_seconds(segment.duration_seconds)
     try:
         source_url = segment.source_url
         if source_url:
@@ -2125,7 +2183,12 @@ def _record_generic_segment(
                 _dismiss_overlays(page)
                 _dismiss_cookie_consent(page)
                 _prepare_page_for_recording(page)
-                _smooth_scroll(page, record_seconds, capturer)
+                _smooth_scroll(
+                    page,
+                    record_seconds,
+                    capturer,
+                    deadline=_CaptureDeadline.from_seconds(record_seconds),
+                )
             except Exception:
                 logger.exception(
                     "Error recording generic source %s — using background",
@@ -2162,6 +2225,7 @@ def _try_record_project_site(
     repo: RepoReference,
     duration_seconds: float,
     capturer: "_Capturer | None" = None,
+    deadline: "_CaptureDeadline | None" = None,
 ) -> str | None:
     """Record the repo's GitHub Pages site as a fallback (issue #386).
 
@@ -2171,9 +2235,8 @@ def _try_record_project_site(
     we probe the conventional GitHub Pages URL ``https://{owner}.github.io/
     {name}/``; if it exists and loads, we record it like a normal website
     segment and return its URL.  Returns ``None`` (so the caller renders the URL
-    card) when there's no Pages site or it fails to load.  Best-effort: a
-    failure *after* the site loads keeps the partial recording rather than
-    stacking a card on top of it (issue #381).
+    card) when there's no Pages site or it fails to load/capture before the
+    per-site deadline.
     """
     if not _check_gh_pages(repo.owner, repo.name):
         return None
@@ -2186,6 +2249,8 @@ def _try_record_project_site(
         pages_url,
     )
     try:
+        if deadline is not None:
+            deadline.check("recording project site")
         try:
             page.wait_for_load_state("networkidle", timeout=WEBSITE_NAV_TIMEOUT_MS)
         except Exception:
@@ -2193,12 +2258,18 @@ def _try_record_project_site(
         page.wait_for_timeout(PAGE_SETTLE_MS)
         _dismiss_overlays(page)
         _prepare_page_for_recording(page)
-        _smooth_scroll(page, duration_seconds, capturer)
+        _smooth_scroll(page, duration_seconds, capturer, deadline=deadline)
+        if capturer is not None and capturer.count == 0 and capturer.still_image is None:
+            logger.warning("Project site %s produced no screenshots", pages_url)
+            return None
     except Exception:
         logger.exception(
-            "Error while recording project site %s — keeping partial recording",
+            "Error while recording project site %s — falling back to GitHub repo page",
             pages_url,
         )
+        if capturer is not None:
+            capturer.reset_frames()
+        return None
     return pages_url
 
 
@@ -2230,7 +2301,7 @@ def _record_segment(
     # Cap the effective recording length so the capture phase stays well under
     # the recorder's ACA replicaTimeout; the partial clip is fit to its planned
     # slot during composition (issue #592).
-    record_seconds = capped_record_seconds(segment.duration_seconds)
+    record_seconds = bounded_site_record_seconds(segment.duration_seconds)
 
     # A planning-time pre-flight check flagged this repo as removed from GitHub
     # (HTTP 404 — e.g. a polymarket/spam bot GitHub took down).  Skip navigation
@@ -2316,7 +2387,13 @@ def _record_segment(
             # Before showing a static card, try the repo's project website —
             # its GitHub Pages site — so we record real content when the repo
             # page 404s or requires login (issue #386).
-            pages_url = _try_record_project_site(page, repo, record_seconds, capturer)
+            pages_url = _try_record_project_site(
+                page,
+                repo,
+                record_seconds,
+                capturer,
+                _CaptureDeadline.from_seconds(record_seconds),
+            )
             if pages_url is not None:
                 website_url = pages_url
                 has_pages = True
@@ -2346,18 +2423,47 @@ def _record_segment(
                 # the GitHub page; fall back to GitHub if it fails to load
                 # (issue #360).
                 website_url = _extract_website_url(page)
+                website_recorded = False
+                reload_repo_page = False
                 if website_url and _navigate_to_website(page, website_url):
                     try:
                         page.wait_for_load_state("networkidle", timeout=WEBSITE_NAV_TIMEOUT_MS)
                     except Exception:
                         pass
-                    page.wait_for_timeout(PAGE_SETTLE_MS)
-                    _dismiss_overlays(page)
-                    # External sites (unlike github.com) commonly show cookie
-                    # consent banners that would overlay the recording (#388).
-                    _dismiss_cookie_consent(page)
+                    try:
+                        page.wait_for_timeout(PAGE_SETTLE_MS)
+                        _dismiss_overlays(page)
+                        # External sites (unlike github.com) commonly show cookie
+                        # consent banners that would overlay the recording (#388).
+                        _dismiss_cookie_consent(page)
+                        _prepare_page_for_recording(page)
+                        _scroll_github_readme(
+                            page,
+                            record_seconds,
+                            capturer,
+                            _CaptureDeadline.from_seconds(record_seconds),
+                        )
+                        if (
+                            capturer is not None
+                            and capturer.count == 0
+                            and capturer.still_image is None
+                        ):
+                            raise RuntimeError("website produced no screenshots")
+                        website_recorded = True
+                    except Exception:
+                        logger.exception(
+                            "Website capture failed for %s — falling back to GitHub repo page",
+                            website_url,
+                        )
+                        if capturer is not None:
+                            capturer.reset_frames()
+                        reload_repo_page = True
+                        website_url = None
+
+                if website_url and website_recorded:
+                    pass
                 else:
-                    if website_url:
+                    if website_url or reload_repo_page:
                         # _navigate_to_website may have navigated the page away
                         # from the GitHub repo (e.g. an HTTP >= 400 response
                         # still loads a page); go back so the GitHub flow records
@@ -2373,11 +2479,16 @@ def _record_segment(
                         page.wait_for_timeout(PAGE_SETTLE_MS)
                         _dismiss_overlays(page)
                     website_url = None
-                _prepare_page_for_recording(page)
-                # README-first scroll for GitHub repo pages; falls back to a
-                # plain deterministic scroll for non-GitHub pages / no README
-                # (issue #415).
-                _scroll_github_readme(page, record_seconds, capturer)
+                    _prepare_page_for_recording(page)
+                    # README-first scroll for GitHub repo pages; falls back to a
+                    # plain deterministic scroll for non-GitHub pages / no README
+                    # (issue #415).
+                    _scroll_github_readme(
+                        page,
+                        record_seconds,
+                        capturer,
+                        _CaptureDeadline.from_seconds(record_seconds),
+                    )
             except Exception:
                 # Keep the successfully recorded repo page; do not render a
                 # fallback on top of it (issue #381).
@@ -2410,14 +2521,39 @@ def _record_segment(
         recovery_path = "fallback"
         _render_fallback_page(page, repo.owner, repo.name, record_seconds, capturer)
 
-    dest_path = _finalize_segment(
-        page,
-        context,
-        capturer,
-        output_dir,
-        f"{repo.owner}_{repo.name}",
-        record_seconds,
-    )
+    try:
+        dest_path = _finalize_segment(
+            page,
+            context,
+            capturer,
+            output_dir,
+            f"{repo.owner}_{repo.name}",
+            record_seconds,
+        )
+    except Exception:
+        logger.exception("Finalizing recording for %s failed — rendering fallback card", repo.url)
+        try:
+            context.close()
+        except Exception:
+            pass
+        context, capturer = _make_recording_context(
+            browser,
+            output_dir,
+            segment_label=f"fallback {repo.url}",
+        )
+        page = context.new_page()
+        _render_url_card(page, repo.owner, repo.name, record_seconds, capturer)
+        dest_path = _finalize_segment(
+            page,
+            context,
+            capturer,
+            output_dir,
+            f"{repo.owner}_{repo.name}",
+            record_seconds,
+        )
+        is_fallback = True
+        website_url = None
+        recovery_path = "fallback"
 
     return RecordedSegment(
         segment=segment,
