@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from unittest.mock import patch
@@ -729,14 +730,19 @@ class TestReviewEndpoint:
         assert body["manifest"]["status"] == "published"
 
     @patch("podcaster.monitoring.process_review_decision", side_effect=ValueError("missing job"))
-    def test_returns_404_for_missing_job(self, _mock_process_review_decision, client, storage):
-        resp = client.post(
-            "/api/review",
-            json={"job_id": "podcast-1", "reviewer": "leela", "decision": "approved"},
-        )
+    def test_returns_404_for_missing_job(
+        self, _mock_process_review_decision, client, storage, caplog
+    ):
+        with caplog.at_level(logging.WARNING, logger="podcaster.monitoring"):
+            resp = client.post(
+                "/api/review",
+                json={"job_id": "podcast-1", "reviewer": "leela", "decision": "approved"},
+            )
 
         assert resp.status_code == 404
-        assert resp.json() == {"error": "missing job"}
+        assert resp.json() == {"error": "review request not found"}
+        assert "missing job" not in resp.text
+        assert any("missing job" in record.exc_text for record in caplog.records if record.exc_text)
 
 
 class TestUiNavigationEndpoints:
@@ -1298,14 +1304,39 @@ class TestCredentialsCrudMonitoring:
         resp = client.get("/api/credentials", headers={"x-podcaster-api-key": "api-key"})
         assert resp.status_code == 501
 
-    def test_credentials_reject_invalid_payload(self, client, storage, monkeypatch):
+    def test_credentials_reject_invalid_payload(self, client, storage, monkeypatch, caplog):
         headers = self._headers(monkeypatch)
-        resp = client.post(
-            "/api/credentials",
-            json={"type": "bad", "label": "", "values": []},
-            headers=headers,
-        )
+        with caplog.at_level(logging.WARNING, logger="podcaster.monitoring"):
+            resp = client.post(
+                "/api/credentials",
+                json={"type": "bad", "label": "", "values": []},
+                headers=headers,
+            )
         assert resp.status_code == 400
+        assert resp.json() == {"error": "invalid credential payload"}
+        assert "spotify, youtube, api_key" not in resp.text
+        assert any(
+            "spotify, youtube, api_key" in record.exc_text
+            for record in caplog.records
+            if record.exc_text
+        )
+
+    def test_credentials_update_rejects_invalid_payload(self, client, storage, monkeypatch, caplog):
+        headers = self._headers(monkeypatch)
+        with caplog.at_level(logging.WARNING, logger="podcaster.monitoring"):
+            resp = client.put(
+                "/api/credentials/credential-1",
+                json={"type": "api_key", "label": "Key", "values": []},
+                headers=headers,
+            )
+        assert resp.status_code == 400
+        assert resp.json() == {"error": "invalid credential payload"}
+        assert "values must be an object" not in resp.text
+        assert any(
+            "values must be an object" in record.exc_text
+            for record in caplog.records
+            if record.exc_text
+        )
 
 
 class TestPodcastConfigMonitoring:
@@ -1340,14 +1371,22 @@ class TestPodcastConfigMonitoring:
         resp = client.get("/api/podcast-config", headers=headers)
         assert resp.json()["name"] == "My Show"
 
-    def test_save_rejects_invalid(self, client, storage, monkeypatch):
+    def test_save_rejects_invalid(self, client, storage, monkeypatch, caplog):
         headers = self._headers(monkeypatch)
-        resp = client.post(
-            "/api/podcast-config",
-            json={"name": "", "publish_targets": [], "auto_publish": "yes"},
-            headers=headers,
-        )
+        with caplog.at_level(logging.WARNING, logger="podcaster.monitoring"):
+            resp = client.post(
+                "/api/podcast-config",
+                json={"name": "", "publish_targets": [], "auto_publish": "yes"},
+                headers=headers,
+            )
         assert resp.status_code == 400
+        assert resp.json() == {"error": "invalid podcast config payload"}
+        assert "name is required" not in resp.text
+        assert any(
+            "name is required" in record.exc_text
+            for record in caplog.records
+            if record.exc_text
+        )
 
 
 # ---------------------------------------------------------------------------

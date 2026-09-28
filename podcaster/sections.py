@@ -72,11 +72,10 @@ MIN_HOST_TURNS_PER_SECTION = 4
 SHORT_SECTION_SECONDS = 30.0
 MAX_TITLE_CHARS = 60
 
-#: Matches a section header line (case-insensitive, tolerant of extra ``#`` and
-#: spacing): ``## Section: Title`` / ``### section : Title``.
-_SECTION_HEADER_RE = re.compile(
-    r"^\s*#{1,6}\s*section\s*[:\-]\s*(?P<title>.+?)\s*$",
-    re.IGNORECASE,
+#: Characters accepted in fallback speaker labels when no configured hosts are
+#: available. Mirrors the previous regex contract without regex backtracking.
+_SPEAKER_LABEL_EXTRA_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 _'.-"
 )
 
 #: A GitHub repo URL — used to associate ``owner/repo`` slugs with a section.
@@ -235,10 +234,15 @@ def _split_speaker(line: str, host_labels: tuple[str, str] | None) -> tuple[str,
         # With a known config, only the configured hosts are spoken turns.
         return None
     # Generic "Speaker: text" fallback so parsing works without a config.
-    match = re.match(r"^([A-Za-z][A-Za-z0-9 _'.-]{0,30}):\s*(.+)$", line)
-    if match:
-        return match.group(1).strip(), match.group(2).strip()
-    return None
+    raw_label, separator, raw_text = line.partition(":")
+    if not separator or not raw_text:
+        return None
+    if not raw_label or len(raw_label) > 31 or not raw_label[0].isalpha():
+        return None
+    if any(ch not in _SPEAKER_LABEL_EXTRA_CHARS for ch in raw_label[1:]):
+        return None
+    text = raw_text.strip()
+    return (raw_label.strip(), text) if text else None
 
 
 #: Public aliases for shared script-parsing helpers. Other modules (e.g.
@@ -252,14 +256,29 @@ split_speaker = _split_speaker
 def match_section_header(line: str) -> str | None:
     """Return the section *title* when *line* is a section header.
 
-    Matching is deliberately tolerant (see :data:`_SECTION_HEADER_RE`): it
-    accepts 1–6 leading ``#`` characters, a case-insensitive ``section`` keyword,
-    either ``:`` or ``-`` as the separator, and flexible surrounding whitespace
-    (``## Section: Title``, ``### section - Title``, …).  Returns ``None`` for
-    any line that is not a section header.
+    Matching is deliberately tolerant: it accepts 1–6 leading ``#`` characters,
+    a case-insensitive ``section`` keyword, either ``:`` or ``-`` as the
+    separator, and flexible surrounding whitespace (``## Section: Title``,
+    ``### section - Title``, …). Returns ``None`` for any line that is not a
+    section header.
     """
-    match = _SECTION_HEADER_RE.match(line)
-    return match.group("title").strip() if match else None
+    stripped = line.strip()
+    heading_marks = 0
+    for char in stripped:
+        if char != "#":
+            break
+        heading_marks += 1
+    if heading_marks < 1 or heading_marks > 6:
+        return None
+
+    rest = stripped[heading_marks:].lstrip()
+    if not rest[:7].lower() == "section":
+        return None
+    rest = rest[7:].lstrip()
+    if not rest or rest[0] not in ":-":
+        return None
+    title = rest[1:].strip()
+    return title or None
 
 
 def _summarise(title: str, host_turns: Sequence[tuple[str, str]]) -> str:
@@ -299,9 +318,9 @@ def parse_script_sections(
     """Parse section headers and their dialogue from *script*.
 
     A line is treated as a section header when it matches the tolerant
-    :data:`_SECTION_HEADER_RE` (canonically the :data:`SECTION_HEADER_PREFIX`
+    deterministic parser (canonically the :data:`SECTION_HEADER_PREFIX`
     ``## Section: <Title>`` form, but also 1–6 ``#``, case-insensitive
-    ``section``, ``:`` or ``-`` separators, and flexible spacing).  Each header
+    ``section``, ``:`` or ``-`` separators, and flexible spacing). Each header
     starts a new section; dialogue before the first such header is not
     attributed to any section (it is the cold open / welcome).
 
