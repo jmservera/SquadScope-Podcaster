@@ -15,7 +15,7 @@ Send the API key in this header:
 x-podcaster-api-key: <PODCASTER_API_KEY>
 ```
 
-`PODCASTER_API_KEY` must be stored as a GitHub Actions secret in `jmservera/SquadScope` or synced by the Podcaster deployment workflow without printing it. Do not log, echo, or include it in workflow summaries. Future OIDC caller auth may be added, but this header remains the compatibility contract until both repositories migrate.
+`PODCASTER_API_KEY` must be stored as a GitHub Actions repository secret in `jmservera/SquadScope` and, for handoff workflows, as the same secret on environment `podcaster-real-generation`; the Podcaster deployment workflow syncs both without printing it. Do not log, echo, or include it in workflow summaries. Future OIDC caller auth may be added, but this header remains the compatibility contract until both repositories migrate.
 
 ## Request body
 

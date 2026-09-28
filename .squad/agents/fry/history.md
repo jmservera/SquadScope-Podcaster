@@ -27,3 +27,29 @@
 - 2026-06-07T21:43:10Z: Final Issue #7 workflow/package QA review approved locally. `pytest` passed 24 tests, compileall clean, diff whitespace clean, package build simulation produced a valid app.zip, and `az bicep build` compiled `infra/main.bicep`. Workflow remains manual-only and uses private Blob run-from-package with managed identity; no deploy was triggered.
 
 📌 Team update (2026-06-07T21:43:10): Bender durable Function package deployment decision merged (private blob, managed identity, 24 tests passing) — Bender
+
+📌 Team update (2026-09-21T22:12:12.721+00:00): Rejection lockout held until the PR #682 durable lifecycle and timing defects were repaired. Final validation passed 1230 targeted tests (1 skipped, 2 deselected), 292 focused tests, Ruff check/format, compileall, and `git diff --check`; PR remains unmerged.
+
+- 2026-09-21T22:47:48.404+00:00: PR #682 review rejected recorder schema overflow taxonomy and routed the locked revision to Hermes. Re-review approved current head `2e070fc4286643f542ec37b2efc1020514cdb250`: all four requested threads resolved, no new code findings, one unrelated tracking-status thread still unresolved, PR not merged.
+
+📌 Team update (2026-09-22T10:39:16.805+00:00): Bender fixed four YouTube no-repeat/ambiguity review threads on PR #682 in commit `a58a49b79f6bb83a04fb574781b5630eb971df33`, added focused tests, pushed the change, and resolved the threads while preserving provider safety and contracts.
+
+📌 Team update (2026-09-22T07:47:54.369+00:00): Final independent gate approved PR #682 head `cfb0bb925838cf909bc6842743f18fa2147b3d1c`: 3329 passed, 2 skipped, 2 deselected; 15/15 checks passed; 0 unresolved threads; OPEN, MERGEABLE, CLEAN, operator-only and not merged. Reviewer lockout remains strict: rejected authors do not self-revise; a different agent implements the correction and independent QA reclassifies it.
+
+📌 Team update (2026-09-22T14:52:36.169+00:00): Final PR #682 regression gate passed with 1423 tests passed, 2 deselected, plus clean Ruff and diff checks. Final pushed commit is `2ca66d4d33d8ff5efda11ea9e7e5c6ff1bd041b5`; hosted checks all passed. PR remains unmerged and PR #684 was untouched.
+
+📌 Team update (2026-09-22T17:40:25.729+00:00): Fry enforced PR #684 rejection lockouts across Bender (three findings), Leela (two additional findings), and Amy (two final fence defects), then approved Hermes' independent commit `c8a4922a78af09ebc6c28cc69d795f035793cbcd`. PR remains OPEN/DRAFT/CLEAN with 13 green hosted checks.
+
+📌 Team update (2026-09-22T21:35:50.453+00:00): Fry added exact takeover regressions and completed PR #684 final validation: 8 affected tests, 439 relevant-module tests, Ruff check/format, compile, and diff checks passed for final SHA `ac7bbdb32c762b32be7d4cd388ce42177c5a6f96`.
+
+📌 Team update (2026-09-22T19:38:30.536+00:00): PR #684 delivery candidate reached f164977089d76905d957c32eb071777b8371da58 with Hermes acceptance, full validation green, and no operational mutation; scheduler notification repair uses a separate bounded cursor from due reconciliation. — decided by Bender
+
+📌 Team update (2026-09-23T14:19:30.910+00:00): jmservera externally merged PR #686 at 2026-09-23T15:40:18Z as `5f31a7064568c323f3127042578f14c5e0693a31` after final head `a7cf44cec4f25ee43ca01a116843176144622368` passed all 13 exact-head checks. Fry's final verdict remained REJECT because duplicate episode identity across pages can hide a missing item and falsely prove absence; documentation also conflicts on cursor pagination and verification state. The remote branch was deleted and four review threads remain unresolved. — final review by Fry
+
+📌 Team update (2026-09-23T16:02:34.285+00:00): PR #689 Spotify video evidence guard repair reached pushed commit `aebf3b37ee5156aa389d2ca3decbc23b6bb1b1e9`; Bender's publish/video-runner tests and Ruff gates passed, Fry independently approved after 28 focused tests, and the target thread was resolved. PR remains open and unmerged with four checks still in progress.
+
+📌 Team update (2026-09-23T18:33:01.615+00:00): Fry independently approved Bender's full PR #693 repair patch with no concerns after 523 targeted tests and clean Ruff/diff gates; Bender subsequently pushed `d37dde86270b2b67af3774f7e2a458c8f3182745` and resolved all five target threads. PR remains open and unmerged while checks finish.
+
+📌 Team update (2026-09-23T18:53:26.430+00:00): Fry's PR #693/#695 review gates prevented ambiguous recovery after failed evidence writes and required the recovery guard before token acquisition or provider reads. Final commit `62880f57` passed 5 focused tests, 378 publish tests, Ruff, 12/12 CI, and all threads; PR #695 merged as `c52782e3c683647da1c1c1321e2a1f8c63141872`. — final review by Fry
+
+📌 Team update (2026-09-23T18:19:22.037+00:00): Fry's read-only PR #682 QA required explicit parent-budget and convergence regressions for repeated null-budget fan-out attempts. Final exact-head validation passed 3492 unit tests (1 skipped, 2 deselected) and 11 integration tests, with zero unresolved non-outdated threads.

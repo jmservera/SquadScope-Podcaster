@@ -59,7 +59,7 @@ Without Azure storage settings, generated manifests, script drafts, transcripts,
 
 ## Human review gate
 
-Non-dry-run jobs synthesize and validate audio, then leave it staged for review. The synthesis runner never mutates Spotify, even when publication-related environment flags are enabled. `.github/workflows/podcast-review-gate.yml` uses the GitHub Environment `podcast-review`, calls the runtime `/api/review` route for the real stored manifest, and uploads the returned `review-manifest.json` as the audit artifact. Publication is owned by an explicit approved/manual orchestration call through `process_review_decision` → `publish_staged_job`. `PODCAST_AUTO_PUBLISH` remains an orchestration helper that permits the explicit auto-review path when `SPOTIFY_PUBLISH_ENABLED=true`; synthesis does not invoke that path automatically.
+Non-dry-run jobs now synthesize first, then wait for review before publication. `.github/workflows/podcast-review-gate.yml` uses the GitHub Environment `podcast-review`, calls the runtime `/api/review` route for the real stored manifest, and uploads the returned `review-manifest.json` as the audit artifact. Automatic approval only activates when both `PODCAST_AUTO_PUBLISH=true` and `SPOTIFY_PUBLISH_ENABLED=true`; otherwise jobs remain manually reviewable after synthesis.
 
 Example request:
 
@@ -97,19 +97,20 @@ Optional `prod` environment variables:
 
 - `AZURE_LOCATION` defaults to `eastus2`; override only when deploying the full stack to another supported region.
 - `AZURE_STORAGE_ACCOUNT_NAME` - override the deterministic default Storage Account name.
-- `SPOTIFY_PUBLISH_ENABLED` - set to `true` to let runtime publish approved episodes.
-- `PODCAST_AUTO_PUBLISH` - permits explicit orchestration to use the auto-review helper when `SPOTIFY_PUBLISH_ENABLED=true`; the synthesis runner never invokes publication automatically.
+- `SPOTIFY_PUBLISH_ENABLED` - set to `true` to let runtime publish the **audio** Spotify episode for approved jobs. `false` (production since 2026-09-24) is video-only mode: audio publish is recorded as `skipped`, not failed. See [docs/video-only-mode.md](docs/video-only-mode.md).
+- `SPOTIFY_VIDEO_PUBLISH_MODE` / `SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH` - set to `live` / `true` to take the separate Spotify **video** episode live (video job).
+- `PODCAST_AUTO_PUBLISH` - set to `true` to auto-approve after synthesis, but publication still requires `SPOTIFY_PUBLISH_ENABLED=true`.
 
 Optional `prod` environment secret:
 
-- `PODCASTER_API_KEY` - if absent, the workflow generates a high-entropy key, masks it, and sets it only as an Azure app setting. Never print this value.
+- `PODCASTER_API_KEY` - if absent, the workflow generates a high-entropy key, masks it, and stores it only as the ACA secret `podcaster-api-key` (referenced via `secretRef`). Never print this value.
 - `SPOTIFY_SHOW_ID` - Spotify show identifier for runtime publish.
 - `SP_DC` - Spotify session cookie for runtime publish.
 - `SP_KEY` - Spotify session cookie for runtime publish.
 
 Optional `prod` environment secret for syncing integration values to SquadScope:
 
-- `SQUADSCOPE_SYNC_TOKEN` - fine-grained token with permission to write variables and secrets in `jmservera/SquadScope`.
+- `SQUADSCOPE_SYNC_TOKEN` - fine-grained token with permission to write variables plus repository and environment secrets in `jmservera/SquadScope`, including the `podcaster-real-generation` environment secret.
 
 ## Integration contract
 
@@ -126,7 +127,7 @@ Artifact access uses a private/operator-only model for the initial release: resp
 
 - Do not commit subscription IDs, tenant IDs, API keys, storage keys, or publish profiles.
 - Prefer setting `PODCASTER_API_KEY` in this repository when you need stable manual rotation; otherwise the deploy workflow generates one per deployment.
-- Store or sync the same API key as `PODCASTER_API_KEY` in `jmservera/SquadScope` for caller authentication.
+- Store or sync the same API key as `PODCASTER_API_KEY` in both `jmservera/SquadScope` repository secrets and the `podcaster-real-generation` environment secret; handoff workflows run in that environment, where environment secrets shadow repository secrets.
 - Use GitHub Actions masking and avoid shell tracing around secret operations.
 - The API does not echo received API keys or include them in logs or responses.
 - To refresh Spotify publish cookies interactively, run `pip install -r requirements-scripts.txt && playwright install chromium`, then `python scripts/extract-spotify-cookies.py`. After it writes `.env`, run `./scripts/set-spotify-secrets.sh`.

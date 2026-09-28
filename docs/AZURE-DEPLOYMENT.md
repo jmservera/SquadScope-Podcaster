@@ -131,6 +131,16 @@ AZURE_STORAGE_ACCOUNT_NAME=podcasterstgprod
 
 If omitted, the workflow computes a safe deterministic default. Storage Account names are globally unique across Azure; a rare collision requires setting the override variable.
 
+Spotify publishing variables (production runs in [video-only mode](video-only-mode.md)):
+
+```text
+SPOTIFY_PUBLISH_ENABLED=false          # synthesis job + API: audio episode off (skipped, not failed)
+SPOTIFY_VIDEO_PUBLISH_MODE=live        # video job: take the separate video episode live
+SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH=true  # video job: operator authorization for video go-live
+```
+
+The workflow reads `vars.SPOTIFY_PUBLISH_ENABLED` directly; there is no `SPOTIFY_PUBLISH_ENABLED_VAR` environment variable to configure.
+
 #### Step 2: Add `prod` Environment Secrets
 
 Go to **Settings > Environments > prod > Environment secrets** and optionally create:
@@ -139,7 +149,7 @@ Go to **Settings > Environments > prod > Environment secrets** and optionally cr
 PODCASTER_API_KEY=<randomly-generated-key-at-least-32-characters>
 ```
 
-If `PODCASTER_API_KEY` is absent, the deploy workflow generates a 256-bit key with OpenSSL, masks it immediately, and passes it to the ACA environment without printing it. That generated value is not recoverable from logs; use `sync_squadscope=true` with `SQUADSCOPE_SYNC_TOKEN` during that deployment to push it to SquadScope, or set your own `PODCASTER_API_KEY` secret before deploying when manual handoff/rotation is required.
+If `PODCASTER_API_KEY` is absent, the deploy workflow generates a 256-bit key with OpenSSL, masks it immediately, and passes it to the ACA environment without printing it. That generated value is not recoverable from logs; use `sync_squadscope=true` with `SQUADSCOPE_SYNC_TOKEN` during that deployment to push it to both required SquadScope secret scopes, or set your own `PODCASTER_API_KEY` secret before deploying when manual handoff/rotation is required (see [Rotating `PODCASTER_API_KEY`](#rotating-podcaster_api_key)).
 
 **Manual generation:** Use a secure random generator:
 ```bash
@@ -156,7 +166,7 @@ head -c 32 /dev/urandom | base64
 **Optional secret** (only if syncing to SquadScope):
 
 ```
-SQUADSCOPE_SYNC_TOKEN=<fine-grained-PAT-with-secrets:write-and-variables:write>
+SQUADSCOPE_SYNC_TOKEN=<fine-grained-PAT-with-secrets-write-variables-write-and-environment-secret-access>
 ```
 
 **How to create `SQUADSCOPE_SYNC_TOKEN`:**
@@ -168,6 +178,7 @@ SQUADSCOPE_SYNC_TOKEN=<fine-grained-PAT-with-secrets:write-and-variables:write>
 6. **Permissions:**
    - **Secrets:** Read and write
    - **Variables:** Read and write
+   - Environment/Environments access sufficient to update secrets on `podcaster-real-generation`.
 7. Click **Generate token**.
 8. **Copy the token** and paste into the Podcaster `prod` environment's `SQUADSCOPE_SYNC_TOKEN` secret.
 9. **Store the token securely** (GitHub shows it only once).
@@ -291,12 +302,13 @@ If `SQUADSCOPE_SYNC_TOKEN` is not configured, manually set up SquadScope. Manual
 1. In **SquadScope repository settings** (`jmservera/SquadScope`):
    - Go to **Settings > Secrets and variables > Variables**.
    - Create `PODCASTER_ENDPOINT` with the endpoint from step 3 output.
-   - Create the secret `PODCASTER_API_KEY` (same value as Podcaster's secret).
+   - Create the repository secret `PODCASTER_API_KEY` (same value as Podcaster's secret) and also create the `PODCASTER_API_KEY` environment secret on environment `podcaster-real-generation` with the same value. Handoff workflows run in that environment, so its secret shadows the repository secret.
 
 2. Verify SquadScope can read the values:
    ```bash
    gh variable get PODCASTER_ENDPOINT --repo jmservera/SquadScope
    gh secret list --repo jmservera/SquadScope | grep PODCASTER_API_KEY
+   gh secret list --repo jmservera/SquadScope --env podcaster-real-generation | grep PODCASTER_API_KEY
    ```
 
 3. Test from SquadScope CI:
@@ -329,13 +341,16 @@ scripts/get-podcaster-values.sh \
 scripts/get-podcaster-values.sh --out ./podcaster-secrets.local.sh
 ```
 
-It discovers the Container Apps Job, the storage account, and the Azure OpenAI
-account (endpoint + key for TTS generation).
+It discovers the synthesis Container Apps Job, the storage account, and the Azure OpenAI
+account (endpoint + key for TTS generation). The Podcaster API key is read from
+the `podcaster-api-key` ACA secret (synthesis job, falling back to the API app),
+which requires listSecrets permission (e.g. Contributor) on those resources.
 It then prints, for review before you run them:
 
 ```bash
 gh variable set PODCASTER_ENDPOINT --repo jmservera/SquadScope --body '<generate-url>'
 gh secret set   PODCASTER_API_KEY  --repo jmservera/SquadScope --body '<api-key>'
+gh secret set   PODCASTER_API_KEY  --repo jmservera/SquadScope --env podcaster-real-generation --body '<api-key>'
 gh variable set AZURE_OPENAI_ENDPOINT --repo jmservera/SquadScope-Podcaster --body '<endpoint>'
 gh secret set   AZURE_OPENAI_API_KEY  --repo jmservera/SquadScope-Podcaster --body '<key>'
 ```
@@ -397,7 +412,54 @@ gh workflow run deploy-azure.yml \
 
 The workflow will:
 1. Deploy Podcaster (if needed).
-2. Sync `PODCASTER_ENDPOINT` variable and `PODCASTER_API_KEY` secret to SquadScope automatically. This works with either a preconfigured Podcaster secret or a key generated during the same deployment.
+2. Sync `PODCASTER_ENDPOINT` variable plus `PODCASTER_API_KEY` repository and `podcaster-real-generation` environment secrets to SquadScope automatically. This works with either a preconfigured Podcaster secret or a key generated during the same deployment.
+
+### Rotating `PODCASTER_API_KEY`
+
+The key originates as the `PODCASTER_API_KEY` secret in the GitHub `prod`
+environment. Each deploy passes it as the `@secure()` Bicep parameter
+`podcasterApiKey`, which is stored as the ACA secret **`podcaster-api-key`** on
+the API container app (`<baseName>-api`) and the synthesis job
+(`<baseName>-synth`). Their `PODCASTER_API_KEY` env var only references it via
+`secretRef`, so the value never appears in the container app/job env
+definition. Never print the key; pipe it from a file or generator.
+
+> ⚠️ Keep a stable `PODCASTER_API_KEY` secret configured in `prod`. If it is
+> absent, **every** deploy (including a Release run) silently generates a new,
+> unrecoverable key, which breaks SquadScope until it is re-synced.
+
+1. **Update the GitHub secret** (without echoing the value):
+   ```bash
+   openssl rand -hex 32 | gh secret set PODCASTER_API_KEY \
+     --repo jmservera/SquadScope-Podcaster --env prod
+   ```
+2. **Redeploy Podcaster** so the ACA secret is updated. Either:
+   - run the **Release** workflow (`release.yml`) — builds images and deploys,
+     but does **not** sync SquadScope (it does not pass `sync_squadscope`), so you must update both the SquadScope repository secret and the `podcaster-real-generation` environment secret manually afterward; or
+   - run `deploy-azure.yml` with sync enabled, which deploys and re-syncs the
+     SquadScope repository and environment secrets in the same run (requires `SQUADSCOPE_SYNC_TOKEN`):
+     ```bash
+     gh workflow run deploy-azure.yml -R jmservera/SquadScope-Podcaster \
+       --ref main -f sync_squadscope=true
+     ```
+3. **Re-sync SquadScope** (`jmservera/SquadScope` repository secret and `podcaster-real-generation` environment secret `PODCASTER_API_KEY`)
+   if step 2 did not: either run `deploy-azure.yml -f sync_squadscope=true`, or
+   run `scripts/get-podcaster-values.sh` locally (it reads the value back from
+   the `podcaster-api-key` ACA secret; needs listSecrets permission, e.g.
+   Contributor) and execute both emitted `gh secret set PODCASTER_API_KEY` lines (repository and `--env podcaster-real-generation`).
+4. **Make running replicas pick up the new value.** Jobs read secrets at each
+   execution start. The API app resolves `secretRef` at replica start: a deploy
+   that changes the image/template creates a new revision automatically; if only
+   the secret value changed, restart the active revision:
+   ```bash
+   rev=$(az containerapp show -g squadscope-podcaster -n <baseName>-api \
+     --query properties.latestRevisionName -o tsv)
+   az containerapp revision restart -g squadscope-podcaster -n <baseName>-api --revision "$rev"
+   ```
+5. **Verify** without printing the key: confirm there is no plaintext value
+   (`az containerapp show -g squadscope-podcaster -n <baseName>-api --query "properties.template.containers[0].env[?name=='PODCASTER_API_KEY']"`
+   must show `secretRef: podcaster-api-key` and no `value`), and that a
+   SquadScope → Podcaster call authenticates (no 401).
 
 ---
 
@@ -545,7 +607,7 @@ records an approved decision.
 
 ## Security Best Practices
 
-1. **Rotate API keys quarterly:** Generate a new `PODCASTER_API_KEY`, update GitHub secret, re-deploy, and sync/update SquadScope.
+1. **Rotate API keys quarterly:** follow [Rotating `PODCASTER_API_KEY`](#rotating-podcaster_api_key) (update the `prod` secret, re-deploy, re-sync both SquadScope repository and `podcaster-real-generation` environment secrets).
 2. **Monitor costs:** Check Azure Cost Management monthly to detect unexpected usage.
 3. **Enable alerts:** Set up Application Insights alerts for 5xx errors, high latency, or auth failures.
 4. **Audit logs:** Enable Azure Activity Log to track who deployed what and when.

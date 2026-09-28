@@ -27,7 +27,7 @@ import os
 import subprocess
 import tempfile
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -109,6 +109,9 @@ from podcaster.video.sync_plan import (
     removed_repo_speaker_notes,
     weekly_url_from_job_id,
 )
+from podcaster.video.youtube_reconcile import IDENTITY_DETAIL_KEY as YOUTUBE_IDENTITY_DETAIL_KEY
+from podcaster.video.youtube_reconcile import IDENTITY_SCHEME as YOUTUBE_IDENTITY_SCHEME
+from podcaster.video.youtube_reconcile import youtube_identity_tag
 
 logger = logging.getLogger("podcaster.video.job_runner")
 
@@ -1215,6 +1218,18 @@ def _ensure_video_publish_run(storage: StorageBackend, job_id: str) -> str:
     return captured["run_id"]
 
 
+def _upload_intent_details(
+    platform: str, identity: PublicationIdentity | None
+) -> dict[str, Any] | None:
+    """Declare the YouTube identity tag durably before the upload mutation (#678)."""
+    if platform != "youtube":
+        return None
+    tag = youtube_identity_tag(identity)
+    if tag is None:
+        return None
+    return {YOUTUBE_IDENTITY_DETAIL_KEY: tag, "identity_scheme": YOUTUBE_IDENTITY_SCHEME}
+
+
 def _record_video_publication(
     storage: StorageBackend,
     job_id: str,
@@ -1725,6 +1740,13 @@ def _resume_rendered_pending_distribution(
                         "verification": prior.get("verification", "none"),
                         "retry_blocked": True,
                     }
+                    if platform == "youtube":
+                        details = prior.get("details")
+                        if isinstance(details, Mapping):
+                            declared_tag = details.get(YOUTUBE_IDENTITY_DETAIL_KEY)
+                            if isinstance(declared_tag, str):
+                                published_for_attempt[key]["identity_tag"] = declared_tag
+                                published_for_attempt[key]["intent_at"] = prior.get("at")
                 elif enabled and not config.dry_run:
                     try:
                         claim = append_evidence(
@@ -1737,6 +1759,7 @@ def _resume_rendered_pending_distribution(
                             mutation_attempted=False,
                             retry_blocked=True,
                             code="mutation_intent",
+                            details=_upload_intent_details(platform, identity),
                         )
                         if claim is None:
                             published_for_attempt[key] = {
@@ -2716,6 +2739,35 @@ def run_video_generation(
                             if platform == "spotify"
                             else None,
                         }
+                        prior_details = prior.get("details")
+                        if platform == "youtube" and isinstance(prior_details, Mapping):
+                            declared_tag = prior_details.get(YOUTUBE_IDENTITY_DETAIL_KEY)
+                            if isinstance(declared_tag, str):
+                                published_for_attempt[record_key]["identity_tag"] = declared_tag
+                                published_for_attempt[record_key]["intent_at"] = prior.get("at")
+                        if (
+                            platform == "youtube"
+                            and "identity_tag" not in published_for_attempt[record_key]
+                        ):
+                            for record in reversed(evidence.get("records", [])):
+                                if not isinstance(record, Mapping):
+                                    continue
+                                if (
+                                    record.get("platform") == "youtube"
+                                    and record.get("media_kind") == "video"
+                                    and record.get("operation") == "upload_intent"
+                                ):
+                                    details = record.get("details")
+                                    if isinstance(details, Mapping):
+                                        declared_tag = details.get(YOUTUBE_IDENTITY_DETAIL_KEY)
+                                        if isinstance(declared_tag, str):
+                                            published_for_attempt[record_key]["identity_tag"] = (
+                                                declared_tag
+                                            )
+                                            published_for_attempt[record_key]["intent_at"] = (
+                                                record.get("at")
+                                            )
+                                            break
                     elif enabled and not dist_config.dry_run:
                         if platform == "spotify":
                             continue
@@ -2726,6 +2778,7 @@ def run_video_generation(
                                 platform=platform,
                                 media_kind="video",
                                 operation="upload_intent",
+                                details=_upload_intent_details(platform, publication_context),
                             )
                             if claim is None:
                                 published_for_attempt[record_key] = {
@@ -2828,6 +2881,26 @@ def run_video_generation(
                     "retry_blocked": True,
                 }
                 dist_result.status = "failed"
+            # The production callback reports persistence failures through
+            # evidence_failures instead of raising, so required YouTube delivery
+            # must fail here when its evidence was not recorded (#709 review).
+            if (
+                "youtube" in evidence_failures
+                and dist_config.youtube_required
+                and not dist_result.youtube_required_failed
+            ):
+                reconciled = (
+                    result_provider_records.get("youtube", {}).get("evidence_source")
+                    == "youtube_identity_readback"
+                )
+                dist_result.youtube_required_failed = True
+                dist_result.youtube_failure_code = (
+                    "youtube_reconcile_evidence_failed"
+                    if reconciled
+                    else "youtube_evidence_persistence_failed"
+                )
+                dist_result.youtube_failure_stage = "evidence"
+                dist_result.youtube_failure_retryable = False
             public_delivery_status = getattr(dist_result, "public_delivery_status", "pending")
             if not isinstance(public_delivery_status, str):
                 public_delivery_status = "pending"

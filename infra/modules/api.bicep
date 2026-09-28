@@ -132,6 +132,10 @@ resource apiApp 'Microsoft.App/containerApps@2025-01-01' = {
           name: 'ui-auth-secret'
           value: uiAuthSecret
         }
+        {
+          name: 'podcaster-api-key'
+          value: podcasterApiKey
+        }
       ]
       ingress: {
         external: true
@@ -178,7 +182,7 @@ resource apiApp 'Microsoft.App/containerApps@2025-01-01' = {
             }
             {
               name: 'PODCASTER_API_KEY'
-              value: podcasterApiKey
+              secretRef: 'podcaster-api-key'
             }
             {
               name: 'PODCASTER_API_PORT'

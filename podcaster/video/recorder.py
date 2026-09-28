@@ -92,6 +92,8 @@ ENV_FAKE_BROWSER = "PODCASTER_RECORDER_FAKE_BROWSER"
 #: mid-flight (RFC §8).
 ENV_CLIP_VISIBILITY_TIMEOUT = "PODCASTER_CLIP_VISIBILITY_TIMEOUT"
 DEFAULT_CLIP_VISIBILITY_TIMEOUT = 900
+ENV_RECORDER_MAX_MESSAGES = "PODCASTER_RECORDER_MAX_MESSAGES"
+DEFAULT_RECORDER_MAX_MESSAGES = 1
 ENV_RECORDER_TIMEOUT = "PODCASTER_RECORDER_TIMEOUT"
 DEFAULT_RECORDER_TIMEOUT = 900
 DEFAULT_BROWSER_HARD_LIMIT_SECONDS = 600
@@ -706,6 +708,8 @@ def record_clip(
         winner = _finalize(lambda: _read_manifest(scratch, manifest_path))
         if winner.get("media_blob_path") != content_path:
             _best_effort_delete(scratch, content_path)
+        if _manifest_is_fallback_document(winner):
+            _best_effort_delete(scratch, legacy_path)
         logger.info(
             "terminal manifest already present at write time; skipped job_id=%s clip_index=%d",
             job_id,
@@ -1099,7 +1103,8 @@ def process_clip_message(
             utcnow=utcnow,
             monotonic=monotonic,
         )
-        if failed_count >= FAILED_EXECUTION_LIMIT or remaining <= 0:
+        poison_cap_reached = message.dequeue_count >= MAX_DEQUEUE_COUNT - 1
+        if failed_count >= FAILED_EXECUTION_LIMIT or poison_cap_reached or remaining <= 0:
             outcome = write_fallback_manifest(
                 job_id,
                 clip_index,
@@ -1107,6 +1112,8 @@ def process_clip_message(
                 reason=(
                     f"failed_executions={failed_count}"
                     if failed_count >= FAILED_EXECUTION_LIMIT
+                    else f"recording failed after dequeue_count={message.dequeue_count}"
+                    if poison_cap_reached
                     else "recorder deadline reached after failed execution"
                 ),
                 timeout_seconds=parent_budget.operation_timeout(VideoStage.FALLBACK, 30),
@@ -1115,6 +1122,7 @@ def process_clip_message(
                 attempts=_load_attempts(scratch, job_id, clip_index),
                 admission_check=_remaining_finalization,
             )
+            _best_effort_delete(scratch, clip_blob_path(job_id, clip_index))
             _delete_queue_message(
                 queue,
                 message,
@@ -1167,6 +1175,10 @@ def _read_manifest(scratch: StorageBackend, path: str) -> dict[str, Any]:
     except (ValueError, UnicodeDecodeError):
         return {}
     return document if isinstance(document, dict) else {}
+
+
+def _manifest_is_fallback_document(manifest: Mapping[str, Any]) -> bool:
+    return bool(manifest.get("is_fallback", False)) or manifest.get("status") == STATUS_FALLBACK
 
 
 def _validate_media(path: Path, timeout_seconds: float) -> MediaEvidence:
@@ -1351,18 +1363,30 @@ def _visibility_timeout(env: Mapping[str, str]) -> int:
     return value if value > 0 else DEFAULT_CLIP_VISIBILITY_TIMEOUT
 
 
+def _max_messages(env: Mapping[str, str]) -> int:
+    raw = env.get(ENV_RECORDER_MAX_MESSAGES, "")
+    if not raw.strip():
+        return DEFAULT_RECORDER_MAX_MESSAGES
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return DEFAULT_RECORDER_MAX_MESSAGES
+    return value if value > 0 else DEFAULT_RECORDER_MAX_MESSAGES
+
+
 def drain(
     queue: Any,
     scratch: StorageBackend,
     *,
-    max_messages: int = 256,
+    max_messages: int | None = None,
     env: Mapping[str, str] | None = None,
 ) -> list[ClipOutcome]:
     """Process clip messages until the queue drains or *max_messages* is hit."""
     env = env if env is not None else os.environ
     visibility = _visibility_timeout(env)
+    limit = _max_messages(env) if max_messages is None else max_messages
     outcomes: list[ClipOutcome] = []
-    while len(outcomes) < max_messages:
+    while len(outcomes) < limit:
         messages = queue.receive_messages(max_messages=1, visibility_timeout=visibility)
         if not messages:
             break
@@ -1406,7 +1430,7 @@ def main(argv: list[str] | None = None) -> int:
     queue = create_clip_queue_backend()
     if queue is None:
         raise RecorderConfigError("clip queue is not configured (set PODCASTER_STORAGE_QUEUE_URL)")
-    outcomes = drain(queue, scratch, max_messages=1)
+    outcomes = drain(queue, scratch, max_messages=_max_messages(os.environ))
     logger.info("recorder drained %d clip message(s)", len(outcomes))
     return 0
 

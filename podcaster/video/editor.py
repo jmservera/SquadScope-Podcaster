@@ -38,6 +38,8 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
+import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -84,10 +86,12 @@ DEFAULT_FANIN_TIMEOUT_SECONDS = 1200
 
 #: Seconds between fan-in barrier polls.
 DEFAULT_FANIN_POLL_SECONDS = 15
+FALLBACK_CARD_TIMEOUT_SECONDS = 120
 
 #: Legacy injectable gap filler retained for callers that explicitly provide one.
 #: Production terminalization uses the hash-bound static fallback path instead.
 FillGapFn = Callable[[VideoSegment, Path, int], RecordedSegment]
+RenderFallbackClipFn = Callable[[VideoSegment, Path, int, Mapping[str, Any]], RecordedSegment]
 MediaValidator = Callable[[Path, MediaEvidence | None, float], MediaEvidence]
 
 
@@ -448,6 +452,7 @@ def assemble_recording(
     output_dir: Path,
     *,
     fill_gap: FillGapFn | None = None,
+    render_fallback_clip: RenderFallbackClipFn | None = None,
     media_validator: MediaValidator | None = None,
     validation_timeout_seconds: float = 30.0,
     budget: VideoStageBudget | None = None,
@@ -461,6 +466,8 @@ def assemble_recording(
     ``recording_insufficient``. *fill_gap* remains only as an explicit legacy/test
     injection seam; production does not use it.
     """
+    if render_fallback_clip is None:
+        render_fallback_clip = _render_terminal_fallback_clip
     if media_validator is None:
         media_validator = _validate_downloaded_media
 
@@ -587,6 +594,16 @@ def assemble_recording(
                     dest,
                     manifest,
                     media_evidence=expected_media,
+                )
+            )
+        elif manifest_exists and _manifest_is_fallback(manifest):
+            recorded.append(
+                _fill_terminal_fallback(
+                    segment,
+                    output_dir,
+                    index,
+                    manifest,
+                    render_fallback_clip,
                 )
             )
         else:
@@ -797,16 +814,127 @@ def _recorded_from_manifest(
     editor reproduces **identical** compose output; missing keys fall back to the
     ``RecordedSegment`` defaults.
     """
+    is_fallback = bool(manifest.get("is_fallback", False)) or manifest.get("status") == "fallback"
     return RecordedSegment(
         segment=segment,
         video_path=video_path,
-        is_fallback=bool(manifest.get("is_fallback", False)),
+        is_fallback=is_fallback,
         has_pages=bool(manifest.get("has_pages", False)),
         website_url=_opt_str(manifest.get("website_url")),
         is_removed=bool(manifest.get("is_removed", False)),
-        recovery_path=str(manifest.get("recovery_path", "direct")),
+        recovery_path=str(manifest.get("recovery_path", "fallback" if is_fallback else "direct")),
         media_evidence=media_evidence,
     )
+
+
+def _manifest_is_fallback(manifest: Mapping[str, Any]) -> bool:
+    return bool(manifest.get("is_fallback", False)) or manifest.get("status") == "fallback"
+
+
+def _fallback_card_text(segment: VideoSegment) -> str:
+    repo = segment.repo
+    if repo is None:
+        return segment.label or "Visual unavailable"
+    return f"{repo.owner}/{repo.name}\\ngithub.com/{repo.owner}/{repo.name}"
+
+
+def _build_fallback_card_cmd(
+    text: str,
+    duration_seconds: float,
+    output_path: Path,
+    *,
+    ffmpeg_bin: str,
+    drawtext: bool,
+) -> list[str]:
+    duration = max(float(duration_seconds), 1.0)
+    filters = ["format=yuv420p"]
+    if drawtext:
+        from podcaster.video.intro_outro import TITLE_FONT, _escape_drawtext
+
+        filters.insert(
+            0,
+            (
+                f"drawtext=fontfile={TITLE_FONT}"
+                f":text='{_escape_drawtext(text)}'"
+                ":fontsize=48:fontcolor=#c9d1d9"
+                ":line_spacing=18:x=(w-text_w)/2:y=(h-text_h)/2"
+            ),
+        )
+    return [
+        ffmpeg_bin,
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=#0d1117:size=1920x1080:rate=30",
+        "-t",
+        f"{duration:.3f}",
+        "-vf",
+        ",".join(filters),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "20",
+        "-pix_fmt",
+        "yuv420p",
+        "-an",
+        str(output_path),
+    ]
+
+
+def _render_terminal_fallback_clip(
+    segment: VideoSegment,
+    output_dir: Path,
+    clip_index: int,
+    manifest: Mapping[str, Any],
+) -> RecordedSegment:
+    """Render a local fallback card for a terminal fallback manifest.
+
+    This path intentionally avoids Playwright: a poison clip already proved the
+    site capture is unsafe to retry, so the editor must synthesize the terminal
+    fallback directly instead of re-entering browser recording during fan-in.
+    """
+    output_path = output_dir / f"clip_{clip_index:03d}_fallback.mp4"
+    try:
+        from podcaster.video.video_compose import _find_drawtext_capable_ffmpeg
+
+        drawtext_bin = _find_drawtext_capable_ffmpeg()
+    except Exception:  # pragma: no cover - drawtext detection is best effort
+        logger.debug("could not probe drawtext-capable ffmpeg", exc_info=True)
+        drawtext_bin = None
+    ffmpeg_bin = drawtext_bin or shutil.which("ffmpeg")
+    if ffmpeg_bin is None:
+        raise RuntimeError("ffmpeg is not available; cannot render terminal fallback clip")
+    cmd = _build_fallback_card_cmd(
+        _fallback_card_text(segment),
+        segment.duration_seconds,
+        output_path,
+        ffmpeg_bin=ffmpeg_bin,
+        drawtext=drawtext_bin is not None,
+    )
+    try:
+        subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=FALLBACK_CARD_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"terminal fallback card render timed out: {exc}") from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        raise RuntimeError(
+            f"terminal fallback card render failed (exit {exc.returncode}): {stderr}"
+        ) from exc
+    if not output_path.exists():
+        raise RuntimeError(f"terminal fallback card render produced no file at {output_path}")
+    return _recorded_from_manifest(segment, output_path, manifest)
 
 
 def _production_fill_gap(
@@ -823,6 +951,20 @@ def _production_fill_gap(
         is_fallback=True,
         recovery_path="fallback",
     )
+
+
+def _fill_terminal_fallback(
+    segment: VideoSegment,
+    output_dir: Path,
+    clip_index: int,
+    manifest: Mapping[str, Any],
+    render_fallback_clip: RenderFallbackClipFn,
+) -> RecordedSegment:
+    logger.warning(
+        "terminal fallback manifest for clip_index=%d has no clip; rendering local fallback card",
+        clip_index,
+    )
+    return render_fallback_clip(segment, output_dir, clip_index, manifest)
 
 
 def _iso(dt: datetime) -> str:

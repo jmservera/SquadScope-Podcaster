@@ -9,6 +9,7 @@ import pytest
 
 from podcaster.video.distribution import (
     VideoDistributionConfig,
+    YouTubeDeliveryError,
     distribute_video,
     upload_to_youtube,
     youtube_enabled_for_language,
@@ -111,7 +112,12 @@ class _InitTransport:
     """Transport that completes the resumable init then is taken over by the
     chunked uploader (which we stub via monkeypatch)."""
 
+    def __init__(self):
+        self.init_posts = 0
+
     def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+        if "uploadType=resumable" in url:
+            self.init_posts += 1
         return 200, {"location": "https://upload/session"}, b""
 
     def request(self, *a, **k):
@@ -153,12 +159,24 @@ def test_large_file_delegates_to_chunked_uploader(tmp_path, monkeypatch):
         video_url = "https://youtube.com/watch?v=vid-big"
         error = None
 
-    fake_mod.upload_video = lambda *a, **k: _Result()
+    calls: list[tuple] = []
+
+    def _fake_upload_chunked(http, session_uri, access_token, path, size, **kwargs):
+        calls.append((session_uri, access_token, size))
+        return _Result()
+
+    def _forbidden_upload_video(*a, **k):
+        raise AssertionError("upload_video would open a second resumable session (#698)")
+
+    fake_mod.upload_chunked = _fake_upload_chunked
+    fake_mod.upload_video = _forbidden_upload_video
     monkeypatch.setitem(sys.modules, "podcaster.video.youtube", fake_mod)
 
     vid_id, vid_url = upload_to_youtube(big, "t", "d", cfg, transport=_InitTransport())
     assert vid_id == "vid-big"
     assert vid_url.endswith("vid-big")
+    # The chunked uploader reuses the session opened by upload_to_youtube.
+    assert calls == [("https://upload/session", "tok", 200 * 1024 * 1024)]
 
 
 def test_large_file_without_chunked_module_returns_none(tmp_path, monkeypatch):
@@ -185,5 +203,15 @@ def test_large_file_without_chunked_module_returns_none(tmp_path, monkeypatch):
 
     monkeypatch.setitem(sys.modules, "podcaster.video.youtube", None)  # ImportError on import
 
-    vid_id, vid_url = upload_to_youtube(big, "t", "d", cfg, transport=_InitTransport())
+    transport = _InitTransport()
+    vid_id, vid_url = upload_to_youtube(big, "t", "d", cfg, transport=transport)
     assert vid_id is None and vid_url is None
+    # No session may be opened when the chunked path cannot finish it (#698).
+    assert transport.init_posts == 0
+
+    with pytest.raises(YouTubeDeliveryError) as raised:
+        upload_to_youtube(big, "t", "d", cfg, transport=transport, raise_on_failure=True)
+    assert raised.value.code == "youtube_chunked_unavailable"
+    assert raised.value.stage == "upload_chunked"
+    assert raised.value.retryable is False
+    assert transport.init_posts == 0

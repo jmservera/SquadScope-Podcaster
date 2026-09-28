@@ -427,6 +427,7 @@ module aca 'modules/aca.bicep' = {
     spotifyAllowLivePublish: spotifyAllowLivePublish
     spotifyVideoAllowLivePublish: spotifyVideoAllowLivePublish
     spotifyVideoPublishMode: spotifyVideoPublishMode
+    videoYoutubeEnabled: videoYoutubeEnabled
     deployVnet: deployVnet
     infrastructureSubnetId: deployVnet ? network.outputs.acaSubnetId : ''
   }

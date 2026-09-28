@@ -3,22 +3,26 @@
 # get-podcaster-values.sh
 #
 # Discover the deployed Podcaster Azure resources at the resource-group level and
-# emit ready-to-run `gh secret set` commands with the real resolved values.
+# emit ready-to-run `gh secret set` commands that re-read secrets locally and
+# pipe them to GitHub CLI via stdin. Secret values are never printed.
 #
 # Architecture: ACA-only (Container Apps Job + Storage + Azure OpenAI).
 # There is no Function App or public HTTP endpoint; SquadScope triggers synthesis
 # via the Storage Queue (synthesis-jobs) and the PODCASTER_API_KEY is used for
-# queue-message auth validation inside the ACA job.
+# queue-message auth validation inside the ACA job. The key is read back from the
+# "podcaster-api-key" ACA secret (never from a plaintext env value).
 #
 # The operator only needs to provide a resource group name (defaults to the
 # deployed `squadscope-podcaster`); everything else is discovered via `az`.
 #
 # SAFETY
-#   * This is a LOCAL operator tool. It prints the `gh secret set` commands —
-#     including secret values — to the terminal only.
+#   * This is a LOCAL operator tool. It prints ready-to-run `gh secret set`
+#     commands, but never embeds resolved secret values in those commands.
 #   * It NEVER writes secret values to a committed file, a CI log, or
-#     $GITHUB_OUTPUT. When it detects a CI environment it refuses to print
-#     resolved secret values unless --force-ci is passed.
+#     $GITHUB_OUTPUT. When it detects a CI environment it refuses to run unless
+#     --force-ci is passed.
+#   * SquadScope also has an environment-scoped PODCASTER_API_KEY secret in
+#     podcaster-real-generation; handoff workflows run there, so update both.
 #   * Use --out <file> to write the commands to a local gitignored path instead
 #     of stdout when that is more convenient.
 #
@@ -29,6 +33,7 @@
 #   -g, --resource-group <name>   Azure resource group (default: squadscope-podcaster)
 #       --squadscope-repo <o/r>   SquadScope repo for caller secrets (default: jmservera/SquadScope)
 #       --podcaster-repo <o/r>    Podcaster repo for service secrets (default: jmservera/SquadScope-Podcaster)
+#       --squadscope-env <name>   SquadScope environment secret to update (default: podcaster-real-generation)
 #       --out <file>              Write commands to <file> instead of stdout (gitignored path recommended)
 #       --force-ci                Allow running in a CI environment (NOT recommended)
 #   -h, --help                    Show this help and exit
@@ -38,11 +43,17 @@ set -euo pipefail
 RESOURCE_GROUP="squadscope-podcaster"
 SQUADSCOPE_REPO="jmservera/SquadScope"
 PODCASTER_REPO="jmservera/SquadScope-Podcaster"
+SQUADSCOPE_ENV="podcaster-real-generation"
 OUT_FILE=""
 FORCE_CI=0
 
 err() { printf 'ERROR: %s\n' "$*" >&2; }
 die() { err "$*"; exit 1; }
+
+shell_quote() {
+  printf '%q' "$1"
+}
+
 
 usage() {
   sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
@@ -53,6 +64,7 @@ while [ $# -gt 0 ]; do
     -g|--resource-group) RESOURCE_GROUP="${2:?--resource-group requires a value}"; shift 2;;
     --squadscope-repo) SQUADSCOPE_REPO="${2:?--squadscope-repo requires a value}"; shift 2;;
     --podcaster-repo) PODCASTER_REPO="${2:?--podcaster-repo requires a value}"; shift 2;;
+    --squadscope-env) SQUADSCOPE_ENV="${2:?--squadscope-env requires a value}"; shift 2;;
     --out) OUT_FILE="${2:?--out requires a value}"; shift 2;;
     --force-ci) FORCE_CI=1; shift;;
     -h|--help) usage; exit 0;;
@@ -63,7 +75,7 @@ done
 # Refuse to leak secret values into CI logs / GitHub outputs.
 if [ "${CI:-}" = "true" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
   if [ "$FORCE_CI" -ne 1 ]; then
-    die "Refusing to run in CI: this tool prints secret values to the terminal. Run it locally, or pass --force-ci if you really know what you are doing."
+    die "Refusing to run in CI: this tool reads secret values while generating local operator commands. Run it locally, or pass --force-ci if you really know what you are doing."
   fi
 fi
 
@@ -103,35 +115,89 @@ if [ -z "$OPENAI_ACCOUNT_NAME" ]; then
 fi
 OPENAI_ENDPOINT=""
 OPENAI_API_KEY=""
+OPENAI_API_KEY_SOURCE_READY=0
 if [ -n "$OPENAI_ACCOUNT_NAME" ]; then
   OPENAI_ENDPOINT="$(az_query "properties.endpoint" \
     cognitiveservices account show --resource-group "$RESOURCE_GROUP" --name "$OPENAI_ACCOUNT_NAME")"
   OPENAI_API_KEY="$(az_query "key1" \
     cognitiveservices account keys list --resource-group "$RESOURCE_GROUP" --name "$OPENAI_ACCOUNT_NAME")"
+  if [ -n "$OPENAI_API_KEY" ]; then
+    OPENAI_API_KEY_SOURCE_READY=1
+  fi
 else
   err "No Azure OpenAI / Cognitive Services account found in '$RESOURCE_GROUP' (skipping OpenAI secrets)."
 fi
 
 # --- Container Apps Job (synthesis) -----------------------------------------
-ACA_JOB_NAME="$(az_query "[0].name" containerapp job list --resource-group "$RESOURCE_GROUP" 2>/dev/null)"
+# Several jobs share the resource group (synthesis, video, recorder); prefer the
+# synthesis job (named "<baseName>-synth"), which owns the podcaster-api-key secret.
+ACA_JOB_NAME="$(az_query "[?ends_with(name, '-synth')].name | [0]" containerapp job list --resource-group "$RESOURCE_GROUP" 2>/dev/null)"
+if [ -z "$ACA_JOB_NAME" ]; then
+  ACA_JOB_NAME="$(az_query "[0].name" containerapp job list --resource-group "$RESOURCE_GROUP" 2>/dev/null)"
+fi
 if [ -z "$ACA_JOB_NAME" ]; then
   err "No Container Apps Job found in '$RESOURCE_GROUP' (continuing)."
 fi
 
-# --- Podcaster API key (read from ACA job env if available) -----------------
+# --- Podcaster API key (read from the ACA secret, never from plaintext env) --
+# The key is stored as the ACA secret "podcaster-api-key" on the synthesis job
+# and the API container app; env vars only reference it via secretRef.
+# Reading secret values requires listSecrets permission (e.g. Contributor).
+PODCASTER_API_KEY_SECRET_NAME="podcaster-api-key"
 PODCASTER_API_KEY=""
+PODCASTER_API_KEY_SOURCE=""
+ACA_API_APP_NAME=""
 if [ -n "$ACA_JOB_NAME" ]; then
-  PODCASTER_API_KEY="$(az containerapp job show \
+  PODCASTER_API_KEY="$(az containerapp job secret show \
     --resource-group "$RESOURCE_GROUP" --name "$ACA_JOB_NAME" \
-    --query "properties.template.containers[0].env[?name=='PODCASTER_API_KEY'].value | [0]" \
-    --output tsv 2>/dev/null || true)"
+    --secret-name "$PODCASTER_API_KEY_SECRET_NAME" \
+    --query "value" --output tsv 2>/dev/null || true)"
+  if [ -n "$PODCASTER_API_KEY" ]; then
+    PODCASTER_API_KEY_SOURCE="job"
+  fi
 fi
 if [ -z "$PODCASTER_API_KEY" ]; then
-  err "Could not discover PODCASTER_API_KEY from ACA job env. It is set during deployment from the GitHub secret."
-  err "If you need to rotate it, update the PODCASTER_API_KEY secret in the 'prod' environment and re-deploy."
+  ACA_API_APP_NAME="$(az_query "[?ends_with(name, '-api')].name | [0]" containerapp list --resource-group "$RESOURCE_GROUP" 2>/dev/null)"
+  if [ -n "$ACA_API_APP_NAME" ]; then
+    PODCASTER_API_KEY="$(az containerapp secret show \
+      --resource-group "$RESOURCE_GROUP" --name "$ACA_API_APP_NAME" \
+      --secret-name "$PODCASTER_API_KEY_SECRET_NAME" \
+      --query "value" --output tsv 2>/dev/null || true)"
+    if [ -n "$PODCASTER_API_KEY" ]; then
+      PODCASTER_API_KEY_SOURCE="api_app"
+    fi
+  fi
+fi
+if [ -z "$PODCASTER_API_KEY" ]; then
+  err "Could not read the '$PODCASTER_API_KEY_SECRET_NAME' ACA secret from the synthesis job or API app."
+  err "Check that the current infra is deployed and that you have listSecrets permission (e.g. Contributor)."
+  err "The key originates from the PODCASTER_API_KEY secret in the GitHub 'prod' environment; to rotate it, see docs/AZURE-DEPLOYMENT.md."
 fi
 
 # --- Emit gh secret set commands -------------------------------------------
+podcaster_api_key_command() {
+  case "$PODCASTER_API_KEY_SOURCE" in
+    job)
+      printf 'az containerapp job secret show --resource-group %s --name %s --secret-name %s --query value --output tsv' \
+        "$(shell_quote "$RESOURCE_GROUP")" \
+        "$(shell_quote "$ACA_JOB_NAME")" \
+        "$(shell_quote "$PODCASTER_API_KEY_SECRET_NAME")"
+      ;;
+    api_app)
+      printf 'az containerapp secret show --resource-group %s --name %s --secret-name %s --query value --output tsv' \
+        "$(shell_quote "$RESOURCE_GROUP")" \
+        "$(shell_quote "$ACA_API_APP_NAME")" \
+        "$(shell_quote "$PODCASTER_API_KEY_SECRET_NAME")"
+      ;;
+  esac
+}
+
+openai_api_key_command() {
+  printf 'az cognitiveservices account keys list --resource-group %s --name %s --query key1 --output tsv' \
+    "$(shell_quote "$RESOURCE_GROUP")" \
+    "$(shell_quote "$OPENAI_ACCOUNT_NAME")"
+}
+
 emit() {
   cat <<EMIT
 # ---------------------------------------------------------------------------
@@ -142,30 +208,38 @@ emit() {
 #   ACA Job:         ${ACA_JOB_NAME:-<none>}
 #
 # Review each command, then run it from a trusted local shell with the GitHub
-# CLI authenticated (gh auth status). Values below are REAL secrets.
+# CLI authenticated (gh auth status). Secret values are piped via stdin and are
+# never embedded in the emitted commands.
 # ---------------------------------------------------------------------------
 EMIT
 
   if [ -n "$PODCASTER_API_KEY" ]; then
+    local podcaster_key_cmd
+    podcaster_key_cmd="$(podcaster_api_key_command)"
     cat <<EMIT
 
 # SquadScope caller secrets (repo: ${SQUADSCOPE_REPO}) — matches docs/integration-contract.md
-gh secret set PODCASTER_API_KEY --repo ${SQUADSCOPE_REPO} --body '${PODCASTER_API_KEY}'
+# Update both scopes: deploy-site.yml reads the repository secret, while handoff
+# workflows run in ${SQUADSCOPE_ENV} where environment secrets shadow repo secrets.
+${podcaster_key_cmd} | gh secret set PODCASTER_API_KEY --repo $(shell_quote "$SQUADSCOPE_REPO")
+${podcaster_key_cmd} | gh secret set PODCASTER_API_KEY --repo $(shell_quote "$SQUADSCOPE_REPO") --env $(shell_quote "$SQUADSCOPE_ENV")
 EMIT
   fi
 
   if [ -n "$STORAGE_QUEUE_ENDPOINT" ]; then
     cat <<EMIT
-gh variable set PODCASTER_QUEUE_ENDPOINT --repo ${SQUADSCOPE_REPO} --body '${STORAGE_QUEUE_ENDPOINT}'
+gh variable set PODCASTER_QUEUE_ENDPOINT --repo $(shell_quote "$SQUADSCOPE_REPO") --body $(shell_quote "$STORAGE_QUEUE_ENDPOINT")
 EMIT
   fi
 
-  if [ -n "$OPENAI_ENDPOINT" ] && [ -n "$OPENAI_API_KEY" ]; then
+  if [ -n "$OPENAI_ENDPOINT" ] && [ "$OPENAI_API_KEY_SOURCE_READY" -eq 1 ]; then
+    local openai_key_cmd
+    openai_key_cmd="$(openai_api_key_command)"
     cat <<EMIT
 
 # Podcaster service secrets (repo: ${PODCASTER_REPO}) — Azure OpenAI for synthesis
-gh variable set AZURE_OPENAI_ENDPOINT --repo ${PODCASTER_REPO} --body '${OPENAI_ENDPOINT}'
-gh secret set AZURE_OPENAI_API_KEY --repo ${PODCASTER_REPO} --body '${OPENAI_API_KEY}'
+gh variable set AZURE_OPENAI_ENDPOINT --repo $(shell_quote "$PODCASTER_REPO") --body $(shell_quote "$OPENAI_ENDPOINT")
+${openai_key_cmd} | gh secret set AZURE_OPENAI_API_KEY --repo $(shell_quote "$PODCASTER_REPO")
 EMIT
   fi
 }
@@ -173,7 +247,7 @@ EMIT
 if [ -n "$OUT_FILE" ]; then
   ( umask 077; emit > "$OUT_FILE" )
   printf 'Wrote gh secret set commands to: %s\n' "$OUT_FILE" >&2
-  printf 'This file contains REAL secret values — keep it out of git and delete it when done.\n' >&2
+  printf 'This file contains ready-to-run local commands — review it, keep it out of git, and delete it when done.\n' >&2
 else
   emit
 fi

@@ -16,7 +16,15 @@ from urllib.error import HTTPError
 import pytest
 
 from podcaster import ssrf
-from podcaster.publication_state import PublicationIdentity, append_evidence
+from podcaster.publication_state import (
+    CreateSafetyState,
+    ProviderSnapshot,
+    PublicationIdentity,
+    SnapshotEvidenceSource,
+    append_evidence,
+    latest_outcomes,
+    read_evidence,
+)
 from podcaster.queue import QueueMessage
 from podcaster.video.budget import TimingEvidenceKind, VideoStage, VideoStageBudget
 from podcaster.video.clipset import Clipset, clipset_blob_path
@@ -1793,10 +1801,12 @@ class TestRunVideoGeneration:
             mutation_attempted=False,
             retry_blocked=False,
             code="mutation_intent",
-            details={
-                "pre_create_episode_ids": [555],
-                "pre_create_snapshot_complete": True,
-            },
+            create_safety_state=CreateSafetyState.reconciliation_backed(
+                ProviderSnapshot.complete(
+                    [555],
+                    evidence_source=SnapshotEvidenceSource.LEGACY_PRE_CREATE_SNAPSHOT,
+                )
+            ),
         )
         mock_record.return_value = MagicMock(recorded=[])
         mock_compose.side_effect = lambda *args, output_path=None, **kwargs: (
@@ -1935,6 +1945,69 @@ class TestRunVideoGeneration:
             "spotify_rss",
         }
 
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_youtube_intent_declares_identity_tag_for_redelivery_reconcile(
+        self, mock_compose, mock_record, mock_distribute, storage
+    ):
+        from podcaster.video.youtube_reconcile import youtube_identity_tag
+
+        job_id = "video-youtube-identity"
+        identity = PublicationIdentity(job_id, "2026-W37", "123", "a" * 64, "b" * 64)
+        storage.set_manifest(
+            job_id,
+            {
+                "job_id": job_id,
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {
+                    "article_title": "Identity",
+                    "week": identity.week,
+                    "publish_run_id": identity.publish_run_id,
+                    "article_sha256": identity.article_sha256,
+                    "manifest_sha256": identity.manifest_sha256,
+                    "publication_identity_mode": "canonical",
+                },
+                "lifecycle": {"transitions": [{"to": "accepted"}]},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = lambda *args, output_path=None, **kwargs: (
+            output_path.write_bytes(b"\x00" * 2048),
+            MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
+            ),
+        )[1]
+        mock_distribute.return_value = DistributionResult(status="failed")
+        config = VideoDistributionConfig(
+            youtube_enabled=True, blob_archive_enabled=False, dry_run=False
+        )
+
+        run_video_generation(job_id, storage, config=config, media_probe=_p04_probe)
+
+        expected_tag = youtube_identity_tag(
+            mock_distribute.call_args.kwargs["publication_identity_context"]
+        )
+        assert expected_tag is not None
+        intent = latest_outcomes(read_evidence(storage, job_id))["youtube:video"]
+        assert intent["operation"] == "upload_intent"
+        assert intent["details"]["youtube_identity_tag"] == expected_tag
+        assert "identity_tag" not in mock_distribute.call_args.kwargs["published"].get(
+            "youtube", {}
+        )
+
+        run_video_generation(job_id, storage, config=config, media_probe=_p04_probe)
+
+        prior = mock_distribute.call_args.kwargs["published"]["youtube"]
+        assert prior["outcome"] == "publication_unknown"
+        assert prior.get("video_id") is None
+        assert prior["identity_tag"] == expected_tag
+        assert prior["intent_at"] == intent["at"]
+
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
     def test_spotify_video_publish_persists_create_before_upload(
@@ -1980,6 +2053,7 @@ class TestRunVideoGeneration:
         monkeypatch.setenv("SP_KEY", "key")
         monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
         monkeypatch.setenv("SPOTIFY_PUBLISH_DRY_RUN", "false")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE", "1")
         monkeypatch.setattr(pub, "_build_session", lambda *args: MagicMock())
         monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
         create = MagicMock(return_value=777)
@@ -2025,13 +2099,146 @@ class TestRunVideoGeneration:
         evidence = read_evidence(storage, job_id)
         operations = [record["operation"] for record in evidence["records"]]
         assert operations == [
-            "create_episode_intent",
-            "create_episode",
+            "unreconciled_create_intent",
+            "unreconciled_create",
             "distribution",
         ]
         assert evidence["records"][0]["mutation_attempted"] is False
+        assert evidence["records"][0]["details"]["create_provenance"] == "blind_unreconciled"
         assert evidence["records"][1]["provider_artifact_id"] == "777"
         assert evidence["records"][2]["provider_artifact_id"] == "777"
+
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_spotify_video_credential_rejection_resolves_reconciled_create_intent(
+        self, mock_compose, mock_record, storage, monkeypatch
+    ):
+        import podcaster.publish as pub
+        from podcaster.publication_state import PublicationIdentity, append_evidence, read_evidence
+
+        job_id = "video-spotify-credential-retry"
+        identity = PublicationIdentity(job_id, "2026-W37", "123", "a" * 64, "b" * 64)
+        storage.set_manifest(
+            job_id,
+            {
+                "job_id": job_id,
+                "generation": {
+                    "validation": {"duration_seconds": 60.0},
+                    "publish_result": {"anchor_id": 555},
+                },
+                "request": {
+                    "article_title": "Credential retry",
+                    "week": identity.week,
+                    "publish_run_id": identity.publish_run_id,
+                    "article_sha256": identity.article_sha256,
+                    "manifest_sha256": identity.manifest_sha256,
+                    "publication_identity_mode": "canonical",
+                },
+                "lifecycle": {"transitions": [{"to": "accepted"}]},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        append_evidence(
+            storage,
+            identity,
+            platform="spotify",
+            media_kind="video",
+            operation="create_episode_intent",
+            outcome="publication_unknown",
+            mutation_attempted=False,
+            retry_blocked=False,
+            code="mutation_intent",
+            create_safety_state=CreateSafetyState.reconciliation_backed(
+                ProviderSnapshot.complete(
+                    [555],
+                    evidence_source=SnapshotEvidenceSource.LEGACY_PRE_CREATE_SNAPSHOT,
+                )
+            ),
+        )
+        append_evidence(
+            storage,
+            identity,
+            platform="spotify",
+            media_kind="video",
+            operation="create_episode_failure",
+            outcome="manual_handoff_required",
+            mutation_attempted=False,
+            retry_blocked=False,
+            code="credentials_expired",
+        )
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = lambda *args, output_path=None, **kwargs: (
+            output_path.write_bytes(b"\x00" * 2048),
+            MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
+            ),
+        )[1]
+
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "corrected-dc")
+        monkeypatch.setenv("SP_KEY", "corrected-key")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE", "1")
+        monkeypatch.setattr(pub, "_build_session", lambda *args: MagicMock())
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
+        create = MagicMock(return_value=777)
+        monkeypatch.setattr(pub, "_create_episode", create)
+        monkeypatch.setattr(
+            pub,
+            "_get_upload_url",
+            lambda *args, **kwargs: ([{"partNumber": 1, "url": "https://gcs/part"}], "up1"),
+        )
+        monkeypatch.setattr(
+            pub,
+            "_upload_video_multipart",
+            lambda *args, **kwargs: [{"partNumber": 1, "etag": "e1"}],
+        )
+        monkeypatch.setattr(pub, "_process_upload", lambda *args, **kwargs: None)
+        monkeypatch.setattr(pub, "_set_metadata", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            pub,
+            "promote_spotify_video_draft",
+            MagicMock(
+                return_value=pub.VideoPromoteResult(
+                    anchor_episode_id=777,
+                    audio_anchor_id=555,
+                    terminal_state="published",
+                    is_published=True,
+                    authorized=True,
+                )
+            ),
+        )
+
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=VideoDistributionConfig(
+                spotify_upload_enabled=True,
+                blob_archive_enabled=False,
+                dry_run=False,
+            ),
+            media_probe=_p04_probe,
+        )
+
+        # #693 under the redesign: a definite credential rejection of the create
+        # means no draft exists, so it resolves even a reconciliation-backed
+        # intent and re-arms exactly one retry-authorized create. (Formerly
+        # ``..._does_not_override_unresolved_create``, which encoded the lost
+        # re-arm.) A fresh RECONCILE=0 create without the override still fails
+        # closed; see the unreconciled override tests.
+        assert outcome.status == STATUS_COMPLETED
+        evidence = read_evidence(storage, job_id)
+        records = evidence["records"]
+        assert [record["operation"] for record in records[:3]] == [
+            "create_episode_intent",
+            "create_episode_failure",
+            "create_episode_intent",
+        ]
+        assert records[2]["details"]["create_provenance"] == "upload_dispatch"
+        assert records[3]["provider_artifact_id"] == "777"
 
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
@@ -2363,6 +2570,88 @@ class TestRunVideoGeneration:
         assert state["status"] == STATUS_FAILED
         assert state["reason"] == REASON_REQUIRED_YOUTUBE_FAILURE
         assert state["distribution"]["youtube_oauth_error_subtype"] == "invalid_rapt"
+
+    @pytest.mark.parametrize(
+        ("evidence_source", "code"),
+        [
+            ("youtube_identity_readback", "youtube_reconcile_evidence_failed"),
+            ("youtube_upload_response", "youtube_evidence_persistence_failed"),
+        ],
+    )
+    @patch("podcaster.video.job_runner._record_video_publication", return_value=False)
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_required_youtube_evidence_failure_fails_required_delivery(
+        self,
+        mock_compose,
+        mock_record,
+        mock_distribute,
+        _mock_record_publication,
+        storage,
+        evidence_source,
+        code,
+    ):
+        """A non-raising evidence-persistence failure still fails required YouTube (#709)."""
+        job_id = f"video-required-youtube-evidence-{code}"
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {"article_title": "Test Episode"},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = lambda *a, output_path=None, **k: (
+            output_path.write_bytes(b"\x00" * 2048) if output_path else None,
+            MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
+            ),
+        )[1]
+
+        def fake_distribute(*args, on_published=None, **kwargs):
+            on_published("youtube", {"status": "published", "video_id": "vid-1"})
+            return DistributionResult(
+                status="completed",
+                youtube_id="vid-1",
+                provider_outcomes={"youtube": "draft_created"},
+                provider_records={
+                    "youtube": {
+                        "provider": "youtube",
+                        "provider_id": "vid-1",
+                        "evidence_source": evidence_source,
+                        "retry_blocked": True,
+                    }
+                },
+            )
+
+        mock_distribute.side_effect = fake_distribute
+
+        with pytest.raises(PermanentVideoError, match="required YouTube delivery failed"):
+            run_video_generation(
+                job_id,
+                storage,
+                config=VideoDistributionConfig(
+                    youtube_enabled=True,
+                    youtube_required=True,
+                    blob_archive_enabled=False,
+                    dry_run=False,
+                ),
+                media_probe=_p04_probe,
+            )
+        manifest = json.loads(storage.get_bytes(manifest_path(job_id)).decode())
+        state = manifest["generation"]["video_runner"]
+        assert state["status"] == STATUS_FAILED
+        assert state["reason"] == REASON_REQUIRED_YOUTUBE_FAILURE
+        distribution = state["distribution"]
+        assert distribution["youtube_failure_code"] == code
+        assert distribution["youtube_failure_retryable"] is False
+        assert distribution["provider_outcomes"]["youtube"] == "publication_unknown"
+        assert distribution["provider_records"]["youtube"]["retry_blocked"] is True
 
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
