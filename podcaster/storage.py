@@ -161,7 +161,7 @@ class LocalStorageBackend:
         )
 
     def blob_exists(self, path: str) -> bool:
-        return _safe_local_blob_path(self.root, _safe_blob_path(path)).exists()
+        return self.get_bytes(path) is not None
 
     def blob_size(self, path: str) -> int | None:
         target = _safe_local_blob_path(self.root, _safe_blob_path(path))

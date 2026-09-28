@@ -105,18 +105,24 @@ def _resolve_publish_media_path(path: Path, label: str) -> Path:
     raise ValueError(f"{label} file must be under an approved media root")
 
 
-def _nonempty_publish_media_file(path: Path, label: str) -> Path:
+def _publish_media_file_exists(candidate: Path) -> bool:
+    try:
+        names = set(os.listdir(candidate.parent))
+    except FileNotFoundError:
+        return False
+    return candidate.name in names
+
+
+def _existing_publish_media_file(path: Path, label: str) -> Path:
     candidate = _resolve_publish_media_path(path, label)
-    if not candidate.exists() or candidate.stat().st_size == 0:
-        raise FileNotFoundError(f"{label} file not found or empty: {candidate.name}")
+    if not _publish_media_file_exists(candidate):
+        raise FileNotFoundError(f"{label} file not found: {candidate.name}")
     return candidate
 
 
-def _optional_nonempty_publish_media_file(path: Path, label: str) -> Path | None:
+def _optional_existing_publish_media_file(path: Path, label: str) -> Path | None:
     candidate = _resolve_publish_media_path(path, label)
-    if candidate.exists() and candidate.stat().st_size > 0:
-        return candidate
-    return None
+    return candidate if _publish_media_file_exists(candidate) else None
 
 
 _SPOTIFY_CREATORS_GRAPHQL_URL = "https://creators-graph.spotify.com/v2/graph-pq"
@@ -3001,6 +3007,10 @@ def upload_video_to_episode(
         _warn_live_publish_downgraded_once()
         publish_behavior = "draft"
         publish_on = None
+    try:
+        video_path = _existing_publish_media_file(video_path, "Video")
+    except (FileNotFoundError, ValueError) as exc:
+        return PublishResult(status="failed", error=str(exc))
     identity_title = title.strip() if isinstance(title, str) else ""
     if not identity_title:
         return PublishResult(
@@ -3033,11 +3043,6 @@ def upload_video_to_episode(
                 "audio_anchor_id": anchor_id,
             },
         )
-
-    try:
-        video_path = _nonempty_publish_media_file(video_path, "Video")
-    except (FileNotFoundError, ValueError) as exc:
-        return PublishResult(status="failed", error=str(exc))
 
     video_anchor_id: int | None = None
     create_resolved = False
@@ -4029,13 +4034,12 @@ def publish_episode(
     video_path: Path | None = None
     if mp3_path is not None:
         candidate_mp4 = mp3_path.parent / (mp3_path.stem + ".mp4")
-        candidate_video = _optional_nonempty_publish_media_file(candidate_mp4, "MP4")
+        candidate_video = _optional_existing_publish_media_file(candidate_mp4, "MP4")
         if candidate_video is not None:
             video_path = candidate_video
             logger.info(
-                "Video artifact found (%s, %.1f MB) — preferring MP4 for Spotify upload.",
+                "Video artifact found (%s) — preferring MP4 for Spotify upload.",
                 video_path.name,
-                video_path.stat().st_size / 1_048_576,
             )
 
     if video_path is not None:
@@ -4098,7 +4102,7 @@ def publish_episode(
     if upload_path is None:
         return PublishResult(status="failed", error=f"{format_label} file not found")
     try:
-        upload_path = _nonempty_publish_media_file(upload_path, format_label)
+        upload_path = _existing_publish_media_file(upload_path, format_label)
     except (FileNotFoundError, ValueError) as exc:
         return PublishResult(status="failed", error=str(exc))
 
