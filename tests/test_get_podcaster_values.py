@@ -2,13 +2,14 @@
 
 The script shells out to the Azure CLI (`az`). These tests put a fake `az` on
 PATH that returns canned resource-group data, then assert the script emits the
-correct `gh secret set` commands with the discovered values — without contacting
-Azure and without leaking secrets into CI outputs.
+correct `gh secret set` commands without embedding discovered secret values —
+without contacting Azure and without leaking secrets into CI outputs.
 """
 
 from __future__ import annotations
 
 import os
+import shlex
 import stat
 import subprocess
 from pathlib import Path
@@ -55,7 +56,8 @@ FAKE_AZ = (
     '    [ "$query" = "properties.endpoint" ] && echo '
     '"https://podcaster-fake-openai.openai.azure.com/"; exit 0;;\n'
     '  "cognitiveservices account keys")\n'
-    '    [ "$query" = "key1" ] && echo "fake-openai-key-xyz789"; exit 0;;\n'
+    '    [ "$query" = "key1" ] && '
+    "printf '%s\\n' \"fake-openai-key-xyz789'; echo openai-pwned; #\"; exit 0;;\n"
     '  "containerapp job list")\n'
     """    if [ "$query" = "[?ends_with(name, '-synth')].name | [0]" ]; then """
     'echo "podcaster-fake-synth"; fi\n'
@@ -65,7 +67,7 @@ FAKE_AZ = (
     '[ "${FAKE_AZ_JOB_SECRET:-1}" = "1" ]; then\n'
     '      case " $* " in\n'
     '        *" --name podcaster-fake-synth"*" --secret-name podcaster-api-key "*)\n'
-    '          echo "fake-podcaster-key-abc123";;\n'
+    "          printf '%s\\n' \"fake-podcaster-key-abc123'; echo podcaster-pwned; #\";;\n"
     "      esac\n"
     "    fi\n"
     "    exit 0;;\n"
@@ -75,7 +77,8 @@ FAKE_AZ = (
     '  "containerapp secret show")\n'
     '    case " $* " in\n'
     '      *" --name podcaster-fake-api"*" --secret-name podcaster-api-key "*)\n'
-    '        [ "$query" = "value" ] && echo "fake-podcaster-api-app-key";;\n'
+    '        [ "$query" = "value" ] && '
+    "printf '%s\\n' \"fake-podcaster-api-app-key'; echo api-app-pwned; #\";;\n"
     "    esac\n"
     "    exit 0;;\n"
     '  "containerapp job show")\n'
@@ -110,13 +113,26 @@ def _run(tmp_path: Path, *args: str):
     )
 
 
-def test_emits_squadscope_caller_secret_commands(tmp_path: Path) -> None:
+def test_emits_squadscope_caller_secret_commands_without_inline_secret(
+    tmp_path: Path,
+) -> None:
     result = _run(tmp_path)
     assert result.returncode == 0, result.stderr
     out = result.stdout
+    assert "fake-podcaster-key-abc123" not in out
+    assert "podcaster-pwned" not in out
+    assert "--body 'fake-podcaster-key-abc123" not in out
     assert (
-        "gh secret set PODCASTER_API_KEY --repo jmservera/SquadScope "
-        "--body 'fake-podcaster-key-abc123'"
+        "az containerapp job secret show --resource-group squadscope-podcaster "
+        "--name podcaster-fake-synth --secret-name podcaster-api-key "
+        "--query value --output tsv | gh secret set PODCASTER_API_KEY "
+        "--repo jmservera/SquadScope"
+    ) in out
+    assert (
+        "az containerapp job secret show --resource-group squadscope-podcaster "
+        "--name podcaster-fake-synth --secret-name podcaster-api-key "
+        "--query value --output tsv | gh secret set PODCASTER_API_KEY "
+        "--repo jmservera/SquadScope --env podcaster-real-generation"
     ) in out
 
 
@@ -126,11 +142,15 @@ def test_emits_azure_openai_secret_commands(tmp_path: Path) -> None:
     out = result.stdout
     assert (
         "gh variable set AZURE_OPENAI_ENDPOINT --repo jmservera/SquadScope-Podcaster "
-        "--body 'https://podcaster-fake-openai.openai.azure.com/'"
+        "--body https://podcaster-fake-openai.openai.azure.com/"
     ) in out
+    assert "fake-openai-key-xyz789" not in out
+    assert "openai-pwned" not in out
     assert (
-        "gh secret set AZURE_OPENAI_API_KEY --repo jmservera/SquadScope-Podcaster "
-        "--body 'fake-openai-key-xyz789'"
+        "az cognitiveservices account keys list --resource-group squadscope-podcaster "
+        "--name podcaster-fake-openai --query key1 --output tsv "
+        "| gh secret set AZURE_OPENAI_API_KEY "
+        "--repo jmservera/SquadScope-Podcaster"
     ) in out
 
 
@@ -140,37 +160,69 @@ def test_emits_queue_endpoint_variable(tmp_path: Path) -> None:
     out = result.stdout
     assert (
         "gh variable set PODCASTER_QUEUE_ENDPOINT --repo jmservera/SquadScope "
-        "--body 'https://podcasterfakestg.queue.core.windows.net/'"
+        "--body https://podcasterfakestg.queue.core.windows.net/"
     ) in out
 
 
-def test_custom_repos_and_resource_group(tmp_path: Path) -> None:
+def _option_value(args: list[str], option: str) -> str:
+    return args[args.index(option) + 1]
+
+
+def test_custom_repos_and_resource_group_are_shell_quoted(tmp_path: Path) -> None:
+    resource_group = "my rg'; echo rg-pwned"
+    squadscope_repo = "acme/Scope Repo; echo scope-pwned"
+    podcaster_repo = "acme/Pod Repo; echo pod-pwned"
     result = _run(
         tmp_path,
         "--resource-group",
-        "my-rg",
+        resource_group,
         "--squadscope-repo",
-        "acme/Scope",
+        squadscope_repo,
         "--podcaster-repo",
-        "acme/Pod",
+        podcaster_repo,
     )
     assert result.returncode == 0, result.stderr
-    out = result.stdout
-    assert "Discovered in resource group: my-rg" in out
-    assert "--repo acme/Scope --body" in out
-    assert "--repo acme/Pod --body" in out
+
+    lines = result.stdout.splitlines()
+    podcaster_secret = next(line for line in lines if "gh secret set PODCASTER_API_KEY" in line)
+    az_part, gh_part = podcaster_secret.split(" | ", maxsplit=1)
+    az_args = shlex.split(az_part)
+    gh_args = shlex.split(gh_part)
+    assert _option_value(az_args, "--resource-group") == resource_group
+    assert _option_value(gh_args, "--repo") == squadscope_repo
+
+    openai_variable = next(
+        line for line in lines if "gh variable set AZURE_OPENAI_ENDPOINT" in line
+    )
+    assert _option_value(shlex.split(openai_variable), "--repo") == podcaster_repo
+
+
+def test_custom_squadscope_environment(tmp_path: Path) -> None:
+    env_name = "prod handoff'; echo bad"
+    result = _run(tmp_path, "--squadscope-env", env_name)
+    assert result.returncode == 0, result.stderr
+    assert "fake-podcaster-key-abc123" not in result.stdout
+    env_secret = next(
+        line
+        for line in result.stdout.splitlines()
+        if "gh secret set PODCASTER_API_KEY" in line and " --env " in line
+    )
+    _, gh_part = env_secret.split(" | ", maxsplit=1)
+    assert _option_value(shlex.split(gh_part), "--env") == env_name
 
 
 def test_out_file_keeps_secrets_off_stdout(tmp_path: Path) -> None:
     out_file = tmp_path / "secrets.sh"
     result = _run(tmp_path, "--out", str(out_file))
     assert result.returncode == 0, result.stderr
-    # Secret values must not appear on stdout when --out is used.
+    # Secret values must not appear on stdout or in the generated command file.
     assert "fake-podcaster-key-abc123" not in result.stdout
     assert "fake-openai-key-xyz789" not in result.stdout
     contents = out_file.read_text()
-    assert "fake-podcaster-key-abc123" in contents
-    assert "fake-openai-key-xyz789" in contents
+    assert "fake-podcaster-key-abc123" not in contents
+    assert "fake-openai-key-xyz789" not in contents
+    assert "podcaster-pwned" not in contents
+    assert "openai-pwned" not in contents
     # File should be created with owner-only permissions (umask 077).
     mode = stat.S_IMODE(out_file.stat().st_mode)
     assert mode & 0o077 == 0, oct(mode)
@@ -238,8 +290,18 @@ def test_falls_back_to_api_app_secret_when_job_secret_missing(tmp_path: Path) ->
         check=False,
     )
     assert result.returncode == 0, result.stderr
+    assert "fake-podcaster-api-app-key" not in result.stdout
+    assert "api-app-pwned" not in result.stdout
     assert (
-        "gh secret set PODCASTER_API_KEY --repo jmservera/SquadScope "
-        "--body 'fake-podcaster-api-app-key'"
+        "az containerapp secret show --resource-group squadscope-podcaster "
+        "--name podcaster-fake-api --secret-name podcaster-api-key "
+        "--query value --output tsv | gh secret set PODCASTER_API_KEY "
+        "--repo jmservera/SquadScope"
+    ) in result.stdout
+    assert (
+        "az containerapp secret show --resource-group squadscope-podcaster "
+        "--name podcaster-fake-api --secret-name podcaster-api-key "
+        "--query value --output tsv | gh secret set PODCASTER_API_KEY "
+        "--repo jmservera/SquadScope --env podcaster-real-generation"
     ) in result.stdout
     assert "#   ACA Job:         podcaster-fake-synth" in result.stdout

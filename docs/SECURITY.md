@@ -12,13 +12,13 @@ This document defines secret-handling policy, logging guarantees, and pre-releas
   - If the secret is absent, the deploy workflow generates a 256-bit key during deployment, masks it immediately, and passes it as a secure Bicep parameter to the ACA environment.
   - Transmitted to Azure as a `@secure()` Bicep parameter and stored as the ACA secret `podcaster-api-key` on both the API container app and the synthesis job; the `PODCASTER_API_KEY` env var uses `secretRef`, never a plain `value` (enforced by `tests/test_deploy_workflow.py`).
   - Never logged, echoed, printed to outputs, or included in workflow summaries.
-  - **Rotating:** Update the `prod` environment secret, re-deploy (Release or `deploy-azure.yml`), then re-sync SquadScope (Release does not sync; use `deploy-azure.yml -f sync_squadscope=true` or `scripts/get-podcaster-values.sh`). Full runbook: [AZURE-DEPLOYMENT.md → Rotating `PODCASTER_API_KEY`](AZURE-DEPLOYMENT.md#rotating-podcaster_api_key).
+  - **Rotating:** Update the `prod` environment secret, re-deploy (Release or `deploy-azure.yml`), then re-sync SquadScope repository and `podcaster-real-generation` environment secrets (Release does not sync; use `deploy-azure.yml -f sync_squadscope=true` or `scripts/get-podcaster-values.sh`). Full runbook: [AZURE-DEPLOYMENT.md → Rotating `PODCASTER_API_KEY`](AZURE-DEPLOYMENT.md#rotating-podcaster_api_key).
 
 - **`SQUADSCOPE_SYNC_TOKEN`** (GitHub repository secret, optional)
-  - Fine-grained personal access token with permission to write variables and secrets in `jmservera/SquadScope`.
-  - Used by the deploy workflow's optional sync step to configure `PODCASTER_ENDPOINT` (variable) and `PODCASTER_API_KEY` (secret) in the caller repository.
+  - Fine-grained personal access token with permission to write variables and repository/environment secrets in `jmservera/SquadScope`, including environment secret access for `podcaster-real-generation`.
+  - Used by the deploy workflow's optional sync step to configure `PODCASTER_ENDPOINT` (variable) and `PODCASTER_API_KEY` (repository secret plus `podcaster-real-generation` environment secret) in the caller repository.
   - If not configured, the sync step is skipped unless `sync_squadscope=true` is explicitly requested.
-  - Must have scope: `repository` and permissions: `secrets:write, variables:write`.
+  - Must have scope: `repository` and permissions: `secrets:write, variables:write`, plus environment access/Environments permission to update `podcaster-real-generation` secrets.
 
 ### Monitoring / Admin API Authentication
 
@@ -41,14 +41,14 @@ This document defines secret-handling policy, logging guarantees, and pre-releas
   - The URL of the `/api/generate` endpoint, non-sensitive and read-safe to store as a variable.
   - Example: `https://<aca-app-fqdn>/api/generate` (ACA App with HTTP ingress, see #131)
   
-- **`PODCASTER_API_KEY`** (secret in SquadScope)
-  - The same API key configured in the Podcaster ACA synthesis job.
+- **`PODCASTER_API_KEY`** (repository secret and `podcaster-real-generation` environment secret in SquadScope)
+  - The same API key configured in the Podcaster ACA synthesis job. SquadScope deploy-site reads the repository secret; handoff workflows run in `podcaster-real-generation`, where the environment secret shadows the repository secret.
   - Must be read from GitHub secrets, never hard-coded or committed.
 
 ### Auth Bootstrap Decision
 
 - **Current release:** keep `x-podcaster-api-key` for compatibility and bootstrap safely. If a stable `PODCASTER_API_KEY` secret is unavailable, deployment generates a high-entropy key, masks it, and passes it only as a secure parameter stored in the `podcaster-api-key` ACA secret (API app and synthesis job).
-- **Handoff:** prefer `sync_squadscope=true` with the gated `SQUADSCOPE_SYNC_TOKEN` during the same run, or pre-create a stable key and store it in both repositories. Do not print generated keys for manual copy/paste.
+- **Handoff:** prefer `sync_squadscope=true` with the gated `SQUADSCOPE_SYNC_TOKEN` during the same run, or pre-create a stable key and store it in Podcaster plus both SquadScope secret scopes. Do not print generated keys for manual copy/paste.
 - **Future hardening:** migrate SquadScope caller authentication to Azure federated identity/OIDC or EasyAuth while accepting the API-key header during a compatibility window.
 
 ### Second Federated Identity Guidance
@@ -300,16 +300,17 @@ Podcaster owns provider disclosure, TTS privacy, artifact staging, and operator 
 
 1. **In SquadScope repository settings:**
    - Create or update the `PODCASTER_ENDPOINT` variable with the deploy output (e.g., `https://<aca-app-fqdn>/api/generate`).
-   - Create or update the `PODCASTER_API_KEY` secret with the same key used in Podcaster.
+   - Create or update the `PODCASTER_API_KEY` repository secret and the `podcaster-real-generation` environment secret with the same key used in Podcaster.
 
 2. **Verify variable and secret are present before enabling automation:**
    ```bash
    gh variable get PODCASTER_ENDPOINT --repo jmservera/SquadScope
    gh secret list --repo jmservera/SquadScope | grep PODCASTER_API_KEY
+   gh secret list --repo jmservera/SquadScope --env podcaster-real-generation | grep PODCASTER_API_KEY
    ```
 
 3. **Sync via deploy workflow (optional but recommended):**
-   - Configure `SQUADSCOPE_SYNC_TOKEN` in Podcaster (fine-grained token with `secrets:write, variables:write` in SquadScope).
+   - Configure `SQUADSCOPE_SYNC_TOKEN` in Podcaster (fine-grained token with `secrets:write, variables:write` and `podcaster-real-generation` environment secret access in SquadScope).
    - Run `deploy-azure.yml` with `sync_squadscope: true` to auto-populate SquadScope variables and secrets.
    - Verify SquadScope variables/secrets after sync.
 

@@ -110,7 +110,7 @@ Optional `prod` environment secret:
 
 Optional `prod` environment secret for syncing integration values to SquadScope:
 
-- `SQUADSCOPE_SYNC_TOKEN` - fine-grained token with permission to write variables and secrets in `jmservera/SquadScope`.
+- `SQUADSCOPE_SYNC_TOKEN` - fine-grained token with permission to write variables plus repository and environment secrets in `jmservera/SquadScope`, including the `podcaster-real-generation` environment secret.
 
 ## Integration contract
 
@@ -127,7 +127,7 @@ Artifact access uses a private/operator-only model for the initial release: resp
 
 - Do not commit subscription IDs, tenant IDs, API keys, storage keys, or publish profiles.
 - Prefer setting `PODCASTER_API_KEY` in this repository when you need stable manual rotation; otherwise the deploy workflow generates one per deployment.
-- Store or sync the same API key as `PODCASTER_API_KEY` in `jmservera/SquadScope` for caller authentication.
+- Store or sync the same API key as `PODCASTER_API_KEY` in both `jmservera/SquadScope` repository secrets and the `podcaster-real-generation` environment secret; handoff workflows run in that environment, where environment secrets shadow repository secrets.
 - Use GitHub Actions masking and avoid shell tracing around secret operations.
 - The API does not echo received API keys or include them in logs or responses.
 - To refresh Spotify publish cookies interactively, run `pip install -r requirements-scripts.txt && playwright install chromium`, then `python scripts/extract-spotify-cookies.py`. After it writes `.env`, run `./scripts/set-spotify-secrets.sh`.
