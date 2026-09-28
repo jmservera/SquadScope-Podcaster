@@ -28,8 +28,12 @@ from __future__ import annotations
 
 import json
 import logging
+import multiprocessing
 import os
+import queue
+import signal
 import tempfile
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
@@ -68,6 +72,7 @@ ENV_CLIP_VISIBILITY_TIMEOUT = "PODCASTER_CLIP_VISIBILITY_TIMEOUT"
 DEFAULT_CLIP_VISIBILITY_TIMEOUT = 900
 ENV_RECORDER_MAX_MESSAGES = "PODCASTER_RECORDER_MAX_MESSAGES"
 DEFAULT_RECORDER_MAX_MESSAGES = 1
+DEFAULT_BROWSER_WATCHDOG_GRACE_SECONDS = 15
 
 _JSON_CONTENT_TYPE = "application/json; charset=utf-8"
 _WEBM_CONTENT_TYPE = "video/webm"
@@ -479,26 +484,120 @@ def _fake_record_segment(segment: "VideoSegment", output_dir: Path) -> RecordRes
     return RecordResult(video_path=video_path, duration_ms=duration_ms, is_fallback=False)
 
 
-def _production_record_segment(segment: "VideoSegment", output_dir: Path) -> RecordResult:
-    """Record one segment with a real Chromium browser via the unchanged path."""
-    from playwright.sync_api import sync_playwright
-
-    from podcaster.video.video_gen import _record_segment, bounded_site_record_seconds
-
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch()
+def _record_segment_child(
+    segment: "VideoSegment",
+    output_dir: str,
+    result_queue: "multiprocessing.Queue[dict[str, Any]]",
+) -> None:
+    """Run production Playwright recording in a killable child process."""
+    try:
         try:
-            recorded = _record_segment(
-                browser,
-                segment,
-                output_dir,
-                check_accessibility=True,
-                source_url=segment.source_url,
-            )
-        finally:
-            browser.close()
+            os.setsid()
+        except OSError:
+            logger.debug("could not start recorder child process group", exc_info=True)
 
-    video_path = Path(recorded.video_path)
+        from playwright.sync_api import sync_playwright
+
+        from podcaster.video.video_gen import _record_segment
+
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch()
+            try:
+                recorded = _record_segment(
+                    browser,
+                    segment,
+                    Path(output_dir),
+                    check_accessibility=True,
+                    source_url=segment.source_url,
+                )
+            finally:
+                browser.close()
+
+        result_queue.put(
+            {
+                "ok": True,
+                "video_path": str(recorded.video_path),
+                "is_fallback": bool(recorded.is_fallback),
+                "has_pages": bool(getattr(recorded, "has_pages", False)),
+                "website_url": getattr(recorded, "website_url", None),
+                "is_removed": bool(getattr(recorded, "is_removed", False)),
+                "recovery_path": str(getattr(recorded, "recovery_path", "direct")),
+            }
+        )
+    except BaseException as exc:  # noqa: BLE001 - propagated to the parent process
+        result_queue.put(
+            {
+                "ok": False,
+                "error": repr(exc),
+                "traceback": traceback.format_exc(),
+            }
+        )
+
+
+def _terminate_process_group(process: "multiprocessing.Process") -> None:
+    pid = process.pid
+    if pid is None:
+        return
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except OSError:
+        process.terminate()
+    process.join(5)
+    if process.is_alive():
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        except OSError:
+            process.kill()
+        process.join(5)
+
+
+def _production_record_segment(segment: "VideoSegment", output_dir: Path) -> RecordResult:
+    """Record one segment with a real Chromium browser under a hard watchdog."""
+    from podcaster.video.video_gen import SITE_CAPTURE_DEADLINE_SECONDS, bounded_site_record_seconds
+
+    output_dir = Path(output_dir)
+    ctx = multiprocessing.get_context("fork")
+    result_queue: multiprocessing.Queue[dict[str, Any]] = ctx.Queue()
+    process = ctx.Process(
+        target=_record_segment_child,
+        args=(segment, str(output_dir), result_queue),
+        daemon=False,
+    )
+    process.start()
+    watchdog_seconds = (
+        SITE_CAPTURE_DEADLINE_SECONDS + DEFAULT_BROWSER_WATCHDOG_GRACE_SECONDS
+        if SITE_CAPTURE_DEADLINE_SECONDS > 0
+        else None
+    )
+    process.join(watchdog_seconds)
+    if process.is_alive():
+        logger.error(
+            "browser watchdog terminating stuck recorder process repo=%s after %.1fs",
+            segment.repo.url if segment.repo else segment.label,
+            watchdog_seconds,
+        )
+        _terminate_process_group(process)
+        raise RuntimeError(
+            f"browser recording exceeded hard watchdog after {watchdog_seconds:.1f}s"
+        )
+
+    try:
+        payload = result_queue.get_nowait()
+    except queue.Empty as exc:
+        raise RuntimeError(
+            f"browser recording process exited without a result (exitcode={process.exitcode})"
+        ) from exc
+    if not payload.get("ok"):
+        raise RuntimeError(
+            "browser recording process failed: "
+            f"{payload.get('error')}\n{payload.get('traceback', '')}"
+        )
+
+    video_path = Path(str(payload["video_path"]))
     # The recorder caps the effective recording length (issue #592), so the
     # realized clip is at most ``MAX_CLIP_RECORD_SECONDS`` long. Persist the
     # cap-clamped duration in the manifest so the editor's EDL trims/loops within
@@ -507,11 +606,11 @@ def _production_record_segment(segment: "VideoSegment", output_dir: Path) -> Rec
     return RecordResult(
         video_path=video_path,
         duration_ms=duration_ms,
-        is_fallback=bool(recorded.is_fallback),
-        has_pages=bool(getattr(recorded, "has_pages", False)),
-        website_url=getattr(recorded, "website_url", None),
-        is_removed=bool(getattr(recorded, "is_removed", False)),
-        recovery_path=str(getattr(recorded, "recovery_path", "direct")),
+        is_fallback=bool(payload.get("is_fallback", False)),
+        has_pages=bool(payload.get("has_pages", False)),
+        website_url=payload.get("website_url"),
+        is_removed=bool(payload.get("is_removed", False)),
+        recovery_path=str(payload.get("recovery_path", "direct")),
     )
 
 

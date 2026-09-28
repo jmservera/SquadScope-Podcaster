@@ -269,6 +269,7 @@ def test_assemble_recording_fills_poison_gap(tmp_path):
     storage.delete_blob(clip_blob_path("job1", 1))
 
     filled: list[int] = []
+    rendered: list[int] = []
 
     def _fill_gap(segment, output_dir, clip_index) -> RecordedSegment:
         filled.append(clip_index)
@@ -278,11 +279,29 @@ def test_assemble_recording_fills_poison_gap(tmp_path):
             segment=segment, video_path=path, is_fallback=True, recovery_path="fallback"
         )
 
-    result = assemble_recording(storage, clipset, tmp_path, fill_gap=_fill_gap)
-    assert filled == [1]
+    def _render_fallback(segment, output_dir, clip_index, manifest) -> RecordedSegment:
+        rendered.append(clip_index)
+        path = Path(output_dir) / f"terminal_fallback_{clip_index}.mp4"
+        path.write_bytes(b"TERMINALCARD")
+        return RecordedSegment(
+            segment=segment,
+            video_path=path,
+            is_fallback=bool(manifest["is_fallback"]),
+            recovery_path="fallback",
+        )
+
+    result = assemble_recording(
+        storage,
+        clipset,
+        tmp_path,
+        fill_gap=_fill_gap,
+        render_fallback_clip=_render_fallback,
+    )
+    assert filled == []  # terminal fallback manifests must not re-enter Playwright gap fill
+    assert rendered == [1]
     assert len(result.recorded) == 2
     assert result.recorded[1].is_fallback is True
-    assert result.recorded[1].video_path.read_bytes() == b"GAPCARD"
+    assert result.recorded[1].video_path.read_bytes() == b"TERMINALCARD"
 
 
 def test_assemble_recording_fills_clip_without_manifest(tmp_path):
