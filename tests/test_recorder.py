@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,6 +30,7 @@ from podcaster.video.recorder import (
     write_fallback_manifest,
 )
 from podcaster.video.sync_plan import RepoReference, VideoSegment
+from podcaster.video.video_gen import RecordedSegment
 
 JOB_ID = "podcast-2026-W23-deadbeef"
 
@@ -371,6 +373,80 @@ def test_process_message_retry_cap_deletes_orphan_clip_before_fallback(tmp_path)
     assert outcome.status == OUTCOME_FALLBACK
     assert scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
     assert not scratch.blob_exists(clip_blob_path(JOB_ID, 1))
+
+
+def test_production_record_segment_arms_browser_watchdog(tmp_path, monkeypatch) -> None:
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    clip = output_dir / "clip.webm"
+    timers: list[FakeTimer] = []
+
+    class FakeTimer:
+        def __init__(self, interval, function):
+            self.interval = interval
+            self.function = function
+            self.daemon = False
+            self.started = False
+            self.cancelled = False
+            timers.append(self)
+
+        def start(self):
+            self.started = True
+
+        def cancel(self):
+            self.cancelled = True
+
+    class FakeBrowser:
+        def __init__(self):
+            self.close_count = 0
+
+        def close(self):
+            self.close_count += 1
+
+    browser = FakeBrowser()
+
+    class FakePlaywright:
+        chromium = SimpleNamespace(launch=lambda: browser)
+
+    class FakePlaywrightContext:
+        def __enter__(self):
+            return FakePlaywright()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_record_segment(browser_arg, segment, output_dir_arg, **kwargs):
+        assert browser_arg is browser
+        clip.write_bytes(b"WEBM")
+        return RecordedSegment(segment=segment, video_path=clip)
+
+    monkeypatch.setattr(recorder.threading, "Timer", FakeTimer)
+    monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: FakePlaywrightContext())
+    monkeypatch.setattr("podcaster.video.video_gen._record_segment", fake_record_segment)
+    monkeypatch.setattr(
+        "podcaster.video.video_gen.bounded_site_record_seconds",
+        lambda seconds: 7.0,
+    )
+
+    result = recorder._production_record_segment(
+        VideoSegment(
+            start_seconds=0.0,
+            duration_seconds=30.0,
+            repo=RepoReference(owner="octo", name="api"),
+        ),
+        output_dir,
+    )
+
+    assert result.video_path == clip
+    assert result.duration_ms == 7000
+    assert len(timers) == 1
+    assert timers[0].started is True
+    assert timers[0].cancelled is True
+    assert timers[0].interval == 135
+    assert browser.close_count == 1
+
+    timers[0].function()
+    assert browser.close_count == 2
 
 
 def test_drain_processes_until_empty(tmp_path) -> None:

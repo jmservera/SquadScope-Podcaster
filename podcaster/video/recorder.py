@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
@@ -68,6 +69,7 @@ ENV_CLIP_VISIBILITY_TIMEOUT = "PODCASTER_CLIP_VISIBILITY_TIMEOUT"
 DEFAULT_CLIP_VISIBILITY_TIMEOUT = 900
 ENV_RECORDER_MAX_MESSAGES = "PODCASTER_RECORDER_MAX_MESSAGES"
 DEFAULT_RECORDER_MAX_MESSAGES = 1
+DEFAULT_BROWSER_WATCHDOG_GRACE_SECONDS = 15
 
 _JSON_CONTENT_TYPE = "application/json; charset=utf-8"
 _WEBM_CONTENT_TYPE = "video/webm"
@@ -483,11 +485,35 @@ def _production_record_segment(segment: "VideoSegment", output_dir: Path) -> Rec
     """Record one segment with a real Chromium browser via the unchanged path."""
     from playwright.sync_api import sync_playwright
 
-    from podcaster.video.video_gen import _record_segment, bounded_site_record_seconds
+    from podcaster.video.video_gen import (
+        SITE_CAPTURE_DEADLINE_SECONDS,
+        _record_segment,
+        bounded_site_record_seconds,
+    )
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
+        timer: threading.Timer | None = None
         try:
+            if SITE_CAPTURE_DEADLINE_SECONDS > 0:
+                watchdog_seconds = (
+                    SITE_CAPTURE_DEADLINE_SECONDS + DEFAULT_BROWSER_WATCHDOG_GRACE_SECONDS
+                )
+
+                def _close_stuck_browser() -> None:
+                    logger.error(
+                        "browser watchdog closing stuck recorder segment repo=%s after %.1fs",
+                        segment.repo.url if segment.repo else segment.label,
+                        watchdog_seconds,
+                    )
+                    try:
+                        browser.close()
+                    except Exception:
+                        logger.debug("browser watchdog close failed", exc_info=True)
+
+                timer = threading.Timer(watchdog_seconds, _close_stuck_browser)
+                timer.daemon = True
+                timer.start()
             recorded = _record_segment(
                 browser,
                 segment,
@@ -496,6 +522,8 @@ def _production_record_segment(segment: "VideoSegment", output_dir: Path) -> Rec
                 source_url=segment.source_url,
             )
         finally:
+            if timer is not None:
+                timer.cancel()
             browser.close()
 
     video_path = Path(recorded.video_path)
