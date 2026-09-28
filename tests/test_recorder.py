@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -30,7 +29,6 @@ from podcaster.video.recorder import (
     write_fallback_manifest,
 )
 from podcaster.video.sync_plan import RepoReference, VideoSegment
-from podcaster.video.video_gen import RecordedSegment
 
 JOB_ID = "podcast-2026-W23-deadbeef"
 
@@ -375,54 +373,55 @@ def test_process_message_retry_cap_deletes_orphan_clip_before_fallback(tmp_path)
     assert not scratch.blob_exists(clip_blob_path(JOB_ID, 1))
 
 
-def test_production_record_segment_arms_browser_watchdog(tmp_path, monkeypatch) -> None:
+def test_production_record_segment_uses_child_process_result(tmp_path, monkeypatch) -> None:
     output_dir = tmp_path / "out"
     output_dir.mkdir()
     clip = output_dir / "clip.webm"
-    timers: list[FakeTimer] = []
+    clip.write_bytes(b"WEBM")
 
-    class FakeTimer:
-        def __init__(self, interval, function):
-            self.interval = interval
-            self.function = function
-            self.daemon = False
+    class FakeQueue:
+        def get_nowait(self):
+            return {
+                "ok": True,
+                "video_path": str(clip),
+                "is_fallback": True,
+                "has_pages": False,
+                "website_url": None,
+                "is_removed": False,
+                "recovery_path": "fallback",
+            }
+
+    class FakeProcess:
+        def __init__(self, target, args, daemon):
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+            self.pid = 1234
+            self.exitcode = 0
             self.started = False
-            self.cancelled = False
-            timers.append(self)
+            self.join_timeout = None
 
         def start(self):
             self.started = True
 
-        def cancel(self):
-            self.cancelled = True
+        def join(self, timeout=None):
+            self.join_timeout = timeout
 
-    class FakeBrowser:
-        def __init__(self):
-            self.close_count = 0
-
-        def close(self):
-            self.close_count += 1
-
-    browser = FakeBrowser()
-
-    class FakePlaywright:
-        chromium = SimpleNamespace(launch=lambda: browser)
-
-    class FakePlaywrightContext:
-        def __enter__(self):
-            return FakePlaywright()
-
-        def __exit__(self, exc_type, exc, tb):
+        def is_alive(self):
             return False
 
-    def fake_record_segment(browser_arg, segment, output_dir_arg, **kwargs):
-        assert browser_arg is browser
-        clip.write_bytes(b"WEBM")
-        return RecordedSegment(segment=segment, video_path=clip)
+    processes: list[FakeProcess] = []
 
-    monkeypatch.setattr(recorder.threading, "Timer", FakeTimer)
-    monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: FakePlaywrightContext())
-    monkeypatch.setattr("podcaster.video.video_gen._record_segment", fake_record_segment)
+    class FakeContext:
+        def Queue(self):
+            return FakeQueue()
+
+        def Process(self, target, args, daemon):
+            process = FakeProcess(target, args, daemon)
+            processes.append(process)
+            return process
+
+    monkeypatch.setattr(recorder.multiprocessing, "get_context", lambda method: FakeContext())
     monkeypatch.setattr(
         "podcaster.video.video_gen.bounded_site_record_seconds",
         lambda seconds: 7.0,
@@ -439,14 +438,68 @@ def test_production_record_segment_arms_browser_watchdog(tmp_path, monkeypatch) 
 
     assert result.video_path == clip
     assert result.duration_ms == 7000
-    assert len(timers) == 1
-    assert timers[0].started is True
-    assert timers[0].cancelled is True
-    assert timers[0].interval == 135
-    assert browser.close_count == 1
+    assert result.is_fallback is True
+    assert len(processes) == 1
+    assert processes[0].started is True
+    assert processes[0].join_timeout == 135
 
-    timers[0].function()
-    assert browser.close_count == 2
+
+def test_production_record_segment_hard_kills_stuck_child(tmp_path, monkeypatch) -> None:
+    class FakeQueue:
+        def get_nowait(self):  # pragma: no cover - timeout path never reads the queue
+            raise AssertionError("queue should not be read for a stuck process")
+
+    class FakeProcess:
+        pid = 1234
+        exitcode = None
+
+        def __init__(self, target, args, daemon):
+            self.join_timeout = None
+            self.started = False
+
+        def start(self):
+            self.started = True
+
+        def join(self, timeout=None):
+            self.join_timeout = timeout
+
+        def is_alive(self):
+            return True
+
+    process_holder: dict[str, FakeProcess] = {}
+
+    class FakeContext:
+        def Queue(self):
+            return FakeQueue()
+
+        def Process(self, target, args, daemon):
+            process = FakeProcess(target, args, daemon)
+            process_holder["process"] = process
+            return process
+
+    terminated: list[FakeProcess] = []
+    monkeypatch.setattr(recorder.multiprocessing, "get_context", lambda method: FakeContext())
+    monkeypatch.setattr(
+        recorder, "_terminate_process_group", lambda process: terminated.append(process)
+    )
+    monkeypatch.setattr(
+        "podcaster.video.video_gen.bounded_site_record_seconds",
+        lambda seconds: 7.0,
+    )
+
+    with pytest.raises(RuntimeError, match="hard watchdog"):
+        recorder._production_record_segment(
+            VideoSegment(
+                start_seconds=0.0,
+                duration_seconds=30.0,
+                repo=RepoReference(owner="octo", name="api"),
+            ),
+            tmp_path,
+        )
+
+    assert process_holder["process"].started is True
+    assert process_holder["process"].join_timeout == 135
+    assert terminated == [process_holder["process"]]
 
 
 def test_drain_processes_until_empty(tmp_path) -> None:
