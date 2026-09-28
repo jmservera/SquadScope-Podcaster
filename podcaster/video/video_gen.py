@@ -258,6 +258,14 @@ class _CaptureDeadline:
         if self.deadline_at is not None and time.monotonic() >= self.deadline_at:
             raise CaptureDeadlineExceeded(f"site capture deadline exceeded while {label}")
 
+    def remaining_ms(self) -> int | None:
+        if self.deadline_at is None:
+            return None
+        remaining = self.deadline_at - time.monotonic()
+        if remaining <= 0:
+            raise CaptureDeadlineExceeded("site capture deadline exceeded")
+        return max(1, int(remaining * 1000))
+
 
 # --- Screenshot-based (hyperframe) capture (issue #387) ---
 #
@@ -1056,23 +1064,23 @@ class _Capturer:
         self.count = 0
         self.still_image: Path | None = None
 
-    def frame(self, page: Page) -> Path | None:
+    def frame(self, page: Page, *, timeout_ms: int | None = None) -> Path | None:
         """Capture the next sequential viewport screenshot."""
         next_index = self.count + 1
         path = self.frames_dir / f"frame_{next_index:05d}.png"
         try:
-            page.screenshot(path=str(path))
+            _capture_screenshot(page, path, timeout_ms=timeout_ms)
         except Exception:
             logger.exception("Failed to capture frame %d", next_index)
             return None
         self.count = next_index
         return path
 
-    def still(self, page: Page) -> Path | None:
+    def still(self, page: Page, *, timeout_ms: int | None = None) -> Path | None:
         """Capture a single still screenshot for a static page."""
         path = self.frames_dir / "still.png"
         try:
-            page.screenshot(path=str(path))
+            _capture_screenshot(page, path, timeout_ms=timeout_ms)
         except Exception:
             logger.exception("Failed to capture still screenshot")
             return None
@@ -1095,6 +1103,18 @@ class _Capturer:
             except Exception:
                 logger.debug("Could not remove frame %s", frame)
         self.count = 0
+
+
+def _capture_screenshot(page: Page, path: Path, *, timeout_ms: int | None = None) -> None:
+    """Capture a screenshot, bounding Playwright's per-call wait when possible."""
+    if timeout_ms is None:
+        page.screenshot(path=str(path))
+        return
+    try:
+        page.screenshot(path=str(path), timeout=timeout_ms)
+    except TypeError:
+        # Unit-test fakes may not accept Playwright's timeout kwarg.
+        page.screenshot(path=str(path))
 
 
 def _build_frames_to_video_cmd(frames_dir: Path, fps: int, output_path: Path) -> list[str]:
@@ -1413,7 +1433,10 @@ def _run_scroll_positions(
             deadline.check("scrolling page")
         page.evaluate(f"window.scrollTo(0, {y})")
         if capturer is not None:
-            capturer.frame(page)
+            capturer.frame(
+                page,
+                timeout_ms=deadline.remaining_ms() if deadline is not None else None,
+            )
         else:
             page.wait_for_timeout(tick_interval_ms)
 
@@ -1501,7 +1524,10 @@ def _smooth_scroll(
         for _ in range(total_ticks):
             if deadline is not None:
                 deadline.check("capturing static page")
-            capturer.frame(page)
+            capturer.frame(
+                page,
+                timeout_ms=deadline.remaining_ms() if deadline is not None else None,
+            )
         return
 
     positions = _scroll_positions(s_y, e_y, total_ticks, scroll_easing)

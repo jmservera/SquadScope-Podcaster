@@ -620,6 +620,15 @@ class TestScrollGithubReadme:
         first = re.search(r"scrollTo\(0,\s*(\d+)\)", str(scroll_calls[0]))
         assert first is not None and int(first.group(1)) == 0
 
+    def test_capturer_passes_screenshot_timeout(self, tmp_path):
+        page = MagicMock()
+        page.screenshot.side_effect = lambda path, timeout=None: Path(path).write_bytes(_PNG_64x64)
+        cap = _Capturer(tmp_path / "frames")
+
+        cap.frame(page, timeout_ms=1234)
+
+        assert page.screenshot.call_args.kwargs["timeout"] == 1234
+
     def test_readme_y_clamped_to_scrollable(self, tmp_path, caplog):
         import logging
 
