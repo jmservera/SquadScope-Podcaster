@@ -20,6 +20,8 @@
 #   * It NEVER writes secret values to a committed file, a CI log, or
 #     $GITHUB_OUTPUT. When it detects a CI environment it refuses to print
 #     resolved secret values unless --force-ci is passed.
+#   * SquadScope also has an environment-scoped PODCASTER_API_KEY secret in
+#     podcaster-real-generation; handoff workflows run there, so update both.
 #   * Use --out <file> to write the commands to a local gitignored path instead
 #     of stdout when that is more convenient.
 #
@@ -30,6 +32,7 @@
 #   -g, --resource-group <name>   Azure resource group (default: squadscope-podcaster)
 #       --squadscope-repo <o/r>   SquadScope repo for caller secrets (default: jmservera/SquadScope)
 #       --podcaster-repo <o/r>    Podcaster repo for service secrets (default: jmservera/SquadScope-Podcaster)
+#       --squadscope-env <name>   SquadScope environment secret to update (default: podcaster-real-generation)
 #       --out <file>              Write commands to <file> instead of stdout (gitignored path recommended)
 #       --force-ci                Allow running in a CI environment (NOT recommended)
 #   -h, --help                    Show this help and exit
@@ -39,11 +42,17 @@ set -euo pipefail
 RESOURCE_GROUP="squadscope-podcaster"
 SQUADSCOPE_REPO="jmservera/SquadScope"
 PODCASTER_REPO="jmservera/SquadScope-Podcaster"
+SQUADSCOPE_ENV="podcaster-real-generation"
 OUT_FILE=""
 FORCE_CI=0
 
 err() { printf 'ERROR: %s\n' "$*" >&2; }
 die() { err "$*"; exit 1; }
+
+shell_quote() {
+  printf '%q' "$1"
+}
+
 
 usage() {
   sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
@@ -54,6 +63,7 @@ while [ $# -gt 0 ]; do
     -g|--resource-group) RESOURCE_GROUP="${2:?--resource-group requires a value}"; shift 2;;
     --squadscope-repo) SQUADSCOPE_REPO="${2:?--squadscope-repo requires a value}"; shift 2;;
     --podcaster-repo) PODCASTER_REPO="${2:?--podcaster-repo requires a value}"; shift 2;;
+    --squadscope-env) SQUADSCOPE_ENV="${2:?--squadscope-env requires a value}"; shift 2;;
     --out) OUT_FILE="${2:?--out requires a value}"; shift 2;;
     --force-ci) FORCE_CI=1; shift;;
     -h|--help) usage; exit 0;;
@@ -170,7 +180,10 @@ EMIT
     cat <<EMIT
 
 # SquadScope caller secrets (repo: ${SQUADSCOPE_REPO}) — matches docs/integration-contract.md
+# Update both scopes: deploy-site.yml reads the repository secret, while handoff
+# workflows run in ${SQUADSCOPE_ENV} where environment secrets shadow repo secrets.
 gh secret set PODCASTER_API_KEY --repo ${SQUADSCOPE_REPO} --body '${PODCASTER_API_KEY}'
+gh secret set PODCASTER_API_KEY --repo ${SQUADSCOPE_REPO} --env $(shell_quote "$SQUADSCOPE_ENV") --body '${PODCASTER_API_KEY}'
 EMIT
   fi
 

@@ -491,5 +491,23 @@ jobs:
             echo "::error::Podcaster API key was not resolved; refusing to sync an empty secret."
             exit 1
           fi
-          printf '%s' "$PODCASTER_API_KEY" | gh secret set PODCASTER_API_KEY --repo jmservera/SquadScope
-          echo "Synced PODCASTER_API_KEY secret to jmservera/SquadScope." >> "$GITHUB_STEP_SUMMARY"
+          if ! gh secret list --repo jmservera/SquadScope >/dev/null; then
+            echo "::error::Failed to preflight jmservera/SquadScope repository secrets. SQUADSCOPE_SYNC_TOKEN must have Secrets: Read and write permission for jmservera/SquadScope."
+            exit 1
+          fi
+          if ! gh secret list --repo jmservera/SquadScope --env podcaster-real-generation >/dev/null; then
+            echo "::error::Failed to preflight jmservera/SquadScope environment secrets for podcaster-real-generation before changing any secret. SQUADSCOPE_SYNC_TOKEN must have Secrets: Read and write permission and environment access/Environments permission for podcaster-real-generation."
+            exit 1
+          fi
+          if ! printf '%s' "$PODCASTER_API_KEY" | gh secret set PODCASTER_API_KEY --repo jmservera/SquadScope; then
+            echo "::error::Failed to sync jmservera/SquadScope repository secret PODCASTER_API_KEY. SQUADSCOPE_SYNC_TOKEN must have Secrets: Read and write permission for jmservera/SquadScope."
+            exit 1
+          fi
+          if ! printf '%s' "$PODCASTER_API_KEY" | gh secret set PODCASTER_API_KEY --repo jmservera/SquadScope --env podcaster-real-generation; then
+            echo "::error::Failed to sync jmservera/SquadScope environment secret PODCASTER_API_KEY for environment podcaster-real-generation. SQUADSCOPE_SYNC_TOKEN must have Secrets: Read and write permission and environment access/Environments permission for podcaster-real-generation."
+            exit 1
+          fi
+          {
+            echo "Synced PODCASTER_API_KEY to jmservera/SquadScope repository secret."
+            echo "Synced PODCASTER_API_KEY to jmservera/SquadScope environment secret podcaster-real-generation."
+          } >> "$GITHUB_STEP_SUMMARY"

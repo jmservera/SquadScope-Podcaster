@@ -118,6 +118,10 @@ def test_emits_squadscope_caller_secret_commands(tmp_path: Path) -> None:
         "gh secret set PODCASTER_API_KEY --repo jmservera/SquadScope "
         "--body 'fake-podcaster-key-abc123'"
     ) in out
+    assert (
+        "gh secret set PODCASTER_API_KEY --repo jmservera/SquadScope "
+        "--env podcaster-real-generation --body 'fake-podcaster-key-abc123'"
+    ) in out
 
 
 def test_emits_azure_openai_secret_commands(tmp_path: Path) -> None:
@@ -159,6 +163,15 @@ def test_custom_repos_and_resource_group(tmp_path: Path) -> None:
     assert "Discovered in resource group: my-rg" in out
     assert "--repo acme/Scope --body" in out
     assert "--repo acme/Pod --body" in out
+
+
+def test_custom_squadscope_environment(tmp_path: Path) -> None:
+    result = _run(tmp_path, "--squadscope-env", "prod handoff'; echo bad")
+    assert result.returncode == 0, result.stderr
+    assert (
+        "gh secret set PODCASTER_API_KEY --repo jmservera/SquadScope "
+        r"--env prod\ handoff\'\;\ echo\ bad --body 'fake-podcaster-key-abc123'"
+    ) in result.stdout
 
 
 def test_out_file_keeps_secrets_off_stdout(tmp_path: Path) -> None:
@@ -241,5 +254,9 @@ def test_falls_back_to_api_app_secret_when_job_secret_missing(tmp_path: Path) ->
     assert (
         "gh secret set PODCASTER_API_KEY --repo jmservera/SquadScope "
         "--body 'fake-podcaster-api-app-key'"
+    ) in result.stdout
+    assert (
+        "gh secret set PODCASTER_API_KEY --repo jmservera/SquadScope "
+        "--env podcaster-real-generation --body 'fake-podcaster-api-app-key'"
     ) in result.stdout
     assert "#   ACA Job:         podcaster-fake-synth" in result.stdout
