@@ -35,10 +35,12 @@ from podcaster.video.video_gen import (
     SCROLL_TICKS_PER_SEC,
     WIDTH,
     ZOOM_PAGE_CSS,
+    CaptureDeadlineExceeded,
     RecordedSegment,
     _apply_page_zoom,
     _build_frames_to_video_cmd,
     _build_still_to_video_cmd,
+    _CaptureDeadline,
     _Capturer,
     _check_gh_pages,
     _check_repo_accessible,
@@ -364,6 +366,16 @@ class TestSmoothScroll:
         # Should wait instead of scrolling
         page.wait_for_timeout.assert_called_once_with(2000)
 
+    def test_no_scroll_wait_is_bounded_by_deadline(self):
+        page = MagicMock()
+        page.viewport_size = {"width": WIDTH, "height": HEIGHT}
+        page.evaluate.side_effect = lambda js: HEIGHT if "scrollHeight" in js else None
+
+        _smooth_scroll(page, 2.0, deadline=_CaptureDeadline.from_seconds(0.25))
+
+        waited = page.wait_for_timeout.call_args.args[0]
+        assert 1 <= waited <= 250
+
     def test_zero_duration(self):
         page = MagicMock()
         _smooth_scroll(page, 0.0)
@@ -381,6 +393,15 @@ class TestSmoothScroll:
         page.evaluate.assert_not_called()
         # Should wait for the full duration
         page.wait_for_timeout.assert_called_once_with(20)
+
+    def test_short_duration_wait_aborts_when_deadline_expired(self):
+        page = MagicMock()
+        page.viewport_size = {"width": WIDTH, "height": HEIGHT}
+
+        with pytest.raises(CaptureDeadlineExceeded, match="site capture deadline exceeded"):
+            _smooth_scroll(page, 0.02, deadline=_CaptureDeadline(time.monotonic() - 1))
+
+        page.wait_for_timeout.assert_not_called()
 
 
 # --- Deterministic frame-indexed scrolling (issue #413) ---

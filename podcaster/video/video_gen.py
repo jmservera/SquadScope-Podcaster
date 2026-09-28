@@ -1421,6 +1421,21 @@ def _scroll_frame_count(duration_seconds: float, capturer: "_Capturer | None") -
     return total_frames, tick_rate
 
 
+def _bounded_wait_for_timeout(
+    page: Page,
+    requested_ms: int,
+    deadline: "_CaptureDeadline | None",
+) -> None:
+    """Wait no longer than the remaining capture deadline."""
+    if requested_ms <= 0:
+        return
+    if deadline is None:
+        page.wait_for_timeout(requested_ms)
+        return
+    remaining_ms = deadline.remaining_ms()
+    page.wait_for_timeout(requested_ms if remaining_ms is None else min(requested_ms, remaining_ms))
+
+
 def _run_scroll_positions(
     page: Page,
     positions: "list[int]",
@@ -1443,7 +1458,7 @@ def _run_scroll_positions(
                 timeout_ms=deadline.remaining_ms() if deadline is not None else None,
             )
         else:
-            page.wait_for_timeout(tick_interval_ms)
+            _bounded_wait_for_timeout(page, tick_interval_ms, deadline)
 
 
 def _smooth_scroll(
@@ -1487,9 +1502,12 @@ def _smooth_scroll(
         # Duration is positive but too short for a full tick.
         if capturer is not None:
             # Still emit at least one frame so the segment has content.
-            capturer.frame(page)
+            capturer.frame(
+                page,
+                timeout_ms=deadline.remaining_ms() if deadline is not None else None,
+            )
         elif duration_seconds > 0:
-            page.wait_for_timeout(int(duration_seconds * 1000))
+            _bounded_wait_for_timeout(page, int(duration_seconds * 1000), deadline)
         return
 
     tick_interval_ms = int(1000 / tick_rate)
@@ -1524,7 +1542,7 @@ def _smooth_scroll(
         # (identical) frames so the segment keeps its intended duration; in
         # screencast mode we simply wait it out.
         if capturer is None:
-            page.wait_for_timeout(int(duration_seconds * 1000))
+            _bounded_wait_for_timeout(page, int(duration_seconds * 1000), deadline)
             return
         for _ in range(total_ticks):
             if deadline is not None:
@@ -1548,7 +1566,7 @@ def _smooth_scroll(
     requested_ms = int(duration_seconds * 1000)
     remainder_ms = requested_ms - elapsed_ms
     if remainder_ms > 0:
-        page.wait_for_timeout(remainder_ms)
+        _bounded_wait_for_timeout(page, remainder_ms, deadline)
 
 
 # --- README-first scroll for GitHub repos (issue #415) ---
@@ -2583,7 +2601,7 @@ def _record_segment(
                     # The scroll raised before any frame was captured; grab a
                     # single still of the loaded repo page so the segment still
                     # has valid (held) content to compose (issue #387).
-                    capturer.still(page)
+                    capturer.still(page, timeout_ms=1000)
     except Exception:
         logger.exception("Error recording %s — using fallback", repo.url)
         is_fallback = True
