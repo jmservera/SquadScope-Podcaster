@@ -131,16 +131,95 @@ _MUTATION_HEADERS = {
 }
 
 
-def _resolve_local_upload_path(path: Path, label: str) -> Path:
+@dataclass(frozen=True)
+class _LocalUploadPath:
+    display: str
+    existing_path: Path | None
+
+    @property
+    def name(self) -> str:
+        return os.path.basename(self.display)
+
+    @property
+    def stem(self) -> str:
+        return Path(self.display).stem
+
+    def with_name(self, name: str, label: str) -> "_LocalUploadPath":
+        return _resolve_local_upload_path(Path(self.display).with_name(name), label)
+
+    def __str__(self) -> str:
+        return self.display
+
+
+def _existing_upload_path_from_roots(resolved: str, roots: tuple[str, ...]) -> Path | None:
+    for root in roots:
+        try:
+            if os.path.commonpath((resolved, root)) != root:
+                continue
+        except ValueError:
+            continue
+        relative = os.path.relpath(resolved, root)
+        if relative in ("", os.curdir) or relative.startswith(os.pardir + os.sep):
+            return None
+        parts = relative.split(os.sep)
+        current = Path(root)
+        for index, expected_name in enumerate(parts):
+            if expected_name in ("", os.curdir, os.pardir):
+                return None
+            is_leaf = index == len(parts) - 1
+            try:
+                entries = tuple(os.scandir(current))
+            except (FileNotFoundError, NotADirectoryError, PermissionError):
+                return None
+            match = next((entry for entry in entries if entry.name == expected_name), None)
+            if match is None:
+                return None
+            if is_leaf:
+                return Path(match.path) if match.is_file(follow_symlinks=False) else None
+            if not match.is_dir(follow_symlinks=False):
+                return None
+            current = Path(match.path)
+    return None
+
+
+def _resolve_local_upload_path(path: Path, label: str) -> _LocalUploadPath:
     """Return a bounded local upload path for Spotify file IO."""
-    resolved = Path(path).expanduser().resolve(strict=False)
-    allowed_roots = (
-        Path.cwd().resolve(strict=False),
-        Path(tempfile.gettempdir()).resolve(strict=False),
+    raw_path = os.fspath(path)
+    if "\x00" in raw_path or raw_path.startswith("~"):
+        raise SpotifyPublishError(f"{label} path is not an allowed local upload path.")
+    resolved = os.path.abspath(os.path.normpath(raw_path))
+    allowed_roots = tuple(
+        os.path.abspath(os.path.normpath(root))
+        for root in (
+            os.getcwd(),
+            tempfile.gettempdir(),
+        )
     )
-    if not any(resolved == root or resolved.is_relative_to(root) for root in allowed_roots):
+    if not any(os.path.commonpath((resolved, root)) == root for root in allowed_roots):
         raise SpotifyPublishError(f"{label} path is outside the allowed local upload roots.")
-    return resolved
+    return _LocalUploadPath(
+        display=resolved,
+        existing_path=_existing_upload_path_from_roots(resolved, allowed_roots),
+    )
+
+
+def _local_upload_exists(path: _LocalUploadPath) -> bool:
+    """Check a path already bounded by _resolve_local_upload_path."""
+    return path.existing_path is not None
+
+
+def _local_upload_size(path: _LocalUploadPath) -> int:
+    """Return size for a path already bounded by _resolve_local_upload_path."""
+    if path.existing_path is None:
+        raise SpotifyPublishError(f"file not found: {path}")
+    return path.existing_path.stat().st_size
+
+
+def _local_upload_read_bytes(path: _LocalUploadPath) -> bytes:
+    """Read bytes for a path already bounded by _resolve_local_upload_path."""
+    if path.existing_path is None:
+        raise SpotifyPublishError(f"file not found: {path}")
+    return path.existing_path.read_bytes()
 
 
 # Retry configuration
@@ -2873,19 +2952,19 @@ def publish_episode(
     safe_wav_path = _resolve_local_upload_path(wav_path, "WAV") if wav_path is not None else None
 
     # Detect video artifact — prefer MP4 when present and non-empty.
-    video_path: Path | None = None
+    video_path: _LocalUploadPath | None = None
     if safe_mp3_path is not None:
-        candidate_mp4 = safe_mp3_path.parent / (safe_mp3_path.stem + ".mp4")
-        if candidate_mp4.exists() and candidate_mp4.stat().st_size > 0:
+        candidate_mp4 = safe_mp3_path.with_name(safe_mp3_path.stem + ".mp4", "MP4")
+        if _local_upload_exists(candidate_mp4) and _local_upload_size(candidate_mp4) > 0:
             video_path = candidate_mp4
             logger.info(
                 "Video artifact found (%s, %.1f MB) — preferring MP4 for Spotify upload.",
                 candidate_mp4.name,
-                candidate_mp4.stat().st_size / 1_048_576,
+                _local_upload_size(candidate_mp4) / 1_048_576,
             )
 
     if video_path is not None:
-        upload_path: Path | None = video_path
+        upload_path: _LocalUploadPath | None = video_path
         content_type = "video/mp4"
         format_label = "MP4"
     else:
@@ -2941,7 +3020,7 @@ def publish_episode(
     except ValueError as exc:
         return PublishResult(status="failed", error=str(exc))
 
-    if upload_path is None or not upload_path.exists():
+    if upload_path is None or not _local_upload_exists(upload_path):
         return PublishResult(status="failed", error=f"{format_label} file not found: {upload_path}")
 
     if publication_storage is not None and publication_identity_context is not None:
@@ -3097,24 +3176,11 @@ def publish_episode(
                 details=create_details,
             )
 
-        # Step 3 & 4: Upload file (video uses multipart GCS, audio uses single S3)
-        is_video = content_type.startswith("video/")
-        file_data = None
-        upload_path_text = os.path.realpath(os.fspath(upload_path))
-        for root in _approved_media_roots():
-            root_path = os.path.realpath(os.fspath(root))
-            root_prefix = root_path if root_path.endswith(os.sep) else f"{root_path}{os.sep}"
-            if upload_path_text.startswith(root_prefix):
-                upload_path = Path(upload_path_text)
-                file_data = upload_path.read_bytes()
-                break
-        if file_data is None:
-            return PublishResult(
-                status="failed",
-                error=f"{format_label} file must be under an approved media root",
-            )
+            # Step 3 & 4: Upload file (video uses multipart GCS, audio uses single S3)
+            is_video = content_type.startswith("video/")
+            file_data = _local_upload_read_bytes(upload_path)
 
-        if is_video:
+            if is_video:
             upload_result = _get_upload_url(
                 session,
                 anchor_id,
