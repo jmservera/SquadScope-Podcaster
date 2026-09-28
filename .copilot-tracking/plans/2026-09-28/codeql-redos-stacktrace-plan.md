@@ -81,7 +81,7 @@ Out of scope:
 - [x] P01-T03 Add and update regression tests.
 - [x] P01-T04 Run requested validation and fix failures.
 - [x] P01-T05 Record changes and review artifacts.
-- [ ] P01-T06 Commit, push, create PR, and watch CI.
+- [x] P01-T06 Commit, push, create PR, and watch CI.
 
 ## Critique Disposition
 

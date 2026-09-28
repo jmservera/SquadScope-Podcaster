@@ -38,4 +38,9 @@ Updated tests:
 
 ## Remaining
 
-- Commit, push, PR, and CI watch.
+- None.
+
+## PR and CI
+
+- PR: https://github.com/jmservera/SquadScope-Podcaster/pull/721
+- CI after implementation and CI follow-up: all reported checks passed, including CodeQL, ci/lint, ci/lockfile, ci/test, ci/ui, ci/infrastructure, ci/intro-outro, ci/synthesis-image, and Squad CI test.
