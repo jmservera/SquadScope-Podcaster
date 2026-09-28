@@ -27,14 +27,15 @@ Conformant for implemented source/test changes. Remaining delivery work is PR/CI
 - `python3 -m pytest -q tests/test_sections.py tests/test_monitoring.py` — passed, 136 tests.
 - `python3 -m pytest -q` — passed, 3642 passed, 4 skipped, 2 deselected, 1 warning.
 - `python3 -m ruff check podcaster tests` — passed.
+- `python3 -m ruff check podcaster tests && python3 -m ruff format --check podcaster tests` — passed after CI formatting follow-up.
+- `python3 -m pytest -q` — passed again after CI formatting/lockfile follow-up, 3642 passed, 4 skipped, 2 deselected, 1 warning.
 
 ## Findings
 
 - RV-001 Severity: none. The section parsing changes remove the alerted regex usage and preserve the documented acceptance behavior with deterministic parsing. Destination: none.
 - RV-002 Severity: none. The monitoring changes return generic client-visible bodies for all four alerted `ValueError` paths and log server-side exception details. Destination: none.
-- RV-003 Severity: residual delivery. PR creation and CI watch remain open because this review ran before commit/push/PR. Destination: follow-up in current implementation flow, P01-T06.
+- RV-003 Severity: residual delivery. PR creation and CI watch remain open because this review ran before final CI confirmation. Destination: follow-up in current implementation flow, P01-T06.
 
 ## Follow-Up Routing
 
 - Continue P01-T06: commit, push, create PR, and watch CI.
-

@@ -1383,9 +1383,7 @@ class TestPodcastConfigMonitoring:
         assert resp.json() == {"error": "invalid podcast config payload"}
         assert "name is required" not in resp.text
         assert any(
-            "name is required" in record.exc_text
-            for record in caplog.records
-            if record.exc_text
+            "name is required" in record.exc_text for record in caplog.records if record.exc_text
         )
 
 

@@ -32,6 +32,9 @@ Updated tests:
 - Focused: `python3 -m pytest -q tests/test_sections.py tests/test_monitoring.py` — passed, 136 tests.
 - Full: `python3 -m pytest -q` — passed, 3642 passed, 4 skipped, 2 deselected, 1 warning.
 - Lint: `python3 -m ruff check podcaster tests` — passed.
+- CI follow-up: `python3 -m ruff check podcaster tests && python3 -m ruff format --check podcaster tests` — passed after formatting `tests/test_monitoring.py`.
+- CI follow-up: `requirements.lock` updated for CI resolver output (`pyjwt==2.15.1`) after the lockfile job reported the generated delta.
+- CI follow-up: `python3 -m pytest -q` — passed again, 3642 passed, 4 skipped, 2 deselected, 1 warning.
 
 ## Remaining
 
