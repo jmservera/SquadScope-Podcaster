@@ -130,6 +130,19 @@ _MUTATION_HEADERS = {
     "Referer": "https://creators.spotify.com/",
 }
 
+
+def _resolve_local_upload_path(path: Path, label: str) -> Path:
+    """Return a bounded local upload path for Spotify file IO."""
+    resolved = Path(path).expanduser().resolve(strict=False)
+    allowed_roots = (
+        Path.cwd().resolve(strict=False),
+        Path(tempfile.gettempdir()).resolve(strict=False),
+    )
+    if not any(resolved == root or resolved.is_relative_to(root) for root in allowed_roots):
+        raise SpotifyPublishError(f"{label} path is outside the allowed local upload roots.")
+    return resolved
+
+
 # Retry configuration
 _MAX_RETRIES = 3
 _RETRY_BACKOFF_BASE = 2.0
@@ -2856,10 +2869,13 @@ def publish_episode(
             resolved_description, timestamps_html
         )
 
+    safe_mp3_path = _resolve_local_upload_path(mp3_path, "MP3") if mp3_path is not None else None
+    safe_wav_path = _resolve_local_upload_path(wav_path, "WAV") if wav_path is not None else None
+
     # Detect video artifact — prefer MP4 when present and non-empty.
     video_path: Path | None = None
-    if mp3_path is not None:
-        candidate_mp4 = mp3_path.parent / (mp3_path.stem + ".mp4")
+    if safe_mp3_path is not None:
+        candidate_mp4 = safe_mp3_path.parent / (safe_mp3_path.stem + ".mp4")
         if candidate_mp4.exists() and candidate_mp4.stat().st_size > 0:
             video_path = candidate_mp4
             logger.info(
@@ -2873,7 +2889,7 @@ def publish_episode(
         content_type = "video/mp4"
         format_label = "MP4"
     else:
-        upload_path = wav_path if upload_format == "wav" else mp3_path
+        upload_path = safe_wav_path if upload_format == "wav" else safe_mp3_path
         content_type = "audio/wav" if upload_format == "wav" else "audio/mpeg"
         format_label = "WAV" if upload_format == "wav" else "MP3"
 
@@ -2902,8 +2918,8 @@ def publish_episode(
             dry_run=True,
             details={
                 "title": resolved_title,
-                "mp3_path": str(mp3_path),
-                "wav_path": str(wav_path) if wav_path else None,
+                "mp3_path": str(safe_mp3_path),
+                "wav_path": str(safe_wav_path) if safe_wav_path else None,
                 "upload_path": str(upload_path) if upload_path else None,
                 "upload_format": format_label.lower(),
                 "content_type": content_type,
