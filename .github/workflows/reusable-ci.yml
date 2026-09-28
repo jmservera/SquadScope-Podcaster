@@ -40,8 +40,9 @@ jobs:
           assert container["command"] == [
               "python",
               "-m",
-              "podcaster.video.job_runner",
+              "[parameters('runnerModule')]",
           ], container["command"]
+          assert template["parameters"]["runnerModule"]["defaultValue"] == "podcaster.video.job_runner"
           assert container["args"] == ["--max-messages", "1"], container["args"]
           '
 
