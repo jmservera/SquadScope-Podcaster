@@ -517,7 +517,8 @@ class TestPublishEpisode:
         assert "not found" in result.error
 
     @patch("podcaster.publish._build_session")
-    def test_full_publish_success(self, mock_build, mp3_file, wav_file, spotify_env):
+    def test_full_publish_success(self, mock_build, mp3_file, wav_file, spotify_env, monkeypatch):
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
         mock_session = MagicMock()
         mock_build.return_value = mock_session
 
@@ -577,27 +578,52 @@ class TestPublishEpisode:
         assert result.status == "published"
         assert result.anchor_episode_id == 12345
         assert result.error is None
-        create_call = mock_session.request.call_args_list[1]
+        create_call = next(
+            call
+            for call in mock_session.request.call_args_list
+            if call.args[0] == "POST" and call.args[1].endswith("/stations/1/episodes")
+        )
         assert create_call.kwargs["json"] == {"hourOffset": 0}
-        upload_call = mock_session.request.call_args_list[3]
+        upload_call = next(
+            call
+            for call in mock_session.request.call_args_list
+            if call.args[0] == "PUT" and call.args[1] == "https://gcs.example.com/upload"
+        )
         assert upload_call.kwargs["headers"]["Content-Type"] == "audio/wav"
         assert upload_call.kwargs["data"] == wav_file.read_bytes()
-        signed_url_call = mock_session.request.call_args_list[2]
+        signed_url_call = next(
+            call
+            for call in mock_session.request.call_args_list
+            if call.args[0] == "GET" and call.args[1].endswith("/upload/signedUrl")
+        )
         assert signed_url_call.kwargs["params"]["filename"] == wav_file.name
         assert signed_url_call.kwargs["params"]["type"] == "audio/wav"
-        process_call = mock_session.request.call_args_list[4]
+        process_call = next(
+            call
+            for call in mock_session.request.call_args_list
+            if call.args[0] == "POST" and call.args[1].endswith("/process_upload")
+        )
         assert process_call.kwargs["json"]["episodeId"] == 12345
         assert process_call.kwargs["json"]["stationId"] == 1
         assert process_call.kwargs["json"]["userId"] == 2
-        metadata_call = mock_session.request.call_args_list[-3]
+        metadata_call = next(
+            call
+            for call in mock_session.request.call_args_list
+            if call.args[0] == "POST" and call.args[1].endswith("/episodes/12345/update")
+        )
         assert metadata_call.kwargs["json"]["userId"] == 2
         assert metadata_call.kwargs["json"]["isPublished"] is True
         assert metadata_call.kwargs["json"]["podcastEpisodeIsExplicit"] is False
-        publish_call = mock_session.request.call_args_list[-2]
-        assert publish_call.args[1].endswith("/publish?isMumsCompatible=true")
+        assert not any(
+            call.args[0] == "POST" and call.args[1].endswith("/publish?isMumsCompatible=true")
+            for call in mock_session.request.call_args_list
+        )
 
     @patch("podcaster.publish._build_session")
-    def test_scheduled_mode_passes_date(self, mock_build, mp3_file, wav_file, spotify_env):
+    def test_scheduled_mode_passes_date(
+        self, mock_build, mp3_file, wav_file, spotify_env, monkeypatch
+    ):
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
         mock_session = MagicMock()
         mock_build.return_value = mock_session
 
@@ -633,7 +659,11 @@ class TestPublishEpisode:
         )
         assert result.status == "scheduled"
         assert result.anchor_episode_id == 999
-        metadata_call = mock_session.request.call_args_list[-3]
+        metadata_call = next(
+            call
+            for call in mock_session.request.call_args_list
+            if call.args[0] == "POST" and call.args[1].endswith("/episodes/999/update")
+        )
         assert metadata_call.kwargs["json"]["title"] == "2026-W25: Scheduled Ep"
         assert metadata_call.kwargs["json"]["seasonNumber"] == 2026
         assert metadata_call.kwargs["json"]["episodeNumber"] == 25
@@ -642,8 +672,10 @@ class TestPublishEpisode:
         assert (
             metadata_call.kwargs["json"]["wizardDraftedToPublishOn"] == "2026-06-20T09:00:00.000Z"
         )
-        publish_call = mock_session.request.call_args_list[-2]
-        assert publish_call.kwargs["json"]["publishOn"] == "2026-06-20T09:00:00Z"
+        assert not any(
+            call.args[0] == "POST" and call.args[1].endswith("/publish?isMumsCompatible=true")
+            for call in mock_session.request.call_args_list
+        )
 
     @patch("podcaster.publish._build_session")
     def test_draft_mode_does_not_publish(self, mock_build, mp3_file, wav_file, spotify_env):
@@ -3149,6 +3181,7 @@ class TestAmbiguousCreateAtCallerLevel:
 
         self._env(monkeypatch)
         monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "true")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
         session, calls = _scripted_session([_mock_error_resp(503, "unavailable")])
         monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
         monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))

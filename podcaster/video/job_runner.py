@@ -72,13 +72,19 @@ from podcaster.storage import (
     create_scratch_storage_backend,
     create_storage_backend,
 )
+from podcaster.video.budget import (
+    TimingEvidence,
+    TimingEvidenceKind,
+    VideoStage,
+    VideoStageBudget,
+)
 from podcaster.video.distribution import (
     DistributionResult,
     VideoDistributionConfig,
     distribute_video,
     youtube_enabled_for_language,
 )
-from podcaster.video.intermediates import create_intermediate_store
+from podcaster.video.intermediates import create_intermediate_store, run_storage_operation
 from podcaster.video.ownership import BoundaryPermit, OwnershipError, VideoOwnershipGuard
 from podcaster.video.perf import PipelineTimings
 from podcaster.video.sync_plan import (
@@ -93,6 +99,9 @@ from podcaster.video.sync_plan import (
     removed_repo_speaker_notes,
     weekly_url_from_job_id,
 )
+from podcaster.video.youtube_reconcile import IDENTITY_DETAIL_KEY as YOUTUBE_IDENTITY_DETAIL_KEY
+from podcaster.video.youtube_reconcile import IDENTITY_SCHEME as YOUTUBE_IDENTITY_SCHEME
+from podcaster.video.youtube_reconcile import youtube_identity_tag
 
 logger = logging.getLogger("podcaster.video.job_runner")
 
@@ -187,6 +196,10 @@ class _StorageUploaderAdapter:
 
 def manifest_path(job_id: str) -> str:
     return f"jobs/{job_id}/manifest.json"
+
+
+def video_budget_path(job_id: str) -> str:
+    return f"jobs/{job_id}/video-budget.json"
 
 
 def script_path(job_id: str) -> str:
@@ -550,6 +563,141 @@ def _record_video_state(
         logger.warning("failed to record video state for job_id=%s", job_id, exc_info=True)
 
 
+def _append_video_timing_evidence(
+    storage: StorageBackend,
+    job_id: str,
+    budget: VideoStageBudget,
+    *,
+    kind: TimingEvidenceKind,
+    stage: VideoStage,
+    reason: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Append bounded timing evidence to the staged manifest."""
+    from podcaster.generation import manifest_bytes
+
+    event = TimingEvidence(
+        timestamp_utc=budget.now_utc(),
+        kind=kind,
+        stage=stage,
+        remaining_seconds=budget.remaining_seconds(stage),
+        reason=reason,
+        details={
+            "elapsed_seconds": f"{budget.elapsed_seconds():.3f}",
+            **{str(key): str(value) for key, value in (details or {}).items()},
+        },
+    ).to_dict()
+
+    def _apply(content: bytes | None) -> bytes:
+        document = json.loads(content.decode("utf-8")) if content else {}
+        if not isinstance(document, dict):
+            document = {}
+        generation = document.setdefault("generation", {})
+        if not isinstance(generation, dict):
+            generation = {}
+            document["generation"] = generation
+        evidence = generation.setdefault(
+            "video_timing_evidence",
+            {"schema_version": 1, "max_events": 256, "events": [], "dropped": 0},
+        )
+        if not isinstance(evidence, dict) or evidence.get("schema_version") != 1:
+            raise TransientVideoError(f"invalid timing evidence for job_id={job_id}")
+        events = evidence.get("events")
+        if not isinstance(events, list):
+            raise TransientVideoError(f"invalid timing evidence events for job_id={job_id}")
+        if len(events) < int(evidence.get("max_events", 256)):
+            events.append(event)
+        else:
+            evidence["dropped"] = int(evidence.get("dropped", 0)) + 1
+        evidence["events"] = events
+        generation["video_timing_evidence"] = evidence
+        return manifest_bytes(document)
+
+    try:
+        storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
+    except TransientVideoError:
+        raise
+    except Exception:
+        logger.warning("failed to append video timing evidence job_id=%s", job_id, exc_info=True)
+
+
+def _load_or_create_video_budget(
+    storage: StorageBackend,
+    job_id: str,
+    *,
+    now_utc: datetime,
+    utcnow: Callable[[], datetime],
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
+) -> VideoStageBudget:
+    """Atomically load the job's durable budget or establish its first start."""
+    proposed = VideoStageBudget.start(now_utc=now_utc, utcnow=utcnow)
+    proposed_bytes = json.dumps(proposed.to_dict(), sort_keys=True).encode("utf-8")
+
+    def _commit() -> dict[str, Any]:
+        captured: dict[str, Any] = {}
+
+        def _apply(content: bytes | None) -> bytes:
+            if content is None:
+                captured.update(proposed.to_dict())
+                return proposed_bytes
+            existing = json.loads(content.decode("utf-8"))
+            if not isinstance(existing, dict):
+                raise TransientVideoError(f"invalid video budget for job_id={job_id}")
+            captured.update(existing)
+            return content
+
+        storage.update_bytes(
+            video_budget_path(job_id),
+            "application/json; charset=utf-8",
+            _apply,
+        )
+        return captured
+
+    try:
+        captured = operation_runner(_commit, 60.0)
+        return VideoStageBudget.from_dict(captured, now_utc=now_utc, utcnow=utcnow)
+    except TransientVideoError:
+        raise
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError, UnicodeDecodeError) as exc:
+        raise TransientVideoError(f"invalid video budget for job_id={job_id}") from exc
+    except Exception as exc:
+        raise TransientVideoError(f"could not persist video budget for job_id={job_id}") from exc
+
+
+def _persist_video_budget_in_manifest(
+    storage: StorageBackend,
+    job_id: str,
+    budget: VideoStageBudget,
+) -> None:
+    """Mirror the authoritative lifecycle budget into a valid staged manifest."""
+    from podcaster.generation import manifest_bytes
+
+    def _apply(content: bytes | None) -> bytes:
+        if content is None:
+            raise TransientVideoError(f"no manifest for job_id={job_id}")
+        document = json.loads(content.decode("utf-8"))
+        if not isinstance(document, dict):
+            raise TransientVideoError(f"manifest for job_id={job_id} is not a dict")
+        generation = document.setdefault("generation", {})
+        if not isinstance(generation, dict):
+            raise TransientVideoError(f"generation state for job_id={job_id} is not a dict")
+        generation["video_budget"] = budget.to_dict()
+        return manifest_bytes(document)
+
+    try:
+        storage.update_bytes(
+            manifest_path(job_id),
+            "application/json; charset=utf-8",
+            _apply,
+        )
+    except TransientVideoError:
+        raise
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise TransientVideoError(f"invalid manifest for job_id={job_id}") from exc
+    except Exception as exc:
+        raise TransientVideoError(f"could not persist video budget for job_id={job_id}") from exc
+
+
 def _record_video_publish(
     storage: StorageBackend,
     job_id: str,
@@ -617,6 +765,18 @@ def _ensure_video_publish_run(storage: StorageBackend, job_id: str) -> str:
 
     storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
     return captured["run_id"]
+
+
+def _upload_intent_details(
+    platform: str, identity: PublicationIdentity | None
+) -> dict[str, Any] | None:
+    """Declare the YouTube identity tag durably before the upload mutation (#678)."""
+    if platform != "youtube":
+        return None
+    tag = youtube_identity_tag(identity)
+    if tag is None:
+        return None
+    return {YOUTUBE_IDENTITY_DETAIL_KEY: tag, "identity_scheme": YOUTUBE_IDENTITY_SCHEME}
 
 
 def _record_video_publication(
@@ -870,11 +1030,16 @@ def run_video_generation(
     *,
     config: VideoDistributionConfig | None = None,
     now: datetime | None = None,
+    budget: VideoStageBudget | None = None,
+    budget_utcnow: Callable[[], datetime] | None = None,
+    on_budget_resolved: Callable[[VideoStageBudget], None] | None = None,
+    storage_operation_runner: Callable[[Callable[[], Any], float], Any] | None = None,
     compose_runner=None,
     fanout: bool | None = None,
     fanout_scratch: StorageBackend | None = None,
     clip_producer: QueueProducer | None = None,
     lifecycle_deadline_monotonic: float | None = None,
+    media_probe: Callable[[Path, float], Any] | None = None,
     ownership_execution_id: str | None = None,
     ownership_visibility_expires_at: datetime | None = None,
 ) -> VideoOutcome:
@@ -912,6 +1077,21 @@ def run_video_generation(
     media_validation_admitted = False
     ownership_guard: VideoOwnershipGuard | None = None
     promotion_permit: BoundaryPermit | None = None
+    owns_budget = budget is None
+    if budget is None:
+        utcnow = budget_utcnow or (
+            (lambda: current) if now is not None else lambda: datetime.now(timezone.utc)
+        )
+        budget = _load_or_create_video_budget(
+            storage,
+            job_id,
+            now_utc=current,
+            utcnow=utcnow,
+            operation_runner=storage_operation_runner or run_storage_operation,
+        )
+    stage_budget = budget
+    if on_budget_resolved is not None:
+        on_budget_resolved(stage_budget)
 
     def _remaining_media_validation_budget() -> float:
         nonlocal media_validation_admitted, media_validation_lease
@@ -962,6 +1142,17 @@ def run_video_generation(
 
     if not isinstance(manifest, dict):
         raise TransientVideoError(f"manifest for job_id={job_id} is not a dict")
+
+    if owns_budget:
+        _persist_video_budget_in_manifest(storage, job_id, stage_budget)
+    _append_video_timing_evidence(
+        storage,
+        job_id,
+        stage_budget,
+        kind=TimingEvidenceKind.ATTEMPT,
+        stage=VideoStage.PREFLIGHT,
+        reason="attempt",
+    )
 
     # Check idempotency
     if _already_processed(manifest):
@@ -1280,6 +1471,7 @@ def run_video_generation(
                         if lifecycle_deadline_monotonic is not None or fanout_enabled
                         else None
                     ),
+                    media_probe=media_probe,
                     before_final_promotion=_before_final_promotion,
                 )
                 if promotion_permit is None:
