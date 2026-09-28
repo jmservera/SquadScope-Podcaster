@@ -1252,8 +1252,7 @@ class TestRecordSegment:
         assert result.website_url == "https://claracle.com"
         assert page.goto.call_args_list[1].kwargs["timeout"] == 250
         assert any(
-            call.kwargs.get("timeout") == 250
-            for call in page.wait_for_load_state.call_args_list
+            call.kwargs.get("timeout") == 250 for call in page.wait_for_load_state.call_args_list
         )
         assert any(call.args == (250,) for call in page.wait_for_timeout.call_args_list)
         deadline.check.assert_any_call("dismissing website overlays")
