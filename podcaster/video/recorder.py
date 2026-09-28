@@ -267,6 +267,8 @@ def record_clip(
         )
 
     if not wrote:
+        if _manifest_is_fallback(scratch, manifest_path):
+            _best_effort_delete(scratch, clip_path)
         logger.info(
             "terminal manifest already present at write time; skipped job_id=%s clip_index=%d",
             job_id,

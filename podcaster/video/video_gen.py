@@ -2430,6 +2430,16 @@ def _record_segment(
                 has_pages = True
                 recovery_path = "website"
             else:
+                try:
+                    context.close()
+                except Exception:
+                    pass
+                context, capturer = _make_recording_context(
+                    browser,
+                    output_dir,
+                    segment_label=f"url-card {repo.url}",
+                )
+                page = context.new_page()
                 is_fallback = True
                 _render_url_card(page, repo.owner, repo.name, record_seconds, capturer)
         else:

@@ -269,6 +269,30 @@ def test_record_clip_skips_if_manifest_appears_mid_record(tmp_path) -> None:
     assert manifest.get("winner") is True
 
 
+def test_record_clip_deletes_upload_when_fallback_manifest_wins_race(tmp_path, monkeypatch) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    record, _ = _recorder(payload=b"race-bytes")
+    manifest_path = clip_manifest_blob_path(JOB_ID, 1)
+
+    def _fallback_wins(scratch_backend, path, content, content_type):
+        scratch_backend.put_bytes(
+            manifest_path,
+            b'{"clip_id":"clip-001","is_fallback":true,"status":"fallback"}',
+            "application/json",
+        )
+        return False
+
+    monkeypatch.setattr(recorder, "_write_manifest_if_absent", _fallback_wins)
+
+    outcome = record_clip(JOB_ID, 1, scratch=scratch, record_segment=record)
+
+    assert outcome.status == OUTCOME_SKIPPED
+    assert not scratch.blob_exists(clip_blob_path(JOB_ID, 1))
+    manifest = json.loads(scratch.get_bytes(manifest_path))
+    assert manifest["is_fallback"] is True
+
+
 def test_process_message_records_and_deletes(tmp_path) -> None:
     scratch = _scratch(tmp_path)
     _stage_clipset(scratch)

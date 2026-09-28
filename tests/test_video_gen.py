@@ -1006,6 +1006,28 @@ class TestRecordSegment:
         assert result.website_url == "https://proj.github.io/site/"
         assert result.video_path.exists()
 
+    def test_failed_project_site_recreates_context_for_url_card(self, tmp_path):
+        browser, out_dir = self._mock_browser(tmp_path)
+        page = browser.new_context.return_value.new_page.return_value
+        page.goto.return_value = MagicMock(status=404)
+        segment = _make_segment(owner="proj", name="site", duration=2.0)
+
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=False),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=True),
+            patch("podcaster.video.video_gen._navigate_to_website", return_value=True),
+            patch(
+                "podcaster.video.video_gen._smooth_scroll",
+                side_effect=RuntimeError("TargetClosedError"),
+            ),
+        ):
+            result = _record_segment(browser, segment, out_dir)
+
+        assert browser.new_context.call_count == 2
+        assert result.is_fallback is True
+        assert result.recovery_path == "fallback"
+        assert result.video_path.exists()
+
     def test_removed_repo_skips_navigation_and_renders_card(self, tmp_path):
         # A planning-time pre-flight flagged the repo as removed (issue #394):
         # no navigation is attempted and a "Repo removed" card is rendered.
