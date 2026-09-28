@@ -106,11 +106,16 @@ def _resolve_publish_media_path(path: Path, label: str) -> Path:
 
 
 def _publish_media_file_exists(candidate: Path) -> bool:
-    try:
-        names = set(os.listdir(candidate.parent))
-    except FileNotFoundError:
-        return False
-    return candidate.name in names
+    for root in _approved_media_roots():
+        if not candidate.is_relative_to(root):
+            continue
+        expected = candidate.relative_to(root).as_posix()
+        for dirpath, _dirnames, filenames in os.walk(root, onerror=lambda _e: None):
+            directory = Path(dirpath)
+            for filename in filenames:
+                if (directory.relative_to(root) / filename).as_posix() == expected:
+                    return True
+    return False
 
 
 def _existing_publish_media_file(path: Path, label: str) -> Path:
