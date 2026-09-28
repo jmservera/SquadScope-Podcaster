@@ -408,6 +408,8 @@ def process_clip_message(
                     f"(cap {MAX_DEQUEUE_COUNT})"
                 ),
             )
+            if _manifest_is_fallback(scratch, clip_manifest_blob_path(job_id, clip_index)):
+                _best_effort_delete(scratch, clip_blob_path(job_id, clip_index))
             queue.delete_message(message)
             return outcome
         return ClipOutcome(job_id, clip_index, OUTCOME_RETRY)
@@ -432,6 +434,20 @@ def _best_effort_delete(scratch: StorageBackend, path: str) -> None:
         deleter(path)
     except Exception:  # pragma: no cover - defensive cleanup
         logger.debug("failed to delete unverified clip %s", path, exc_info=True)
+
+
+def _manifest_is_fallback(scratch: StorageBackend, path: str) -> bool:
+    try:
+        raw = scratch.get_bytes(path)
+    except Exception:
+        return False
+    if not raw:
+        return False
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, TypeError):
+        return False
+    return isinstance(data, dict) and bool(data.get("is_fallback"))
 
 
 def _fake_browser_enabled(env: Mapping[str, str]) -> bool:

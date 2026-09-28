@@ -1187,6 +1187,7 @@ class TestRecordSegment:
             result = _record_segment(browser, segment, out_dir)
 
         assert scroll.call_count == 2
+        assert browser.new_context.call_count == 2
         assert page.goto.call_args_list[-1].args[0] == "https://github.com/Aureliengmz/clearwater"
         assert result.website_url is None
         assert result.is_fallback is False

@@ -2463,6 +2463,21 @@ def _record_segment(
                 if website_url and website_recorded:
                     pass
                 else:
+                    if reload_repo_page:
+                        try:
+                            context.close()
+                        except Exception:
+                            pass
+                        context, capturer = _make_recording_context(
+                            browser,
+                            output_dir,
+                            segment_label=f"repo fallback {repo.url}",
+                        )
+                        page = context.new_page()
+                        try:
+                            page.set_content(DARK_HOLD_HTML)
+                        except Exception:
+                            pass
                     if website_url or reload_repo_page:
                         # _navigate_to_website may have navigated the page away
                         # from the GitHub repo (e.g. an HTTP >= 400 response

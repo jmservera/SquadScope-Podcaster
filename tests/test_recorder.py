@@ -332,6 +332,23 @@ def test_process_message_retry_cap_writes_fallback_after_failure(tmp_path) -> No
     assert "recording failed" in manifest["failure_reason"]
 
 
+def test_process_message_retry_cap_deletes_orphan_clip_before_fallback(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    scratch.put_bytes(clip_blob_path(JOB_ID, 1), b"orphaned-webm", "video/webm")
+    queue = FakeQueue()
+
+    def _boom(segment, output_dir):
+        raise RuntimeError("failed after orphan upload")
+
+    message = _message(1, dequeue_count=MAX_DEQUEUE_COUNT - 1)
+    outcome = process_clip_message(message, scratch=scratch, queue=queue, record_segment=_boom)
+
+    assert outcome.status == OUTCOME_FALLBACK
+    assert scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
+    assert not scratch.blob_exists(clip_blob_path(JOB_ID, 1))
+
+
 def test_drain_processes_until_empty(tmp_path) -> None:
     scratch = _scratch(tmp_path)
     _stage_clipset(scratch)
