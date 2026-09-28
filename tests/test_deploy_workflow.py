@@ -380,6 +380,27 @@ def test_reusable_deploy_workflow_accepts_image_overrides() -> None:
     assert "inputs.api_image || format('{0}/{1}:latest'" in workflow
 
 
+def test_reusable_deploy_workflow_syncs_squadscope_repo_and_environment_secret() -> None:
+    workflow = _reusable_workflow_text()
+
+    assert "gh secret set PODCASTER_API_KEY --repo jmservera/SquadScope; then" in workflow, (
+        "sync must keep updating the SquadScope repository secret"
+    )
+    assert (
+        "gh secret set PODCASTER_API_KEY --repo jmservera/SquadScope "
+        "--env podcaster-real-generation" in workflow
+    ), "sync must update the environment secret that shadows the repo secret"
+    assert "gh secret list --repo jmservera/SquadScope >/dev/null" in workflow
+    assert "gh secret list --repo jmservera/SquadScope --env podcaster-real-generation" in workflow
+    assert "before changing any secret" in workflow
+    assert "Failed to sync jmservera/SquadScope environment secret PODCASTER_API_KEY" in workflow
+    assert "environment access/Environments permission for podcaster-real-generation" in workflow
+    assert (
+        "Synced PODCASTER_API_KEY to jmservera/SquadScope environment secret "
+        "podcaster-real-generation"
+    ) in workflow
+
+
 def test_bicep_provisions_blob_lifecycle_cleanup_policy() -> None:
     # Regression guard for the artifact retention contract (#89): the job manifest
     # and podcaster/artifact_access.py promise expires_at / retention.cleanup_after
