@@ -1436,6 +1436,16 @@ def _bounded_wait_for_timeout(
     page.wait_for_timeout(requested_ms if remaining_ms is None else min(requested_ms, remaining_ms))
 
 
+def _bounded_timeout_ms(default_ms: int, deadline: "_CaptureDeadline | None") -> int:
+    """Return a Playwright timeout capped by the remaining capture deadline."""
+    if deadline is None:
+        return default_ms
+    remaining_ms = deadline.remaining_ms()
+    if remaining_ms is None:
+        return default_ms
+    return max(1, min(default_ms, remaining_ms))
+
+
 def _run_scroll_positions(
     page: Page,
     positions: "list[int]",
@@ -1788,7 +1798,7 @@ def _scroll_github_readme(
     elapsed_ms = total_frames * tick_interval_ms
     remainder_ms = int(duration_seconds * 1000) - elapsed_ms
     if remainder_ms > 0:
-        page.wait_for_timeout(remainder_ms)
+        _bounded_wait_for_timeout(page, remainder_ms, deadline)
 
 
 def _extract_website_url(page: Page) -> str | None:
@@ -1808,7 +1818,11 @@ def _extract_website_url(page: Page) -> str | None:
     return None
 
 
-def _navigate_to_website(page: Page, url: str) -> bool:
+def _navigate_to_website(
+    page: Page,
+    url: str,
+    deadline: "_CaptureDeadline | None" = None,
+) -> bool:
     """Navigate to the repo's external website (issue #360).
 
     Uses a shorter timeout than GitHub so a slow/down site fails fast.  Returns
@@ -1819,7 +1833,7 @@ def _navigate_to_website(page: Page, url: str) -> bool:
         response = page.goto(
             url,
             wait_until="networkidle",
-            timeout=WEBSITE_NAV_TIMEOUT_MS,
+            timeout=_bounded_timeout_ms(WEBSITE_NAV_TIMEOUT_MS, deadline),
         )
     except Exception:
         logger.warning("Failed to load website %s — falling back to GitHub", url)
@@ -2290,7 +2304,7 @@ def _try_record_project_site(
     if not _check_gh_pages(repo.owner, repo.name):
         return None
     pages_url = f"https://{repo.owner}.github.io/{repo.name}/"
-    if not _navigate_to_website(page, pages_url):
+    if not _navigate_to_website(page, pages_url, deadline):
         return None
     logger.info(
         "Repo %s unrecordable; recording project site %s instead",
@@ -2301,11 +2315,18 @@ def _try_record_project_site(
         if deadline is not None:
             deadline.check("recording project site")
         try:
-            page.wait_for_load_state("networkidle", timeout=WEBSITE_NAV_TIMEOUT_MS)
+            page.wait_for_load_state(
+                "networkidle",
+                timeout=_bounded_timeout_ms(WEBSITE_NAV_TIMEOUT_MS, deadline),
+            )
         except Exception:
             pass
-        page.wait_for_timeout(PAGE_SETTLE_MS)
+        _bounded_wait_for_timeout(page, PAGE_SETTLE_MS, deadline)
+        if deadline is not None:
+            deadline.check("dismissing project site overlays")
         _dismiss_overlays(page)
+        if deadline is not None:
+            deadline.check("preparing project site")
         _prepare_page_for_recording(page)
         _smooth_scroll(page, duration_seconds, capturer, deadline=deadline)
         if capturer is not None and capturer.count == 0 and capturer.still_image is None:
@@ -2484,23 +2505,36 @@ def _record_segment(
                 website_url = _extract_website_url(page)
                 website_recorded = False
                 reload_repo_page = False
-                if website_url and _navigate_to_website(page, website_url):
+                website_deadline = _new_site_deadline() if website_url else None
+                if website_url and _navigate_to_website(page, website_url, website_deadline):
                     try:
-                        page.wait_for_load_state("networkidle", timeout=WEBSITE_NAV_TIMEOUT_MS)
+                        page.wait_for_load_state(
+                            "networkidle",
+                            timeout=_bounded_timeout_ms(
+                                WEBSITE_NAV_TIMEOUT_MS,
+                                website_deadline,
+                            ),
+                        )
                     except Exception:
                         pass
                     try:
-                        page.wait_for_timeout(PAGE_SETTLE_MS)
+                        _bounded_wait_for_timeout(page, PAGE_SETTLE_MS, website_deadline)
+                        if website_deadline is not None:
+                            website_deadline.check("dismissing website overlays")
                         _dismiss_overlays(page)
                         # External sites (unlike github.com) commonly show cookie
                         # consent banners that would overlay the recording (#388).
+                        if website_deadline is not None:
+                            website_deadline.check("dismissing website cookie consent")
                         _dismiss_cookie_consent(page)
+                        if website_deadline is not None:
+                            website_deadline.check("preparing website page")
                         _prepare_page_for_recording(page)
                         _scroll_github_readme(
                             page,
                             record_seconds,
                             capturer,
-                            _new_site_deadline(),
+                            website_deadline,
                         )
                         if (
                             capturer is not None

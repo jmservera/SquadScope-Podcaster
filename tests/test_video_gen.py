@@ -922,6 +922,16 @@ class TestNavigateToWebsite:
         assert _navigate_to_website(page, "https://example.com") is True
         page.goto.assert_called_once()
 
+    def test_uses_remaining_deadline_as_navigation_timeout(self):
+        page = MagicMock()
+        page.goto.return_value = MagicMock(status=200)
+        deadline = _CaptureDeadline.from_seconds(0.25)
+
+        assert _navigate_to_website(page, "https://example.com", deadline) is True
+
+        timeout = page.goto.call_args.kwargs["timeout"]
+        assert 1 <= timeout <= 250
+
     def test_returns_true_when_no_response(self):
         page = MagicMock()
         page.goto.return_value = None
@@ -1217,6 +1227,36 @@ class TestRecordSegment:
         assert result.website_url is None
         assert result.is_fallback is False
         assert result.video_path.exists()
+
+    def test_external_website_deadline_starts_before_navigation_and_setup(self, tmp_path):
+        browser, out_dir = self._mock_browser(tmp_path)
+        page = browser.new_context.return_value.new_page.return_value
+        page.goto.return_value = MagicMock(status=200)
+        deadline = MagicMock()
+        deadline.remaining_ms.return_value = 250
+        segment = _make_segment(owner="jmservera", name="SquadScope", duration=2.0)
+
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
+            patch(
+                "podcaster.video.video_gen._extract_website_url",
+                return_value="https://claracle.com",
+            ),
+            patch("podcaster.video.video_gen._new_site_deadline", return_value=deadline),
+            patch("podcaster.video.video_gen._scroll_github_readme"),
+            patch("podcaster.video.video_gen.SCREENSHOT_CAPTURE_ENABLED", False),
+        ):
+            result = _record_segment(browser, segment, out_dir)
+
+        assert result.website_url == "https://claracle.com"
+        assert page.goto.call_args_list[1].kwargs["timeout"] == 250
+        assert any(
+            call.kwargs.get("timeout") == 250
+            for call in page.wait_for_load_state.call_args_list
+        )
+        assert any(call.args == (250,) for call in page.wait_for_timeout.call_args_list)
+        deadline.check.assert_any_call("dismissing website overlays")
 
     def test_falls_back_to_github_when_website_capture_fails(self, tmp_path):
         browser, out_dir = self._mock_browser(tmp_path)
