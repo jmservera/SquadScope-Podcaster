@@ -35,10 +35,12 @@ from podcaster.video.video_gen import (
     SCROLL_TICKS_PER_SEC,
     WIDTH,
     ZOOM_PAGE_CSS,
+    CaptureDeadlineExceeded,
     RecordedSegment,
     _apply_page_zoom,
     _build_frames_to_video_cmd,
     _build_still_to_video_cmd,
+    _CaptureDeadline,
     _Capturer,
     _check_gh_pages,
     _check_repo_accessible,
@@ -58,6 +60,7 @@ from podcaster.video.video_gen import (
     _navigate_to_website,
     _navigate_with_recovery,
     _neutralize_fixed_sticky,
+    _new_site_deadline,
     _pad_frames,
     _page_has_content,
     _prepare_page_for_recording,
@@ -70,6 +73,7 @@ from podcaster.video.video_gen import (
     _smooth_scroll,
     _try_navigate_repo,
     _try_record_project_site,
+    bounded_site_record_seconds,
     capped_record_seconds,
     record_episode,
 )
@@ -362,6 +366,16 @@ class TestSmoothScroll:
         # Should wait instead of scrolling
         page.wait_for_timeout.assert_called_once_with(2000)
 
+    def test_no_scroll_wait_is_bounded_by_deadline(self):
+        page = MagicMock()
+        page.viewport_size = {"width": WIDTH, "height": HEIGHT}
+        page.evaluate.side_effect = lambda js: HEIGHT if "scrollHeight" in js else None
+
+        _smooth_scroll(page, 2.0, deadline=_CaptureDeadline.from_seconds(0.25))
+
+        waited = page.wait_for_timeout.call_args.args[0]
+        assert 1 <= waited <= 250
+
     def test_zero_duration(self):
         page = MagicMock()
         _smooth_scroll(page, 0.0)
@@ -379,6 +393,15 @@ class TestSmoothScroll:
         page.evaluate.assert_not_called()
         # Should wait for the full duration
         page.wait_for_timeout.assert_called_once_with(20)
+
+    def test_short_duration_wait_aborts_when_deadline_expired(self):
+        page = MagicMock()
+        page.viewport_size = {"width": WIDTH, "height": HEIGHT}
+
+        with pytest.raises(CaptureDeadlineExceeded, match="site capture deadline exceeded"):
+            _smooth_scroll(page, 0.02, deadline=_CaptureDeadline(time.monotonic() - 1))
+
+        page.wait_for_timeout.assert_not_called()
 
 
 # --- Deterministic frame-indexed scrolling (issue #413) ---
@@ -618,6 +641,15 @@ class TestScrollGithubReadme:
         # Early frames hold on the header (y==0).
         first = re.search(r"scrollTo\(0,\s*(\d+)\)", str(scroll_calls[0]))
         assert first is not None and int(first.group(1)) == 0
+
+    def test_capturer_passes_screenshot_timeout(self, tmp_path):
+        page = MagicMock()
+        page.screenshot.side_effect = lambda path, timeout=None: Path(path).write_bytes(_PNG_64x64)
+        cap = _Capturer(tmp_path / "frames")
+
+        cap.frame(page, timeout_ms=1234)
+
+        assert page.screenshot.call_args.kwargs["timeout"] == 1234
 
     def test_readme_y_clamped_to_scrollable(self, tmp_path, caplog):
         import logging
@@ -890,6 +922,16 @@ class TestNavigateToWebsite:
         assert _navigate_to_website(page, "https://example.com") is True
         page.goto.assert_called_once()
 
+    def test_uses_remaining_deadline_as_navigation_timeout(self):
+        page = MagicMock()
+        page.goto.return_value = MagicMock(status=200)
+        deadline = _CaptureDeadline.from_seconds(0.25)
+
+        assert _navigate_to_website(page, "https://example.com", deadline) is True
+
+        timeout = page.goto.call_args.kwargs["timeout"]
+        assert 1 <= timeout <= 250
+
     def test_returns_true_when_no_response(self):
         page = MagicMock()
         page.goto.return_value = None
@@ -993,6 +1035,28 @@ class TestRecordSegment:
         assert result.recovery_path == "website"
         assert result.has_pages is True
         assert result.website_url == "https://proj.github.io/site/"
+        assert result.video_path.exists()
+
+    def test_failed_project_site_recreates_context_for_url_card(self, tmp_path):
+        browser, out_dir = self._mock_browser(tmp_path)
+        page = browser.new_context.return_value.new_page.return_value
+        page.goto.return_value = MagicMock(status=404)
+        segment = _make_segment(owner="proj", name="site", duration=2.0)
+
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=False),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=True),
+            patch("podcaster.video.video_gen._navigate_to_website", return_value=True),
+            patch(
+                "podcaster.video.video_gen._smooth_scroll",
+                side_effect=RuntimeError("TargetClosedError"),
+            ),
+        ):
+            result = _record_segment(browser, segment, out_dir)
+
+        assert browser.new_context.call_count == 2
+        assert result.is_fallback is True
+        assert result.recovery_path == "fallback"
         assert result.video_path.exists()
 
     def test_removed_repo_skips_navigation_and_renders_card(self, tmp_path):
@@ -1164,6 +1228,120 @@ class TestRecordSegment:
         assert result.is_fallback is False
         assert result.video_path.exists()
 
+    def test_external_website_deadline_starts_before_navigation_and_setup(self, tmp_path):
+        browser, out_dir = self._mock_browser(tmp_path)
+        page = browser.new_context.return_value.new_page.return_value
+        page.goto.return_value = MagicMock(status=200)
+        deadline = MagicMock()
+        deadline.remaining_ms.return_value = 250
+        segment = _make_segment(owner="jmservera", name="SquadScope", duration=2.0)
+
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
+            patch(
+                "podcaster.video.video_gen._extract_website_url",
+                return_value="https://claracle.com",
+            ),
+            patch("podcaster.video.video_gen._new_site_deadline", return_value=deadline),
+            patch("podcaster.video.video_gen._scroll_github_readme"),
+            patch("podcaster.video.video_gen.SCREENSHOT_CAPTURE_ENABLED", False),
+        ):
+            result = _record_segment(browser, segment, out_dir)
+
+        assert result.website_url == "https://claracle.com"
+        assert page.goto.call_args_list[1].kwargs["timeout"] == 250
+        assert any(
+            call.kwargs.get("timeout") == 250 for call in page.wait_for_load_state.call_args_list
+        )
+        assert any(call.args == (250,) for call in page.wait_for_timeout.call_args_list)
+        deadline.check.assert_any_call("dismissing website overlays")
+
+    def test_falls_back_to_github_when_website_capture_fails(self, tmp_path):
+        browser, out_dir = self._mock_browser(tmp_path)
+        page = browser.new_context.return_value.new_page.return_value
+        page.goto.return_value = MagicMock(status=200)
+        segment = _make_segment(owner="Aureliengmz", name="clearwater", duration=2.0)
+
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=True),
+            patch(
+                "podcaster.video.video_gen._extract_website_url",
+                return_value="https://aureliengmz.github.io/clearwater/",
+            ),
+            patch("podcaster.video.video_gen._navigate_to_website", return_value=True),
+            patch(
+                "podcaster.video.video_gen._scroll_github_readme",
+                side_effect=[RuntimeError("TargetClosedError"), None],
+            ) as scroll,
+        ):
+            result = _record_segment(browser, segment, out_dir)
+
+        assert scroll.call_count == 2
+        assert browser.new_context.call_count == 2
+        assert page.goto.call_args_list[-1].args[0] == "https://github.com/Aureliengmz/clearwater"
+        assert result.website_url is None
+        assert result.is_fallback is False
+        assert result.video_path.exists()
+
+    def test_website_capture_failure_uses_url_card_when_repo_recovery_fails(self, tmp_path):
+        browser, out_dir = self._mock_browser(tmp_path)
+        segment = _make_segment(owner="Aureliengmz", name="clearwater", duration=2.0)
+
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=True),
+            patch(
+                "podcaster.video.video_gen._extract_website_url",
+                return_value="https://aureliengmz.github.io/clearwater/",
+            ),
+            patch("podcaster.video.video_gen._navigate_to_website", return_value=True),
+            patch("podcaster.video.video_gen._try_navigate_repo", side_effect=[True, False]),
+            patch(
+                "podcaster.video.video_gen._scroll_github_readme",
+                side_effect=RuntimeError("TargetClosedError"),
+            ),
+        ):
+            result = _record_segment(browser, segment, out_dir)
+
+        assert result.is_fallback is True
+        assert result.recovery_path == "fallback"
+        assert result.website_url is None
+        assert result.video_path.exists()
+
+    def test_finalization_without_screenshots_renders_fallback_card(self, tmp_path):
+        browser, out_dir = self._mock_browser(tmp_path)
+        page = browser.new_context.return_value.new_page.return_value
+        page.goto.return_value = MagicMock(status=200)
+        segment = _make_segment(owner="slow", name="closed-page", duration=2.0)
+
+        def fake_compose(capturer, duration_seconds, output_path):
+            if fake_compose.calls == 0:
+                fake_compose.calls += 1
+                raise RuntimeError(
+                    "No screenshots captured for screenshot-based segment composition"
+                )
+            Path(output_path).write_bytes(b"\x00\x00\x00\x18ftypmp42stub")
+            return Path(output_path)
+
+        fake_compose.calls = 0
+
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
+            patch("podcaster.video.video_gen._extract_website_url", return_value=None),
+            patch(
+                "podcaster.video.video_gen._compose_screenshot_segment",
+                side_effect=fake_compose,
+            ),
+        ):
+            result = _record_segment(browser, segment, out_dir)
+
+        assert result.is_fallback is True
+        assert result.recovery_path == "fallback"
+        assert result.video_path.exists()
+
 
 # --- Per-clip recording duration cap (issue #592) ---
 
@@ -1184,6 +1362,29 @@ class TestCappedRecordSeconds:
             assert capped_record_seconds(1440.0) == 1440.0
         with patch("podcaster.video.video_gen.MAX_CLIP_RECORD_SECONDS", -1):
             assert capped_record_seconds(1440.0) == 1440.0
+
+
+class TestBoundedSiteRecordSeconds:
+    def test_applies_site_deadline_after_clip_cap(self):
+        with (
+            patch("podcaster.video.video_gen.MAX_CLIP_RECORD_SECONDS", 600),
+            patch("podcaster.video.video_gen.SITE_CAPTURE_DEADLINE_SECONDS", 120),
+        ):
+            assert bounded_site_record_seconds(1440.0) == 120.0
+
+    def test_deadline_can_be_disabled(self):
+        with (
+            patch("podcaster.video.video_gen.MAX_CLIP_RECORD_SECONDS", 600),
+            patch("podcaster.video.video_gen.SITE_CAPTURE_DEADLINE_SECONDS", 0),
+        ):
+            assert bounded_site_record_seconds(1440.0) == 600.0
+            assert _new_site_deadline().deadline_at is None
+
+    def test_deadline_uses_site_setting_not_record_duration(self):
+        with patch("podcaster.video.video_gen.SITE_CAPTURE_DEADLINE_SECONDS", 120):
+            deadline = _new_site_deadline()
+        assert deadline.deadline_at is not None
+        assert 110_000 <= deadline.remaining_ms() <= 120_000
 
 
 @pytest.mark.usefixtures("stub_compose")
@@ -1217,7 +1418,7 @@ class TestRecordingCap:
 
         seen: dict[str, float] = {}
 
-        def _capture_scroll(page, duration_seconds, capturer=None):
+        def _capture_scroll(page, duration_seconds, capturer=None, deadline=None):
             seen["scroll"] = duration_seconds
 
         real_finalize = None
@@ -1231,6 +1432,7 @@ class TestRecordingCap:
 
         with (
             patch("podcaster.video.video_gen.MAX_CLIP_RECORD_SECONDS", 600),
+            patch("podcaster.video.video_gen.SITE_CAPTURE_DEADLINE_SECONDS", 120),
             patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
             patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
             patch("podcaster.video.video_gen._extract_website_url", return_value=None),
@@ -1239,9 +1441,9 @@ class TestRecordingCap:
         ):
             result = _record_segment(browser, segment, out_dir, check_accessibility=False)
 
-        # Recording (scroll) and finalize both clamp to the 600s cap, not 1440s.
-        assert seen["scroll"] == 600.0
-        assert seen["finalize"] == 600.0
+        # Recording (scroll) and finalize both clamp to the tighter site deadline.
+        assert seen["scroll"] == 120.0
+        assert seen["finalize"] == 120.0
         # A valid clip is still produced — the clip is never failed (issue #592).
         assert result.video_path.exists()
         assert result.is_fallback is False
@@ -1252,7 +1454,7 @@ class TestRecordingCap:
 
         seen: dict[str, float] = {}
 
-        def _capture_scroll(page, duration_seconds, capturer=None):
+        def _capture_scroll(page, duration_seconds, capturer=None, deadline=None):
             seen["scroll"] = duration_seconds
 
         with (
@@ -1275,13 +1477,14 @@ class TestRecordingCap:
 
         with (
             patch("podcaster.video.video_gen.MAX_CLIP_RECORD_SECONDS", 600),
+            patch("podcaster.video.video_gen.SITE_CAPTURE_DEADLINE_SECONDS", 120),
             patch("podcaster.video.video_gen._render_generic_background") as bg,
         ):
             bg.side_effect = lambda page, d, cap, brand_name=None: seen.__setitem__("bg", d)
             result = _record_segment(browser, segment, out_dir)
 
-        # Static generic background hold is clamped to the cap, valid clip made.
-        assert seen["bg"] == 600.0
+        # Static generic background hold is clamped to the tighter site deadline.
+        assert seen["bg"] == 120.0
         assert result.video_path.exists()
 
 

@@ -66,6 +66,8 @@ ENV_FAKE_BROWSER = "PODCASTER_RECORDER_FAKE_BROWSER"
 #: mid-flight (RFC §8).
 ENV_CLIP_VISIBILITY_TIMEOUT = "PODCASTER_CLIP_VISIBILITY_TIMEOUT"
 DEFAULT_CLIP_VISIBILITY_TIMEOUT = 900
+ENV_RECORDER_MAX_MESSAGES = "PODCASTER_RECORDER_MAX_MESSAGES"
+DEFAULT_RECORDER_MAX_MESSAGES = 1
 
 _JSON_CONTENT_TYPE = "application/json; charset=utf-8"
 _WEBM_CONTENT_TYPE = "video/webm"
@@ -265,6 +267,8 @@ def record_clip(
         )
 
     if not wrote:
+        if _manifest_is_fallback(scratch, manifest_path):
+            _best_effort_delete(scratch, clip_path)
         logger.info(
             "terminal manifest already present at write time; skipped job_id=%s clip_index=%d",
             job_id,
@@ -391,6 +395,27 @@ def process_clip_message(
             job_id,
             clip_index,
         )
+        if message.dequeue_count >= MAX_DEQUEUE_COUNT - 1:
+            logger.warning(
+                "recorder retry cap reached after failure job_id=%s clip_index=%d "
+                "dequeue_count=%d; writing terminal fallback manifest",
+                job_id,
+                clip_index,
+                message.dequeue_count,
+            )
+            outcome = write_fallback_manifest(
+                job_id,
+                clip_index,
+                scratch=scratch,
+                reason=(
+                    f"recording failed after dequeue_count={message.dequeue_count} "
+                    f"(cap {MAX_DEQUEUE_COUNT})"
+                ),
+            )
+            if _manifest_is_fallback(scratch, clip_manifest_blob_path(job_id, clip_index)):
+                _best_effort_delete(scratch, clip_blob_path(job_id, clip_index))
+            queue.delete_message(message)
+            return outcome
         return ClipOutcome(job_id, clip_index, OUTCOME_RETRY)
 
     queue.delete_message(message)
@@ -415,6 +440,20 @@ def _best_effort_delete(scratch: StorageBackend, path: str) -> None:
         logger.debug("failed to delete unverified clip %s", path, exc_info=True)
 
 
+def _manifest_is_fallback(scratch: StorageBackend, path: str) -> bool:
+    try:
+        raw = scratch.get_bytes(path)
+    except Exception:
+        return False
+    if not raw:
+        return False
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, TypeError):
+        return False
+    return isinstance(data, dict) and bool(data.get("is_fallback"))
+
+
 def _fake_browser_enabled(env: Mapping[str, str]) -> bool:
     raw = env.get(ENV_FAKE_BROWSER, "")
     return raw.strip().lower() in {"1", "true", "yes", "on"}
@@ -428,7 +467,7 @@ def _select_record_segment(env: Mapping[str, str]) -> RecordSegmentFn:
 
 def _fake_record_segment(segment: "VideoSegment", output_dir: Path) -> RecordResult:
     """Synthesise a tiny placeholder clip (no Chromium) for CI / fan-out tests."""
-    from podcaster.video.video_gen import capped_record_seconds
+    from podcaster.video.video_gen import bounded_site_record_seconds
 
     video_path = output_dir / "clip.webm"
     # A minimal non-empty payload — the fan-out harness only asserts the blob and
@@ -436,7 +475,7 @@ def _fake_record_segment(segment: "VideoSegment", output_dir: Path) -> RecordRes
     video_path.write_bytes(b"\x1aE\xdf\xa3FAKE-CLIP")
     # Report the cap-clamped duration so the manifest matches what a real
     # recording would produce for an over-long segment (issue #592).
-    duration_ms = int(round(capped_record_seconds(float(segment.duration_seconds)) * 1000))
+    duration_ms = int(round(bounded_site_record_seconds(float(segment.duration_seconds)) * 1000))
     return RecordResult(video_path=video_path, duration_ms=duration_ms, is_fallback=False)
 
 
@@ -444,7 +483,7 @@ def _production_record_segment(segment: "VideoSegment", output_dir: Path) -> Rec
     """Record one segment with a real Chromium browser via the unchanged path."""
     from playwright.sync_api import sync_playwright
 
-    from podcaster.video.video_gen import _record_segment, capped_record_seconds
+    from podcaster.video.video_gen import _record_segment, bounded_site_record_seconds
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
@@ -464,7 +503,7 @@ def _production_record_segment(segment: "VideoSegment", output_dir: Path) -> Rec
     # realized clip is at most ``MAX_CLIP_RECORD_SECONDS`` long. Persist the
     # cap-clamped duration in the manifest so the editor's EDL trims/loops within
     # the clip's actual bounds (never seeking past EOF).
-    duration_ms = int(round(capped_record_seconds(float(segment.duration_seconds)) * 1000))
+    duration_ms = int(round(bounded_site_record_seconds(float(segment.duration_seconds)) * 1000))
     return RecordResult(
         video_path=video_path,
         duration_ms=duration_ms,
@@ -487,18 +526,30 @@ def _visibility_timeout(env: Mapping[str, str]) -> int:
     return value if value > 0 else DEFAULT_CLIP_VISIBILITY_TIMEOUT
 
 
+def _max_messages(env: Mapping[str, str]) -> int:
+    raw = env.get(ENV_RECORDER_MAX_MESSAGES, "")
+    if not raw.strip():
+        return DEFAULT_RECORDER_MAX_MESSAGES
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return DEFAULT_RECORDER_MAX_MESSAGES
+    return value if value > 0 else DEFAULT_RECORDER_MAX_MESSAGES
+
+
 def drain(
     queue: Any,
     scratch: StorageBackend,
     *,
-    max_messages: int = 256,
+    max_messages: int | None = None,
     env: Mapping[str, str] | None = None,
 ) -> list[ClipOutcome]:
     """Process clip messages until the queue drains or *max_messages* is hit."""
     env = env if env is not None else os.environ
     visibility = _visibility_timeout(env)
+    limit = _max_messages(env) if max_messages is None else max_messages
     outcomes: list[ClipOutcome] = []
-    while len(outcomes) < max_messages:
+    while len(outcomes) < limit:
         messages = queue.receive_messages(max_messages=1, visibility_timeout=visibility)
         if not messages:
             break

@@ -269,6 +269,30 @@ def test_record_clip_skips_if_manifest_appears_mid_record(tmp_path) -> None:
     assert manifest.get("winner") is True
 
 
+def test_record_clip_deletes_upload_when_fallback_manifest_wins_race(tmp_path, monkeypatch) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    record, _ = _recorder(payload=b"race-bytes")
+    manifest_path = clip_manifest_blob_path(JOB_ID, 1)
+
+    def _fallback_wins(scratch_backend, path, content, content_type):
+        scratch_backend.put_bytes(
+            manifest_path,
+            b'{"clip_id":"clip-001","is_fallback":true,"status":"fallback"}',
+            "application/json",
+        )
+        return False
+
+    monkeypatch.setattr(recorder, "_write_manifest_if_absent", _fallback_wins)
+
+    outcome = record_clip(JOB_ID, 1, scratch=scratch, record_segment=record)
+
+    assert outcome.status == OUTCOME_SKIPPED
+    assert not scratch.blob_exists(clip_blob_path(JOB_ID, 1))
+    manifest = json.loads(scratch.get_bytes(manifest_path))
+    assert manifest["is_fallback"] is True
+
+
 def test_process_message_records_and_deletes(tmp_path) -> None:
     scratch = _scratch(tmp_path)
     _stage_clipset(scratch)
@@ -314,7 +338,57 @@ def test_process_message_transient_error_leaves_message(tmp_path) -> None:
     assert queue.deleted == []  # left for redelivery / eventual poison
 
 
+def test_process_message_retry_cap_writes_fallback_after_failure(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    queue = FakeQueue()
+
+    def _boom(segment, output_dir):
+        raise RuntimeError("deterministic browser failure")
+
+    message = _message(1, dequeue_count=MAX_DEQUEUE_COUNT - 1)
+    outcome = process_clip_message(message, scratch=scratch, queue=queue, record_segment=_boom)
+
+    assert outcome.status == OUTCOME_FALLBACK
+    assert queue.deleted == [message]
+    manifest = json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 1)))
+    assert manifest["is_fallback"] is True
+    assert "recording failed" in manifest["failure_reason"]
+
+
+def test_process_message_retry_cap_deletes_orphan_clip_before_fallback(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    scratch.put_bytes(clip_blob_path(JOB_ID, 1), b"orphaned-webm", "video/webm")
+    queue = FakeQueue()
+
+    def _boom(segment, output_dir):
+        raise RuntimeError("failed after orphan upload")
+
+    message = _message(1, dequeue_count=MAX_DEQUEUE_COUNT - 1)
+    outcome = process_clip_message(message, scratch=scratch, queue=queue, record_segment=_boom)
+
+    assert outcome.status == OUTCOME_FALLBACK
+    assert scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
+    assert not scratch.blob_exists(clip_blob_path(JOB_ID, 1))
+
+
 def test_drain_processes_until_empty(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    queue = FakeQueue()
+    queue.inbox = [_message(0), _message(1)]
+    env = {"PODCASTER_RECORDER_FAKE_BROWSER": "1"}
+
+    outcomes = recorder.drain(queue, scratch, max_messages=256, env=env)
+
+    assert [o.status for o in outcomes] == [OUTCOME_RECORDED, OUTCOME_RECORDED]
+    assert len(queue.deleted) == 2
+    assert scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 0))
+    assert scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
+
+
+def test_drain_defaults_to_one_message_per_execution(tmp_path) -> None:
     scratch = _scratch(tmp_path)
     _stage_clipset(scratch)
     queue = FakeQueue()
@@ -323,10 +397,9 @@ def test_drain_processes_until_empty(tmp_path) -> None:
 
     outcomes = recorder.drain(queue, scratch, env=env)
 
-    assert [o.status for o in outcomes] == [OUTCOME_RECORDED, OUTCOME_RECORDED]
-    assert len(queue.deleted) == 2
-    assert scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 0))
-    assert scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
+    assert [o.clip_index for o in outcomes] == [0]
+    assert len(queue.deleted) == 1
+    assert len(queue.inbox) == 1
 
 
 def test_fake_browser_env_selects_fake_recorder(monkeypatch) -> None:
@@ -347,7 +420,7 @@ def test_fake_record_segment_writes_clip(tmp_path) -> None:
 
 
 def test_fake_record_segment_caps_long_duration(tmp_path, monkeypatch) -> None:
-    # An over-long segment is reported at the per-clip recording cap (issue #592)
+    # An over-long segment is reported at the per-site recording deadline
     # so the manifest's duration_ms matches the realized (truncated) clip and the
     # editor's EDL never seeks past the clip's end.
     import podcaster.video.video_gen as vg
@@ -355,4 +428,4 @@ def test_fake_record_segment_caps_long_duration(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(vg, "MAX_CLIP_RECORD_SECONDS", 600)
     segment = VideoSegment(start_seconds=0.0, duration_seconds=1440.0)
     result = recorder._fake_record_segment(segment, tmp_path)
-    assert result.duration_ms == 600_000
+    assert result.duration_ms == 120_000
