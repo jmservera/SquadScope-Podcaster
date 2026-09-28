@@ -86,7 +86,7 @@ class LocalStorageBackend:
 
     def put_bytes(self, path: str, content: bytes, content_type: str) -> StoredArtifact:
         safe_path = _safe_blob_path(path)
-        target = self.root / safe_path
+        target = _safe_local_blob_path(self.root, safe_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
         return StoredArtifact(
@@ -98,7 +98,7 @@ class LocalStorageBackend:
 
     def get_bytes(self, path: str) -> bytes | None:
         safe_path = _safe_blob_path(path)
-        target = self.root / safe_path
+        target = _safe_local_blob_path(self.root, safe_path)
         if not target.exists():
             return None
         return target.read_bytes()
@@ -112,8 +112,11 @@ class LocalStorageBackend:
         import fcntl
 
         safe_path = _safe_blob_path(path)
-        target = self.root / safe_path
-        lock_path = self.root / ".locks" / f"{safe_path.replace('/', '__')}.lock"
+        target = _safe_local_blob_path(self.root, safe_path)
+        lock_path = _safe_local_blob_path(
+            self.root,
+            f".locks/{safe_path.replace('/', '__')}.lock",
+        )
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("w", encoding="utf-8") as lock_file:
             fcntl.flock(lock_file, fcntl.LOCK_EX)
@@ -133,9 +136,10 @@ class LocalStorageBackend:
         safe_prefix = _safe_blob_prefix(prefix)
         if limit <= 0 or not self.root.exists():
             return []
+        root = _safe_local_root(self.root)
         matches: list[str] = []
-        for target in sorted(path for path in self.root.rglob("*") if path.is_file()):
-            relative = target.relative_to(self.root).as_posix()
+        for target in sorted(path for path in root.rglob("*") if path.is_file()):
+            relative = _relative_to_root(target, root).as_posix()
             if relative.startswith(safe_prefix):
                 matches.append(relative)
                 if len(matches) >= limit:
@@ -157,10 +161,10 @@ class LocalStorageBackend:
         )
 
     def blob_exists(self, path: str) -> bool:
-        return (self.root / _safe_blob_path(path)).exists()
+        return _safe_local_blob_path(self.root, _safe_blob_path(path)).exists()
 
     def blob_size(self, path: str) -> int | None:
-        target = self.root / _safe_blob_path(path)
+        target = _safe_local_blob_path(self.root, _safe_blob_path(path))
         if not target.exists():
             return None
         return target.stat().st_size
@@ -170,7 +174,7 @@ class LocalStorageBackend:
         import shutil
 
         safe_path = _safe_blob_path(path)
-        target = self.root / safe_path
+        target = _safe_local_blob_path(self.root, safe_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         # Write to a sibling .tmp file then atomically promote it into place so a
         # crash mid-copy never leaves a partial blob that resume would mistake
@@ -188,7 +192,7 @@ class LocalStorageBackend:
     def download_file(self, path: str, dest: Path) -> bool:
         import shutil
 
-        target = self.root / _safe_blob_path(path)
+        target = _safe_local_blob_path(self.root, _safe_blob_path(path))
         if not target.exists():
             return False
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -196,7 +200,7 @@ class LocalStorageBackend:
         return True
 
     def delete_blob(self, path: str) -> bool:
-        target = self.root / _safe_blob_path(path)
+        target = _safe_local_blob_path(self.root, _safe_blob_path(path))
         if not target.exists():
             return False
         target.unlink()
@@ -209,17 +213,18 @@ class LocalStorageBackend:
         match_dir = safe_prefix.rstrip("/") + "/"
         deleted = 0
         matched_dirs: list[Path] = []
+        root = _safe_local_root(self.root)
         # Walk from the constant storage root and match by relative path so the
         # user-derived prefix is only ever used in a string comparison, never
         # flowed into a filesystem sink (path-injection safe). os.walk's
         # onerror and the per-file guards make cleanup resilient to concurrent
         # sibling deletions (e.g. parallel budget-blocked job cleanups), which
         # otherwise surfaced as FileNotFoundError.
-        for dirpath, dirnames, filenames in os.walk(self.root, onerror=lambda _e: None):
+        for dirpath, dirnames, filenames in os.walk(root, onerror=lambda _e: None):
             current = Path(dirpath)
             for name in filenames:
                 target = current / name
-                relative = target.relative_to(self.root).as_posix()
+                relative = _relative_to_root(target, root).as_posix()
                 if relative == safe_prefix or relative.startswith(match_dir):
                     try:
                         target.unlink()
@@ -228,7 +233,7 @@ class LocalStorageBackend:
                         continue
             for name in dirnames:
                 directory = current / name
-                relative = directory.relative_to(self.root).as_posix()
+                relative = _relative_to_root(directory, root).as_posix()
                 if relative == safe_prefix or relative.startswith(match_dir):
                     matched_dirs.append(directory)
         for directory in sorted(matched_dirs, key=lambda path: len(path.parts), reverse=True):
@@ -1009,17 +1014,49 @@ def _token_expires_on(payload: dict[str, object]) -> int:
 
 
 def _safe_blob_path(path: str) -> str:
-    parts = [part for part in path.replace("\\", "/").split("/") if part not in {"", ".", ".."}]
-    if not parts:
+    normalized = _normalize_blob_reference(path, allow_trailing_slash=False)
+    if normalized.endswith("/"):
         raise ValueError("artifact path must not be empty")
-    return "/".join(parts)
+    return normalized
 
 
 def _safe_blob_prefix(prefix: str) -> str:
-    parts = [part for part in prefix.replace("\\", "/").split("/") if part not in {"", ".", ".."}]
-    if not parts:
-        raise ValueError("artifact prefix must not be empty")
+    return _normalize_blob_reference(prefix, allow_trailing_slash=True)
+
+
+def _normalize_blob_reference(value: str, *, allow_trailing_slash: bool) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError("artifact path must not be empty")
+    if "\\" in value or value.startswith("/"):
+        raise ValueError("artifact path must be a relative POSIX path")
+    parts = value.split("/")
+    if parts and parts[-1] == "" and allow_trailing_slash:
+        parts = parts[:-1]
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise ValueError("artifact path must not contain empty or traversal components")
+    first = parts[0]
+    if ":" in first:
+        raise ValueError("artifact path must be a relative POSIX path")
     return "/".join(parts)
+
+
+def _safe_local_root(root: Path) -> Path:
+    return root.resolve(strict=False)
+
+
+def _safe_local_blob_path(root: Path, safe_blob_path: str) -> Path:
+    root_path = _safe_local_root(root)
+    candidate = (root_path / safe_blob_path).resolve(strict=False)
+    if not candidate.is_relative_to(root_path):
+        raise ValueError("artifact path escapes storage root")
+    return candidate
+
+
+def _relative_to_root(path: Path, root: Path) -> Path:
+    resolved = path.resolve(strict=False)
+    if not resolved.is_relative_to(root):
+        raise ValueError("artifact path escapes storage root")
+    return resolved.relative_to(root)
 
 
 def normalize_artifact_base_url(base_url: str) -> str:

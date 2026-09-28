@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -78,6 +79,41 @@ _SPOTIFY_CLIENT_ID = (
     os.environ.get("SPOTIFY_CLIENT_ID") or ""
 ).strip() or "05a1371ee5194c27860b3ff3ff3979d2"
 _SPOTIFY_CONNECTOR_BASE_URL = "https://generic.wg.spotify.com/podcasters/v0"
+
+
+def _approved_media_roots() -> tuple[Path, ...]:
+    roots = [Path.cwd(), Path(tempfile.gettempdir())]
+    for env_name in ("PODCASTER_LOCAL_STORAGE_PATH", "PODCASTER_LOCAL_SCRATCH_PATH"):
+        configured = os.environ.get(env_name, "").strip()
+        if configured:
+            roots.append(Path(configured))
+    resolved: list[Path] = []
+    for root in roots:
+        root_path = root.resolve(strict=False)
+        if root_path not in resolved:
+            resolved.append(root_path)
+    return tuple(resolved)
+
+
+def _resolve_publish_media_path(path: Path, label: str) -> Path:
+    candidate = Path(path).resolve(strict=False)
+    if any(candidate.is_relative_to(root) for root in _approved_media_roots()):
+        return candidate
+    raise ValueError(f"{label} file must be under an approved media root")
+
+
+def _nonempty_publish_media_file(path: Path, label: str) -> Path:
+    candidate = _resolve_publish_media_path(path, label)
+    if not candidate.exists() or candidate.stat().st_size == 0:
+        raise FileNotFoundError(f"{label} file not found or empty: {candidate.name}")
+    return candidate
+
+
+def _optional_nonempty_publish_media_file(path: Path, label: str) -> Path | None:
+    candidate = _resolve_publish_media_path(path, label)
+    if candidate.exists() and candidate.stat().st_size > 0:
+        return candidate
+    return None
 _SPOTIFY_CREATORS_GRAPHQL_URL = "https://creators-graph.spotify.com/v2/graph-pq"
 _SPOTIFY_EPISODE_LIST_OPERATION = "WebGetIndexedEpisodeList"
 _SPOTIFY_EPISODE_LIST_HASH = "da95dd0d5c5e3ffed3150f34f1d9674b6cd3548cdf59a49a37e1a65b325c9e98"
@@ -2949,6 +2985,11 @@ def upload_video_to_episode(
     Returns a PublishResult; ``anchor_episode_id`` is the NEW video episode id,
     status is "draft"/"scheduled"/"published" on success and "failed" otherwise.
     """
+    try:
+        video_path = _resolve_publish_media_path(video_path, "Video")
+    except ValueError as exc:
+        return PublishResult(status="failed", error=str(exc))
+
     # Same fail-safe as ``publish_episode``: a direct caller can never reach the
     # live ``/update`` without the explicit SPOTIFY_ALLOW_LIVE_PUBLISH opt-in.
     if publish_behavior != "draft" and not _live_publish_allowed():
@@ -2988,8 +3029,10 @@ def upload_video_to_episode(
             },
         )
 
-    if not video_path.exists() or video_path.stat().st_size == 0:
-        return PublishResult(status="failed", error=f"Video file not found or empty: {video_path}")
+    try:
+        video_path = _nonempty_publish_media_file(video_path, "Video")
+    except (FileNotFoundError, ValueError) as exc:
+        return PublishResult(status="failed", error=str(exc))
 
     video_anchor_id: int | None = None
     create_resolved = False
@@ -3956,6 +3999,11 @@ def publish_episode(
         article_title=article_title,
         article_summary=article_summary,
     )
+    try:
+        mp3_path = _resolve_publish_media_path(mp3_path, "MP3")
+        wav_path = _resolve_publish_media_path(wav_path, "WAV") if wav_path else None
+    except ValueError as exc:
+        return PublishResult(status="failed", error=str(exc))
 
     # Fail safe: never make an episode public unless live publishing is
     # explicitly enabled. The Spotify path uses an unofficial, cookie-authed
@@ -3976,12 +4024,13 @@ def publish_episode(
     video_path: Path | None = None
     if mp3_path is not None:
         candidate_mp4 = mp3_path.parent / (mp3_path.stem + ".mp4")
-        if candidate_mp4.exists() and candidate_mp4.stat().st_size > 0:
-            video_path = candidate_mp4
+        candidate_video = _optional_nonempty_publish_media_file(candidate_mp4, "MP4")
+        if candidate_video is not None:
+            video_path = candidate_video
             logger.info(
                 "Video artifact found (%s, %.1f MB) — preferring MP4 for Spotify upload.",
-                candidate_mp4.name,
-                candidate_mp4.stat().st_size / 1_048_576,
+                video_path.name,
+                video_path.stat().st_size / 1_048_576,
             )
 
     if video_path is not None:
@@ -4041,8 +4090,12 @@ def publish_episode(
     except ValueError as exc:
         return PublishResult(status="failed", error=str(exc))
 
-    if upload_path is None or not upload_path.exists():
-        return PublishResult(status="failed", error=f"{format_label} file not found: {upload_path}")
+    if upload_path is None:
+        return PublishResult(status="failed", error=f"{format_label} file not found")
+    try:
+        upload_path = _nonempty_publish_media_file(upload_path, format_label)
+    except (FileNotFoundError, ValueError) as exc:
+        return PublishResult(status="failed", error=str(exc))
 
     media_kind = "video" if content_type.startswith("video/") else "audio"
 

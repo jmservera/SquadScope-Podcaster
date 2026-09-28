@@ -27,7 +27,13 @@ from podcaster.publication_state import (
 from podcaster.publish import PublishResult, publish_episode
 from podcaster.review import APPROVED, apply_review_decision
 from podcaster.sanitization import normalize_weekly_url
-from podcaster.storage import LocalStorageBackend, StorageBackend, create_storage_backend
+from podcaster.storage import (
+    LocalStorageBackend,
+    StorageBackend,
+    _safe_blob_path,
+    _safe_local_blob_path,
+    create_storage_backend,
+)
 
 logger = logging.getLogger("podcaster.orchestration")
 
@@ -173,34 +179,42 @@ def _prepare_audio_files(
 ) -> tuple[tuple[Path, Path | None], Path | None]:
     mp3_blob_path, wav_blob_path = _audio_artifact_paths(manifest, job_id)
     if isinstance(storage, LocalStorageBackend):
-        mp3_path = storage.root / mp3_blob_path
-        wav_path = (storage.root / wav_blob_path) if wav_blob_path else None
+        mp3_path = _safe_local_blob_path(storage.root, _safe_blob_path(mp3_blob_path))
+        wav_path = (
+            _safe_local_blob_path(storage.root, _safe_blob_path(wav_blob_path))
+            if wav_blob_path
+            else None
+        )
         return (mp3_path, wav_path), None
 
     import tempfile
 
-    scratch_dir = Path(tempfile.gettempdir()) / "podcaster-publish-work" / job_id
+    scratch_root = Path(tempfile.gettempdir()) / "podcaster-publish-work"
+    scratch_dir = _safe_local_blob_path(scratch_root, _safe_blob_path(job_id))
     scratch_dir.mkdir(parents=True, exist_ok=True)
+    safe_mp3_blob_path = _safe_blob_path(mp3_blob_path)
+    safe_wav_blob_path = _safe_blob_path(wav_blob_path) if wav_blob_path else None
     mp3_bytes = storage.get_bytes(mp3_blob_path)
     if mp3_bytes is None:
         raise ValueError(f"missing synthesized MP3 for job_id={job_id}")
-    mp3_path = scratch_dir / Path(mp3_blob_path).name
+    mp3_path = _safe_local_blob_path(scratch_dir, Path(safe_mp3_blob_path).name)
     mp3_path.write_bytes(mp3_bytes)
 
     wav_path: Path | None = None
-    if wav_blob_path:
+    if safe_wav_blob_path:
         wav_bytes = storage.get_bytes(wav_blob_path)
         if wav_bytes is not None:
-            wav_path = scratch_dir / Path(wav_blob_path).name
+            wav_path = _safe_local_blob_path(scratch_dir, Path(safe_wav_blob_path).name)
             wav_path.write_bytes(wav_bytes)
 
-    mp4_blob_path = f"jobs/{job_id}/audio/{job_id}.mp4"
+    safe_job_id = _safe_blob_path(job_id)
+    mp4_blob_path = f"jobs/{safe_job_id}/audio/{safe_job_id}.mp4"
     mp4_bytes = storage.get_bytes(mp4_blob_path)
     if mp4_bytes is None:
-        mp4_blob_path = f"jobs/{job_id}/video/{job_id}.mp4"
+        mp4_blob_path = f"jobs/{safe_job_id}/video/{safe_job_id}.mp4"
         mp4_bytes = storage.get_bytes(mp4_blob_path)
     if mp4_bytes is not None:
-        mp4_path = scratch_dir / f"{mp3_path.stem}.mp4"
+        mp4_path = _safe_local_blob_path(scratch_dir, f"{mp3_path.stem}.mp4")
         mp4_path.write_bytes(mp4_bytes)
     return (mp3_path, wav_path), scratch_dir
 

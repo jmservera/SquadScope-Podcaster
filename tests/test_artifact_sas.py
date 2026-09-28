@@ -74,20 +74,41 @@ def test_azure_generate_download_url_rejects_non_https_output() -> None:
         backend.generate_download_url("review/x.mp3", expiry=EXPIRY)
 
 
-def test_azure_generate_download_url_normalizes_unsafe_path() -> None:
-    seen: dict[str, str] = {}
-
-    def fake_runner(command: list[str]) -> str:
-        seen["blob"] = command[command.index("-n") + 1]
-        return "https://acct.blob.core.windows.net/c/review/x.mp3?sig=abc"
-
+def test_azure_generate_download_url_rejects_unsafe_path() -> None:
     backend = AzureBlobStorageBackend(
         "https://acct.blob.core.windows.net",
         "podcaster-artifacts",
-        sas_command_runner=fake_runner,
+        sas_command_runner=lambda command: "https://acct.blob.core.windows.net/c/review/x.mp3",
     )
-    backend.generate_download_url("../review/./x.mp3", expiry=EXPIRY)
-    assert seen["blob"] == "review/x.mp3"
+    with pytest.raises(ValueError, match="traversal"):
+        backend.generate_download_url("../review/x.mp3", expiry=EXPIRY)
+
+
+def test_local_storage_rejects_traversal_and_absolute_paths(tmp_path: Path) -> None:
+    backend = LocalStorageBackend(tmp_path / "artifacts", "https://example.invalid/artifacts")
+
+    for unsafe in (
+        "../review/x.mp3",
+        "review/../x.mp3",
+        "/review/x.mp3",
+        "review//x.mp3",
+        r"review\..\x.mp3",
+    ):
+        with pytest.raises(ValueError):
+            backend.put_bytes(unsafe, b"x", "audio/mpeg")
+
+
+def test_local_storage_rejects_symlink_escape(tmp_path: Path) -> None:
+    root = tmp_path / "artifacts"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (root / "linked").symlink_to(outside, target_is_directory=True)
+    backend = LocalStorageBackend(root, "https://example.invalid/artifacts")
+
+    with pytest.raises(ValueError, match="escapes storage root"):
+        backend.put_bytes("linked/escape.txt", b"x", "text/plain")
+    assert not (outside / "escape.txt").exists()
 
 
 def test_local_generate_download_url_is_unsigned_locator(tmp_path: Path) -> None:

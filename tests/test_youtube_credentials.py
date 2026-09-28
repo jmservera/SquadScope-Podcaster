@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 from unittest.mock import patch
 from urllib.error import HTTPError
 
@@ -11,6 +12,7 @@ import pytest
 
 from podcaster.youtube_credentials import (
     DEFAULT_SECRET_NAME,
+    ENV_REFRESH_TOKEN_SECRET,
     KeyVaultSecretLoader,
     YouTubeCredentialError,
     YouTubeTokenRevokedError,
@@ -123,17 +125,24 @@ def test_load_returns_empty_when_unconfigured():
     assert load_youtube_refresh_token(env={}) == ""
 
 
-def test_load_from_keyvault_when_env_absent():
+def test_load_from_keyvault_when_env_absent(caplog):
+    caplog.set_level(logging.INFO, logger="podcaster.youtube_credentials")
     loader = KeyVaultSecretLoader(
         "https://v.vault.azure.net",
         credential=_FakeCredential(),
         transport=_FakeTransport(200, {"value": "kv-rt"}),
     )
     token = load_youtube_refresh_token(
-        env={"VIDEO_YOUTUBE_KEYVAULT_URL": "https://v.vault.azure.net"},
+        env={
+            "VIDEO_YOUTUBE_KEYVAULT_URL": "https://v.vault.azure.net",
+            ENV_REFRESH_TOKEN_SECRET: "sensitive-secret-name",
+        },
         secret_loader=loader,
     )
     assert token == "kv-rt"
+    assert "sensitive-secret-name" not in caplog.text
+    assert "kv-rt" not in caplog.text
+    assert "present=True" in caplog.text
 
 
 def test_load_uses_default_secret_name():
