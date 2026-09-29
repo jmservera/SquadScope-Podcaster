@@ -95,3 +95,31 @@ def test_local_storage_sinks_reject_symlink_escape(
         action(storage, "escape/blob.txt", tmp_path)
 
     assert outside_blob.read_bytes() == b"outside"
+
+
+def test_upload_file_does_not_create_temp_file_after_parent_symlink_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"uploaded")
+    target_parent = root / "nested"
+    original_mkdir = Path.mkdir
+
+    def mkdir_and_swap(self: Path, *args: object, **kwargs: object) -> None:
+        original_mkdir(self, *args, **kwargs)
+        if self == target_parent:
+            self.rmdir()
+            self.symlink_to(outside, target_is_directory=True)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir_and_swap)
+    storage = LocalStorageBackend(root, "https://example.invalid/artifacts")
+
+    with pytest.raises(OSError):
+        storage.upload_file("nested/blob.txt", source, "text/plain")
+
+    assert list(outside.iterdir()) == []

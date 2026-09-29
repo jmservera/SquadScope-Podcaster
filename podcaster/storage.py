@@ -200,8 +200,8 @@ class LocalStorageBackend:
 
     def upload_file(self, path: str, source: Path, content_type: str) -> StoredArtifact:
         import os
+        import secrets
         import shutil
-        import tempfile
 
         safe_path = _safe_blob_path(path)
         root_path = os.path.realpath(os.fspath(self.root))
@@ -213,25 +213,40 @@ class LocalStorageBackend:
             # Write to a sibling .tmp file then atomically promote it into place so a
             # crash mid-copy never leaves a partial blob that resume would mistake
             # for a complete checkpoint (issue #410 upload safety).
-            tmp_target: Path | None = None
-            with tempfile.NamedTemporaryFile(
-                prefix=f".{target.name}.",
-                suffix=".tmp",
-                dir=target.parent,
-                delete=False,
-            ) as tmp_file:
-                tmp_target_path = os.path.realpath(tmp_file.name)
+            parent_fd: int | None = None
+            tmp_name: str | None = None
             try:
-                if tmp_target_path.startswith(root_prefix):
-                    tmp_target = Path(tmp_target_path)
-                    shutil.copyfile(source, tmp_target)
-                    os.replace(tmp_target, target)
+                parent_fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                for _ in range(100):
+                    candidate = f".{target.name}.{secrets.token_hex(8)}.tmp"
+                    try:
+                        tmp_fd = os.open(
+                            candidate,
+                            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                            0o600,
+                            dir_fd=parent_fd,
+                        )
+                    except FileExistsError:
+                        continue
+                    tmp_name = candidate
+                    break
                 else:
-                    raise ValueError("artifact path escapes storage root")
+                    raise FileExistsError(
+                        f"could not allocate temporary upload name for {target.name}"
+                    )
+                with os.fdopen(tmp_fd, "wb") as tmp_file, source.open("rb") as source_file:
+                    shutil.copyfileobj(source_file, tmp_file)
+                os.replace(tmp_name, target.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
             except Exception:
-                if tmp_target is not None:
-                    tmp_target.unlink(missing_ok=True)
+                if parent_fd is not None and tmp_name is not None:
+                    try:
+                        os.unlink(tmp_name, dir_fd=parent_fd)
+                    except FileNotFoundError:
+                        pass
                 raise
+            finally:
+                if parent_fd is not None:
+                    os.close(parent_fd)
         else:
             raise ValueError("artifact path escapes storage root")
         return StoredArtifact(
