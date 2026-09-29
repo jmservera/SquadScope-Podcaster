@@ -86,9 +86,15 @@ class LocalStorageBackend:
 
     def put_bytes(self, path: str, content: bytes, content_type: str) -> StoredArtifact:
         safe_path = _safe_blob_path(path)
-        target = _safe_local_blob_path(self.root, safe_path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(content)
+        root_path = os.path.realpath(os.fspath(self.root))
+        target_path = os.path.realpath(os.path.join(root_path, safe_path))
+        root_prefix = root_path if root_path.endswith(os.sep) else f"{root_path}{os.sep}"
+        if target_path.startswith(root_prefix):
+            target = Path(target_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        else:
+            raise ValueError("artifact path escapes storage root")
         return StoredArtifact(
             path=safe_path,
             url=f"{self.base_url}/{safe_path}",
@@ -98,10 +104,15 @@ class LocalStorageBackend:
 
     def get_bytes(self, path: str) -> bytes | None:
         safe_path = _safe_blob_path(path)
-        target = _safe_local_blob_path(self.root, safe_path)
-        if not target.exists():
-            return None
-        return target.read_bytes()
+        root_path = os.path.realpath(os.fspath(self.root))
+        target_path = os.path.realpath(os.path.join(root_path, safe_path))
+        root_prefix = root_path if root_path.endswith(os.sep) else f"{root_path}{os.sep}"
+        if target_path.startswith(root_prefix):
+            target = Path(target_path)
+            if not target.exists():
+                return None
+            return target.read_bytes()
+        raise ValueError("artifact path escapes storage root")
 
     def update_bytes(
         self,
@@ -112,19 +123,31 @@ class LocalStorageBackend:
         import fcntl
 
         safe_path = _safe_blob_path(path)
-        target = _safe_local_blob_path(self.root, safe_path)
-        lock_path = _safe_local_blob_path(
-            self.root,
-            f".locks/{safe_path.replace('/', '__')}.lock",
-        )
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with lock_path.open("w", encoding="utf-8") as lock_file:
-            fcntl.flock(lock_file, fcntl.LOCK_EX)
-            current = target.read_bytes() if target.exists() else None
-            updated = update(current)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(updated)
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
+        root_path = os.path.realpath(os.fspath(self.root))
+        root_prefix = root_path if root_path.endswith(os.sep) else f"{root_path}{os.sep}"
+        target_path = os.path.realpath(os.path.join(root_path, safe_path))
+        if not target_path.startswith(root_prefix):
+            raise ValueError("artifact path escapes storage root")
+        lock_blob_path = f".locks/{safe_path.replace('/', '__')}.lock"
+        lock_path_text = os.path.realpath(os.path.join(root_path, lock_blob_path))
+        if not lock_path_text.startswith(root_prefix):
+            raise ValueError("artifact path escapes storage root")
+        if target_path.startswith(root_prefix):
+            target = Path(target_path)
+            if lock_path_text.startswith(root_prefix):
+                lock_path = Path(lock_path_text)
+                lock_path.parent.mkdir(parents=True, exist_ok=True)
+                with lock_path.open("w", encoding="utf-8") as lock_file:
+                    fcntl.flock(lock_file, fcntl.LOCK_EX)
+                    current = target.read_bytes() if target.exists() else None
+                    updated = update(current)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(updated)
+                    fcntl.flock(lock_file, fcntl.LOCK_UN)
+            else:
+                raise ValueError("artifact path escapes storage root")
+        else:
+            raise ValueError("artifact path escapes storage root")
         return StoredArtifact(
             path=safe_path,
             url=f"{self.base_url}/{safe_path}",
@@ -164,24 +187,36 @@ class LocalStorageBackend:
         return self.get_bytes(path) is not None
 
     def blob_size(self, path: str) -> int | None:
-        target = _safe_local_blob_path(self.root, _safe_blob_path(path))
-        if not target.exists():
-            return None
-        return target.stat().st_size
+        safe_path = _safe_blob_path(path)
+        root_path = os.path.realpath(os.fspath(self.root))
+        target_path = os.path.realpath(os.path.join(root_path, safe_path))
+        root_prefix = root_path if root_path.endswith(os.sep) else f"{root_path}{os.sep}"
+        if target_path.startswith(root_prefix):
+            target = Path(target_path)
+            if not target.exists():
+                return None
+            return target.stat().st_size
+        raise ValueError("artifact path escapes storage root")
 
     def upload_file(self, path: str, source: Path, content_type: str) -> StoredArtifact:
         import os
         import shutil
 
         safe_path = _safe_blob_path(path)
-        target = _safe_local_blob_path(self.root, safe_path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        # Write to a sibling .tmp file then atomically promote it into place so a
-        # crash mid-copy never leaves a partial blob that resume would mistake
-        # for a complete checkpoint (issue #410 upload safety).
-        tmp_target = target.with_name(target.name + ".tmp")
-        shutil.copyfile(source, tmp_target)
-        os.replace(tmp_target, target)
+        root_path = os.path.realpath(os.fspath(self.root))
+        target_path = os.path.realpath(os.path.join(root_path, safe_path))
+        root_prefix = root_path if root_path.endswith(os.sep) else f"{root_path}{os.sep}"
+        if target_path.startswith(root_prefix):
+            target = Path(target_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # Write to a sibling .tmp file then atomically promote it into place so a
+            # crash mid-copy never leaves a partial blob that resume would mistake
+            # for a complete checkpoint (issue #410 upload safety).
+            tmp_target = target.with_name(target.name + ".tmp")
+            shutil.copyfile(source, tmp_target)
+            os.replace(tmp_target, target)
+        else:
+            raise ValueError("artifact path escapes storage root")
         return StoredArtifact(
             path=safe_path,
             url=f"{self.base_url}/{safe_path}",
@@ -192,19 +227,31 @@ class LocalStorageBackend:
     def download_file(self, path: str, dest: Path) -> bool:
         import shutil
 
-        target = _safe_local_blob_path(self.root, _safe_blob_path(path))
-        if not target.exists():
-            return False
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(target, dest)
-        return True
+        safe_path = _safe_blob_path(path)
+        root_path = os.path.realpath(os.fspath(self.root))
+        target_path = os.path.realpath(os.path.join(root_path, safe_path))
+        root_prefix = root_path if root_path.endswith(os.sep) else f"{root_path}{os.sep}"
+        if target_path.startswith(root_prefix):
+            target = Path(target_path)
+            if not target.exists():
+                return False
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(target, dest)
+            return True
+        raise ValueError("artifact path escapes storage root")
 
     def delete_blob(self, path: str) -> bool:
-        target = _safe_local_blob_path(self.root, _safe_blob_path(path))
-        if not target.exists():
-            return False
-        target.unlink()
-        return True
+        safe_path = _safe_blob_path(path)
+        root_path = os.path.realpath(os.fspath(self.root))
+        target_path = os.path.realpath(os.path.join(root_path, safe_path))
+        root_prefix = root_path if root_path.endswith(os.sep) else f"{root_path}{os.sep}"
+        if target_path.startswith(root_prefix):
+            target = Path(target_path)
+            if not target.exists():
+                return False
+            target.unlink()
+            return True
+        raise ValueError("artifact path escapes storage root")
 
     def delete_prefix(self, prefix: str) -> int:
         safe_prefix = _safe_blob_prefix(prefix)
@@ -1045,18 +1092,21 @@ def _safe_local_root(root: Path) -> Path:
 
 
 def _safe_local_blob_path(root: Path, safe_blob_path: str) -> Path:
-    root_path = _safe_local_root(root)
-    candidate = Path(os.path.realpath(os.path.join(os.fspath(root_path), safe_blob_path)))
-    if os.path.commonpath([os.fspath(root_path), os.fspath(candidate)]) != os.fspath(root_path):
+    root_path = os.path.realpath(os.fspath(_safe_local_root(root)))
+    candidate = os.path.realpath(os.path.join(root_path, safe_blob_path))
+    root_prefix = root_path if root_path.endswith(os.sep) else f"{root_path}{os.sep}"
+    if candidate != root_path and not candidate.startswith(root_prefix):
         raise ValueError("artifact path escapes storage root")
-    return candidate
+    return Path(candidate)
 
 
 def _relative_to_root(path: Path, root: Path) -> Path:
-    resolved = Path(os.path.realpath(os.fspath(path)))
-    if os.path.commonpath([os.fspath(root), os.fspath(resolved)]) != os.fspath(root):
+    root_path = os.path.realpath(os.fspath(root))
+    resolved = os.path.realpath(os.fspath(path))
+    root_prefix = root_path if root_path.endswith(os.sep) else f"{root_path}{os.sep}"
+    if resolved != root_path and not resolved.startswith(root_prefix):
         raise ValueError("artifact path escapes storage root")
-    return resolved.relative_to(root)
+    return Path(resolved).relative_to(root_path)
 
 
 def normalize_artifact_base_url(base_url: str) -> str:

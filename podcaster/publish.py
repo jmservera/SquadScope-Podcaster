@@ -96,12 +96,12 @@ def _approved_media_roots() -> tuple[Path, ...]:
 
 
 def _resolve_publish_media_path(path: Path, label: str) -> Path:
-    candidate = Path(os.path.realpath(os.fspath(path)))
-    if any(
-        os.path.commonpath([os.fspath(root), os.fspath(candidate)]) == os.fspath(root)
-        for root in _approved_media_roots()
-    ):
-        return candidate
+    candidate = os.path.realpath(os.fspath(path))
+    for root in _approved_media_roots():
+        root_path = os.path.realpath(os.fspath(root))
+        root_prefix = root_path if root_path.endswith(os.sep) else f"{root_path}{os.sep}"
+        if candidate == root_path or candidate.startswith(root_prefix):
+            return Path(candidate)
     raise ValueError(f"{label} file must be under an approved media root")
 
 
@@ -3472,7 +3472,20 @@ def upload_video_to_episode(
                 video_title,
             )
 
-        file_data = video_path.read_bytes()
+        file_data: bytes | None = None
+        video_path_text = os.path.realpath(os.fspath(video_path))
+        for root in _approved_media_roots():
+            root_path = os.path.realpath(os.fspath(root))
+            root_prefix = root_path if root_path.endswith(os.sep) else f"{root_path}{os.sep}"
+            if video_path_text.startswith(root_prefix):
+                video_path = Path(video_path_text)
+                file_data = video_path.read_bytes()
+                break
+        if file_data is None:
+            return PublishResult(
+                status="failed",
+                error="Video file must be under an approved media root",
+            )
         upload_result = _get_upload_url(
             session,
             video_anchor_id,
@@ -4342,7 +4355,20 @@ def publish_episode(
 
         # Step 3 & 4: Upload file (video uses multipart GCS, audio uses single S3)
         is_video = media_kind == "video"
-        file_data = upload_path.read_bytes()
+        file_data = None
+        upload_path_text = os.path.realpath(os.fspath(upload_path))
+        for root in _approved_media_roots():
+            root_path = os.path.realpath(os.fspath(root))
+            root_prefix = root_path if root_path.endswith(os.sep) else f"{root_path}{os.sep}"
+            if upload_path_text.startswith(root_prefix):
+                upload_path = Path(upload_path_text)
+                file_data = upload_path.read_bytes()
+                break
+        if file_data is None:
+            return PublishResult(
+                status="failed",
+                error=f"{format_label} file must be under an approved media root",
+            )
 
         if is_video:
             upload_result = _get_upload_url(
