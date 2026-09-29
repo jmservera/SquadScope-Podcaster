@@ -4660,12 +4660,8 @@ class TestFinalOutputValidation:
         atom_size = int.from_bytes(payload[atom_type - 4 : atom_type], "big")
         payload_start = atom_type + 4
         payload_end = min(len(payload), atom_type - 4 + atom_size)
-        corrupt_start = payload_start + (payload_end - payload_start) // 3
-        corrupt_end = corrupt_start + max(4096, (payload_end - payload_start) // 4)
-        payload[corrupt_start : min(corrupt_end, payload_end)] = b"\xff" * min(
-            corrupt_end - corrupt_start,
-            payload_end - corrupt_start,
-        )
+        retained_mdat_bytes = max(1024, (payload_end - payload_start) // 8)
+        del payload[payload_start + retained_mdat_bytes : payload_end]
         candidate = tmp_path / "middle-corrupt.mp4"
         candidate.write_bytes(payload)
 

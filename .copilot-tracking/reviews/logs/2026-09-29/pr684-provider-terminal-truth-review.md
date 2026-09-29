@@ -4,7 +4,7 @@
 - Date: 2026-09-29
 - Scope: restack draft PR #684 after #682 squash-merge, preserve merged main behavior, address unresolved review threads, validate, and prepare for ready-for-review.
 - Base reviewed: `origin/main` at `6bf44417d68636bf6ac90ae17d8205adb28b5563`
-- Head reviewed: `66ab74b4c7c875af76eeee366a92d4279775179f`
+- Head reviewed: final pushed PR head recorded in the PR status and final handoff.
 
 ## Evidence reviewed
 
@@ -18,6 +18,7 @@
 - Rebasing/cherry-picking #684-specific work onto `origin/main` completed in an isolated worktree; the main checkout was not switched.
 - Conflicts resolved by preserving current `origin/main` behavior where overlap existed and retaining #684-specific provider-terminal-truth, ownership fencing, outbox remediation, budget, final-media validation, and playlist ambiguity semantics.
 - Latest additional conflict in `podcaster/publish.py` preserved main's bounded local Spotify upload path guards and #684's terminal-truth/reconciliation flow.
+- CI exposed that the readable-metadata corruption fixture in `tests/test_video_compose.py` was not deterministic under the hosted runner ffmpeg; the fixture now truncates inside `mdat` while preserving faststart metadata, matching the existing decode-failure contract without weakening validation.
 - Production behavior changes intentionally present in #684:
   - Provider ambiguity and accepted-but-unreadable provider responses fail closed as `publication_unknown`/retry-blocked instead of being treated as success.
   - Final media is validated before promotion so invalid output cannot replace an existing destination.
@@ -26,10 +27,10 @@
 
 ## Validation
 
-- `python3 -m pytest -q`: `3985 passed, 4 skipped, 2 deselected, 1 warning` after rebasing onto `6bf44417d68636bf6ac90ae17d8205adb28b5563`.
+- `python3 -m pytest -q`: `3985 passed, 4 skipped, 2 deselected, 1 warning` after the CI-discovered compose fixture fix.
 - `ruff check podcaster tests`: passed.
 - `ruff format --check podcaster tests`: passed after formatting `podcaster/publish.py`.
-- CI: pending at the time this review record was created for pushed head `66ab74b4c7c875af76eeee366a92d4279775179f`.
+- Prior CI after the RPI evidence commit failed one deterministic compose fixture assertion and the separately tracked `tests/integration/test_scaleout_fanout.py` path. The compose fixture was fixed here; scale-out fanout remains tracked separately under jmservera/SquadScope-Podcaster#723 if it recurs.
 
 ## Review decision
 
