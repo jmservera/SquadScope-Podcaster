@@ -636,8 +636,9 @@ async def api_review(request: Request):
         outcome = record_review_skip_outcome(
             storage, job_id, outcome, reviewed_at, audio_publish_skipped
         )
-    except ValueError as exc:
-        return JSONResponse(status_code=404, content={"error": str(exc)})
+    except ValueError:
+        logger.warning("review decision was rejected", exc_info=True)
+        return JSONResponse(status_code=404, content={"error": "review request not found"})
     except Exception:
         logger.exception("unhandled error in review orchestration")
         report_failure(
@@ -1042,8 +1043,9 @@ async def api_credentials_create(request: Request):
     store = _get_credential_store()
     try:
         summary = store.create_credential(payload)
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except ValueError:
+        logger.warning("credential create payload was rejected", exc_info=True)
+        return JSONResponse(status_code=400, content={"error": "invalid credential payload"})
     return JSONResponse(status_code=200, content=summary)
 
 
@@ -1057,8 +1059,9 @@ async def api_credentials_update(credential_id: str, request: Request):
     store = _get_credential_store()
     try:
         summary = store.update_credential(credential_id, payload)
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except ValueError:
+        logger.warning("credential update payload was rejected", exc_info=True)
+        return JSONResponse(status_code=400, content={"error": "invalid credential payload"})
     if summary is None:
         raise HTTPException(status_code=404, detail="credential not found")
     return JSONResponse(status_code=200, content=summary)
@@ -1091,8 +1094,9 @@ async def api_podcast_config_save(request: Request):
     store = PodcastConfigStore(get_storage())
     try:
         document = store.save(payload)
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except ValueError:
+        logger.warning("podcast config payload was rejected", exc_info=True)
+        return JSONResponse(status_code=400, content={"error": "invalid podcast config payload"})
     return JSONResponse(status_code=200, content=document)
 
 
