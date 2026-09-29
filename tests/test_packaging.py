@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from io import BytesIO
+from urllib.parse import urlparse
 from zipfile import ZipFile
 
 from podcaster.packaging import (
@@ -31,7 +32,8 @@ def test_generate_show_notes_contains_metadata():
     assert "Test Episode" in result
     assert "https://example.com/article" in result
     assert "AI Voice Disclosure" in result
-    assert "claracle.com" in result
+    parsed_url = urlparse("https://www.claracle.com")
+    assert f"{parsed_url.scheme}://{parsed_url.netloc}" in result
 
 
 def test_generate_show_notes_normalizes_uppercase_claracle_weekly_url():

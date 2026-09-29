@@ -9,6 +9,7 @@ import socket
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
+from urllib.parse import urlparse
 
 import pytest
 
@@ -58,6 +59,11 @@ from podcaster.video.job_runner import (
     show_notes_path,
     video_artifact_path,
 )
+
+
+def _claracle_credit_hostname(text: str) -> str | None:
+    credit_value = text.split("Claracle — ", 1)[1].split()[0]
+    return urlparse(credit_value if "://" in credit_value else f"https://{credit_value}").hostname
 
 
 @pytest.fixture(autouse=True)
@@ -424,7 +430,7 @@ class TestVideoDescription:
         desc = _build_video_description(storage, "j", "fallback")
         assert "Claracle is a weekly show about open source." in desc
         assert "Segment 1" not in desc
-        assert "www.claracle.com" in desc
+        assert _claracle_credit_hostname(desc) == "www.claracle.com"
         assert _DEFAULT_MUSIC_CREDITS in desc
 
     def test_uses_fallback_summary_when_no_section(self):
@@ -432,7 +438,7 @@ class TestVideoDescription:
         storage = self._storage("j", notes)
         desc = _build_video_description(storage, "j", "fallback summary")
         assert desc.startswith("fallback summary")
-        assert "www.claracle.com" in desc
+        assert _claracle_credit_hostname(desc) == "www.claracle.com"
         assert _DEFAULT_MUSIC_CREDITS in desc
 
     def test_custom_music_credits_override(self):
@@ -1905,7 +1911,7 @@ class TestRunVideoGeneration:
         assert "A joyful conversation about open source." in description
         assert "Hosts: Theo (fable) & Vera (alloy)" in description
         assert "Claracle" in description
-        assert "www.claracle.com" in description
+        assert _claracle_credit_hostname(description) == "www.claracle.com"
         # Music credits must be present (default attribution from TRACK_ATTRIBUTION)
         assert _DEFAULT_MUSIC_CREDITS in description
 

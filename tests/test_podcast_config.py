@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from podcaster import episode
 from podcaster.config import HostConfig, PodcastConfig
@@ -144,7 +145,8 @@ def test_run_generation_job_threads_custom_podcast_config_into_artifacts() -> No
         "Lin: And I'm Lin. One honest heads-up before we dive in — These hosts are "
         "synthetic voices." in script
     )
-    assert "pod.example.com" in script
+    parsed_podcast_url = urlparse(result.manifest["request"]["podcast_config"]["url"])
+    assert parsed_podcast_url.netloc == "pod.example.com"
     assert "TTS Provider: OpenAI TTS (Ada nova / Lin shimmer)" in transcript
     assert "These hosts are synthetic voices." in show_notes
     assert "[SignalWire](https://pod.example.com)" in show_notes

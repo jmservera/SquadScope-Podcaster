@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import subprocess
 import tempfile
+from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
 
@@ -47,6 +49,38 @@ from podcaster.video.intro_outro import (
 )
 
 # --- HTML Rendering Tests ---
+
+
+class _OutroUrlParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self._in_url = False
+        self.url_text = ""
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._in_url = tag == "div" and ("class", "url") in attrs
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "div":
+            self._in_url = False
+
+    def handle_data(self, data: str) -> None:
+        if self._in_url:
+            self.url_text += data
+
+
+def _rendered_outro_url(html: str) -> str:
+    parser = _OutroUrlParser()
+    parser.feed(html)
+    return parser.url_text
+
+
+def _parsed_hostname(value: str) -> str | None:
+    return urlparse(value if "://" in value else f"https://{value}").hostname
+
+
+def _drawtext_values(vf: str) -> list[str]:
+    return [part.split("'", 1)[0] for part in vf.split(":text='")[1:]]
 
 
 class TestRenderIntroHtml:
@@ -89,7 +123,7 @@ class TestRenderOutroHtml:
     def test_custom_url(self):
         config = OutroConfig(url="custom.example.com")
         html = _render_outro_html(config)
-        assert "custom.example.com" in html
+        assert _parsed_hostname(_rendered_outro_url(html)) == "custom.example.com"
 
     def test_custom_links(self):
         config = OutroConfig(links=[("MyRepo", "https://github.com/me/repo")])
@@ -546,7 +580,9 @@ class TestBuildOutroFfmpegCmd:
         assert "Claracle Weekly" in self._get_vf(OutroConfig(show_name="Claracle Weekly"))
 
     def test_contains_url(self):
-        assert "example.com" in self._get_vf(OutroConfig(url="example.com"))
+        config = OutroConfig(url="example.com")
+        rendered_url = _drawtext_values(self._get_vf(config))[1]
+        assert _parsed_hostname(rendered_url) == "example.com"
 
     def test_contains_subscribe_cta(self):
         assert "Subscribe" in self._get_vf(OutroConfig())
