@@ -136,6 +136,9 @@ param videoGenerationEnabled string = 'true'
 @description('Route provider distribution through the durable outbox. Disabled until canary.')
 param distributionOutboxEnabled string = 'false'
 
+@description('Allow the distribution worker to invoke mutating provider dispatch. Disabled until canary.')
+param distributionWorkerProviderMutationEnabled string = 'false'
+
 @description('Optional Azure Monitor action group resource ID for operations alerts.')
 param distributionOperationsActionGroupId string = ''
 @description('Optional Azure Monitor action group resource ID for upstream dispatch alerts.')
@@ -500,6 +503,45 @@ module acaVideo 'modules/aca-video.bicep' = {
   ]
 }
 
+module acaDistribution 'modules/aca-distribution.bicep' = {
+  name: 'provider-distribution-job'
+  params: {
+    location: location
+    containerAppsEnvId: aca.outputs.environmentId
+    distributionJobName: distributionJobName
+    jobIdentityResourceId: aca.outputs.jobIdentityResourceId
+    jobIdentityClientId: aca.outputs.jobIdentityClientId
+    storageAccountName: storage.name
+    distributionQueueName: aca.outputs.distributionQueueName
+    storageContainerName: storageContainerName
+    distributionImage: synthesisImage
+    containerRegistryServer: acrLoginServer
+    providerMutationEnabled: distributionWorkerProviderMutationEnabled
+  }
+  dependsOn: [
+    artifactContainer
+  ]
+}
+
+module acaDistributionScheduler 'modules/aca-distribution-scheduler.bicep' = {
+  name: 'provider-distribution-scheduler-job'
+  params: {
+    location: location
+    containerAppsEnvId: aca.outputs.environmentId
+    schedulerJobName: distributionSchedulerJobName
+    jobIdentityResourceId: aca.outputs.jobIdentityResourceId
+    jobIdentityClientId: aca.outputs.jobIdentityClientId
+    storageAccountName: storage.name
+    distributionQueueName: aca.outputs.distributionQueueName
+    storageContainerName: storageContainerName
+    image: synthesisImage
+    containerRegistryServer: acrLoginServer
+  }
+  dependsOn: [
+    artifactContainer
+  ]
+}
+
 module distributionAlerts 'modules/distribution-alerts.bicep' = {
   name: 'provider-distribution-alerts'
   params: {
@@ -668,6 +710,9 @@ output videoQueueName string = aca.outputs.videoQueueName
 output videoJobName string = acaVideo.outputs.jobName
 output videoRecorderJobName string = acaRecorder.outputs.jobName
 output videoClipQueueName string = aca.outputs.videoClipQueueName
+output distributionQueueName string = aca.outputs.distributionQueueName
+output distributionJobName string = acaDistribution.outputs.jobName
+output distributionSchedulerJobName string = acaDistributionScheduler.outputs.jobName
 output synthesisJobIdentityClientId string = aca.outputs.jobIdentityClientId
 output storageNetworkContract string = _storageVnetContractSatisfied ? 'ok' : 'ERROR: storagePublicNetworkAccess must be Disabled when deployVnet=true (#675)'
 output apiAppFqdn string = deployApiApp ? api!.outputs.apiAppFqdn : ''
