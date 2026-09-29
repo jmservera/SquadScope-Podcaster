@@ -45,7 +45,7 @@ services:
 
   recorder:
     # Scale with `--scale recorder=N`; one clip per replica.
-    image: podcaster-synthesis:test
+    image: ${PODCASTER_FANOUT_IMAGE:-podcaster-synthesis:test}
     build:
       context: .
       dockerfile: Containerfile
@@ -60,7 +60,7 @@ services:
     entrypoint: ["python", "-m", "podcaster.video.recorder"]
 
   editor:
-    image: podcaster-synthesis:test
+    image: ${PODCASTER_FANOUT_IMAGE:-podcaster-synthesis:test}
     depends_on:
       azurite:
         condition: service_healthy
