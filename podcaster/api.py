@@ -375,8 +375,9 @@ class GenerateHandler(BaseHTTPRequestHandler):
         assert payload is not None
         try:
             summary = CredentialStore(create_storage_backend()).create_credential(payload)
-        except ValueError as exc:
-            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except ValueError:
+            logger.warning("credential create request was rejected", exc_info=True)
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "invalid credential request"})
             return
         except RuntimeError as exc:
             status = (
@@ -408,8 +409,9 @@ class GenerateHandler(BaseHTTPRequestHandler):
                 credential_id,
                 payload,
             )
-        except ValueError as exc:
-            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except ValueError:
+            logger.warning("credential update request was rejected", exc_info=True)
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "invalid credential request"})
             return
         except RuntimeError as exc:
             status = (
@@ -471,8 +473,13 @@ class GenerateHandler(BaseHTTPRequestHandler):
         assert payload is not None
         try:
             response = PodcastConfigStore(create_storage_backend()).save(payload)
-        except ValueError as exc:
-            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except ValueError:
+            logger.warning("podcast config save request was rejected", exc_info=True)
+            _json_response(
+                self,
+                HTTPStatus.BAD_REQUEST,
+                {"error": "invalid podcast config request"},
+            )
             return
         except RuntimeError as exc:
             _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
@@ -557,8 +564,9 @@ class GenerateHandler(BaseHTTPRequestHandler):
             outcome = record_review_skip_outcome(
                 storage, job_id, outcome, reviewed_at, audio_publish_skipped
             )
-        except ValueError as exc:
-            _json_response(self, HTTPStatus.NOT_FOUND, {"error": str(exc)})
+        except ValueError:
+            logger.warning("review decision was rejected", exc_info=True)
+            _json_response(self, HTTPStatus.NOT_FOUND, {"error": "review request not found"})
             return
         except Exception:
             logger.exception("unhandled error in review orchestration")

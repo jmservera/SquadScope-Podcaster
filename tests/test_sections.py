@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 import pytest
 
@@ -18,6 +19,7 @@ from podcaster.sections import (
     match_section_header,
     parse_script_sections,
     sections_to_metadata,
+    split_speaker,
     strip_section_headers,
     validate_sections,
 )
@@ -88,6 +90,23 @@ class TestMatchSectionHeader:
 
     def test_ignores_plain_heading(self):
         assert match_section_header("## Trends") is None
+
+    def test_pathological_whitespace_input_is_bounded(self):
+        lines = [
+            " " * 50_000 + "#" * 7 + " section " + " " * 50_000 + ": Title",
+            "#" + " " * 50_000 + "section" + " " * 50_000,
+            "A:" + " " * 100_000,
+        ]
+
+        started = time.perf_counter()
+        for line in lines:
+            assert match_section_header(line) is None
+        assert split_speaker(lines[-1], None) is None
+        assert time.perf_counter() - started < 0.25
+
+    def test_fallback_speaker_label_requires_ascii_first_letter(self):
+        assert split_speaker("Host: hello", None) == ("Host", "hello")
+        assert split_speaker("é: hello", None) is None
 
 
 class TestParseScriptSections:
