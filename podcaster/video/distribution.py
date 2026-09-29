@@ -1400,6 +1400,8 @@ def upload_to_spotify_episode(
                     promote_result.terminal_state,
                     promote_result.is_published,
                 )
+            except (OwnershipError, ProviderMutationAdmissionError):
+                raise
             except Exception as promote_exc:  # noqa: BLE001
                 promote_terminal_state = "failed"
                 logger.warning(
@@ -2212,6 +2214,20 @@ def distribute_video(
                 provider_id_field="episode_id",
             )
         else:
+            spotify_mutation_started = False
+
+            def _spotify_before_mutation() -> None:
+                nonlocal spotify_mutation_started
+                if budget is not None:
+                    try:
+                        budget.require_provider_mutation()
+                    except ProviderMutationAdmissionError as exc:
+                        exc.provider = "spotify"
+                        exc.mutation_started = spotify_mutation_started
+                        raise
+                    spotify_mutation_started = True
+                if before_mutation is not None:
+                    before_mutation("spotify", "episode_upload")
 
             def _spotify_upload_call():
                 return upload_to_spotify_episode(
@@ -2225,11 +2241,7 @@ def distribute_video(
                     return_episode_id=True,
                     job_id=job_id,
                     publish_run_id=publish_run_id,
-                    before_mutation=lambda: (
-                        before_mutation("spotify", "episode_upload")
-                        if before_mutation is not None
-                        else None
-                    ),
+                    before_mutation=_spotify_before_mutation,
                     publication_storage=publication_storage,
                     publication_identity_context=publication_identity_context,
                 )
@@ -2242,6 +2254,8 @@ def distribute_video(
                     )
                 else:
                     upload_result = _spotify_upload_call()
+            except ProviderMutationAdmissionError:
+                raise
             except TimeoutError:
                 result.errors.append("Spotify upload cancelled at evidence deadline")
                 result.provider_outcomes["spotify_upload"] = PUBLICATION_UNKNOWN

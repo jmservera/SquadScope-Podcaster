@@ -345,8 +345,10 @@ make it provable.
 At most **two** create POSTs are ever sent for one publish attempt, and the
 second only after a settled, twice-observed listing that still shows nothing the
 first create could have produced. A second ambiguous create is not recovered
-again. `PODCASTER_SPOTIFY_RECONCILE=0` is ignored; the video path never falls
-back to a create without a complete listing.
+again. `PODCASTER_SPOTIFY_RECONCILE=0` disables the listing shortcut, but the
+video path still does not fall back to blind repeat creates: only the separately
+authorized durable-evidence override can permit creation without the complete
+listing shortcut.
 
 Residual, irreducible windows — stated precisely, because neither one loses the
 draft server-side:
@@ -370,11 +372,10 @@ client-side: the Anchor v5 API exposes no idempotency key. What is closed is the
 common case — a crash during the multi-minute upload — because the draft is
 titled before the upload starts and reconcile finds it on the next run.
 
-#### Pagination (unimplemented, unverified)
+#### Persisted GraphQL pagination
 
-The listing is fetched with a single unpaginated GET. Whether the endpoint pages
-at all — and under which key — is unknown. The restored implementation uses the
-persisted `WebGetIndexedEpisodeList` GraphQL operation at
+The restored implementation uses the persisted `WebGetIndexedEpisodeList`
+GraphQL operation at
 `https://creators-graph.spotify.com/v2/graph-pq` with `showUri`,
 numbered `currentPage`, and `pageSize=50`; every declared page must validate
 before absence is trusted.
@@ -898,7 +899,7 @@ The Spotify multipart upload protocol (§5) was validated against real uploads a
 | `SP_DC` | `publish._get_credentials` | Spotify `sp_dc` session cookie (auth). |
 | `SP_KEY` | `publish._build_session` | Spotify `sp_key` session cookie (auth). |
 | `SPOTIFY_SHOW_ID` | `publish._get_credentials` | The show's `webId` used to resolve legacy `stationId`/`userId`. |
-| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Retained for compatibility but ignored; strict reconcile-before-create is mandatory (§5). |
+| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Defaults on. False-like values (`0`, `false`, `no`, `off`) disable the listing shortcut, but creation still requires the separately authorized durable-evidence override instead of blind repeat creates (§5). |
 | `PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING` | `publish._spotify_strict_paging_enabled` | Defaults on; an explicitly paginated listing with no first-page match fails closed (§5). |
 | `PODCASTER_STORAGE_ACCOUNT_URL` | `storage.py`, `video/job_runner.py` | Azure Blob storage account URL; backs intro/outro fetch, blob archive, and job manifests. |
 

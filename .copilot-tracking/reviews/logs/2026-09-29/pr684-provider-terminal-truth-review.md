@@ -10,7 +10,7 @@
 
 - PR body and acceptance context for #684.
 - Linked follow-up issue jmservera/SquadScope-Podcaster#681; outbox worker remains follow-up and was not implemented here.
-- Review threads via GraphQL `reviewThreads(first: 100)`: no unresolved review threads at the time of the final push.
+- Review threads via GraphQL `reviewThreads(first: 100)`: post-push review threads were checked, addressed, replied to, and resolved.
 - Merged-main behavior from #682 and later main commits, including disabled legacy `PODCAST_AUTO_PUBLISH` behavior and newest publish/orchestration hardening.
 
 ## Implementation review outcome
@@ -21,6 +21,7 @@
 - CI exposed that the readable-metadata corruption fixture in `tests/test_video_compose.py` was not deterministic under the hosted runner ffmpeg; the fixture now truncates inside `mdat` while preserving faststart metadata, matching the existing decode-failure contract without weakening validation.
 - Copilot review round 1 was addressed by restoring current-main Spotify draft GraphQL pagination and publish tests, preserving staged media probing before final promotion, adding dispatch receipt CAS/type guards, preserving playlist ambiguous outcomes and budget admission, restoring a 300-second bounded Spotify upload window, removing deployed/triggered #681 distribution-worker infrastructure and worker module/tests from this PR, and enforcing consecutive alert evaluation periods for 10/15-minute windows.
 - Copilot review round 2 was addressed by threading Spotify publish storage/identity/mutation callbacks, classifying YouTube upload-init transport/5xx outcomes as retry-blocked ambiguity even when required, failing ownership takeover closed on malformed expiry, validating dispatch ISO weeks with the calendar, paging dispatch receipt scans, moving final promotion fencing to immediately before replace, and refreshing Spotify operator docs.
+- A final post-push review pass fixed Spotify promotion ownership/budget errors so they re-raise instead of being converted to ordinary failures, added lifecycle-budget admission to Spotify mutation callbacks, corrected stale Spotify operator documentation, and refreshed this evidence record.
 - Production behavior changes intentionally present in #684:
   - Provider ambiguity and accepted-but-unreadable provider responses fail closed as `publication_unknown`/retry-blocked instead of being treated as success.
   - Final media is validated before promotion so invalid output cannot replace an existing destination.
@@ -36,4 +37,4 @@
 
 ## Review decision
 
-Locally accepted pending GitHub CI completion and post-push Copilot review-thread check. Do not merge from this review record.
+Locally accepted pending GitHub CI completion and final post-push Copilot review-thread check. Do not merge from this review record.

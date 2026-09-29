@@ -30,6 +30,7 @@ from podcaster.video.distribution import (
     upload_to_youtube,
 )
 from podcaster.video.intermediates import StorageOperationTimeout
+from podcaster.video.ownership import OwnershipError
 from podcaster.video.process import ProbeEvidence
 
 
@@ -852,6 +853,46 @@ class TestVerifiedArchive:
 
 
 class TestDistributionBudget:
+    def test_spotify_upload_rechecks_provider_mutation_budget(
+        self,
+        video_file,
+        monkeypatch,
+    ):
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        calls: list[str] = []
+
+        def fake_spotify(*args, **kwargs):
+            before_mutation = kwargs["before_mutation"]
+            before_mutation()
+            calls.append("admitted")
+            clock.elapsed = 4501.0
+            before_mutation()
+            raise AssertionError("second mutation should be denied")
+
+        monkeypatch.setattr("podcaster.video.distribution.upload_to_spotify_episode", fake_spotify)
+
+        with pytest.raises(ProviderMutationAdmissionError) as captured:
+            distribute_video(
+                video_file,
+                "job-spotify-budget",
+                "title",
+                "desc",
+                120.0,
+                VideoDistributionConfig(
+                    spotify_upload_enabled=True,
+                    blob_archive_enabled=False,
+                    dry_run=False,
+                ),
+                budget=budget,
+                operation_runner=lambda func, _timeout: func(),
+                spotify_anchor_id=123,
+            )
+
+        assert calls == ["admitted"]
+        assert captured.value.provider == "spotify"
+        assert captured.value.mutation_started is True
+
     @pytest.mark.parametrize("denied_elapsed", [3301.0, 4500.0, 4501.0])
     def test_youtube_rechecks_admission_before_later_put(
         self,
@@ -2279,6 +2320,37 @@ class TestSpotifyEpisodeUpload:
         assert result.spotify_video_is_published is False
         assert all(not err.startswith("Spotify video promote:") for err in result.errors)
         assert result.status == "completed"
+
+    def test_spotify_promotion_ownership_error_raises(self, video_file, monkeypatch):
+        from podcaster.publish import PublishResult
+
+        def fake_upload(*args, **kwargs):
+            return PublishResult(status="uploaded", anchor_episode_id=321)
+
+        def fail_promote(*args, **kwargs):
+            raise OwnershipError("stale owner")
+
+        monkeypatch.setattr(
+            "podcaster.publish.upload_video_to_episode",
+            fake_upload,
+        )
+        monkeypatch.setattr(
+            "podcaster.publish.promote_spotify_video_draft",
+            fail_promote,
+        )
+
+        with pytest.raises(OwnershipError):
+            upload_to_spotify_episode(
+                video_file,
+                123,
+                VideoDistributionConfig(
+                    spotify_upload_enabled=True,
+                    spotify_video_publish_mode="live",
+                    blob_archive_enabled=False,
+                    dry_run=False,
+                ),
+                return_episode_id=True,
+            )
 
 
 class TestPlaylistIntegration:
