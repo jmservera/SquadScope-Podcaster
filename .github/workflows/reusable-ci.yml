@@ -37,11 +37,10 @@ jobs:
           containers = jobs[0]["properties"]["template"]["containers"]
           assert len(containers) == 1, f"expected one video container, found {len(containers)}"
           container = containers[0]
-          assert container["command"] == [
-              "python",
-              "-m",
-              "podcaster.video.job_runner",
-          ], container["command"]
+          command = container["command"]
+          assert command[:2] == ["python", "-m"], command
+          assert len(command) == 3 and "runnerModule" in command[2], command
+          assert template["parameters"]["runnerModule"]["defaultValue"] == "podcaster.video.job_runner"
           assert container["args"] == ["--max-messages", "1"], container["args"]
           '
 

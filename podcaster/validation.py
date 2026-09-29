@@ -110,6 +110,10 @@ def validate_payload_details(payload: Any) -> PayloadValidationResult:
     if not isinstance(payload, dict):
         return PayloadValidationResult(["request body must be a JSON object"], [])
 
+    from podcaster.dispatch_receipts import validate_dispatch_fields
+
+    errors.extend(validate_dispatch_fields(payload))
+
     week = payload.get("week")
     if not isinstance(week, str) or not week.strip():
         errors.append("week is required")

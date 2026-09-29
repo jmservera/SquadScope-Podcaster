@@ -42,7 +42,7 @@ docutils==0.22.4
     # via
     #   myst-parser
     #   sphinx
-fastapi==0.141.1
+fastapi==0.142.0
     # via squadscope-podcaster (pyproject.toml)
 greenlet==3.5.6
     # via playwright
@@ -95,6 +95,8 @@ msal-extensions==1.3.1
     # via azure-identity
 myst-parser==5.1.0
     # via spotifyconnector
+opentelemetry-api==1.45.0
+    # via fastapi
 packaging==26.3
     # via
     #   pytest
@@ -177,6 +179,7 @@ typing-extensions==4.16.0
     #   azure-storage-queue
     #   fastapi
     #   httpx2
+    #   opentelemetry-api
     #   pydantic
     #   pydantic-core
     #   pyee

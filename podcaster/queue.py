@@ -18,9 +18,11 @@ import base64
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
-from email.utils import formatdate
-from typing import Protocol
+from datetime import datetime, timezone
+from email.utils import formatdate, parsedate_to_datetime
+from typing import Callable, Protocol
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
@@ -34,6 +36,7 @@ from podcaster.storage import (
 SYNTHESIS_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-synthesis-queue-v1"
 VIDEO_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-video-queue-v1"
 CLIP_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-clip-queue-v1"
+DISTRIBUTION_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-distribution-queue-v1"
 _STORAGE_SCOPE = "https://storage.azure.com/.default"
 _QUEUE_API_VERSION = "2023-11-03"
 
@@ -67,6 +70,7 @@ class QueueMessage:
     pop_receipt: str
     body: str
     dequeue_count: int
+    next_visible_on: datetime | None = None
 
 
 class QueueBackend(Protocol):
@@ -140,6 +144,43 @@ def encode_clip_message(job_id: str, clip_index: int) -> str:
         separators=(",", ":"),
     )
     return base64.b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def encode_distribution_message(outbox_id: str) -> str:
+    """Encode a provider-distribution outbox identity without provider payload data."""
+
+    if not isinstance(outbox_id, str) or not re.fullmatch(r"[0-9a-f]{64}", outbox_id):
+        raise ValueError("outbox_id must be a SHA-256 identifier")
+    payload = json.dumps(
+        {
+            "schema_version": DISTRIBUTION_QUEUE_SCHEMA_VERSION,
+            "outbox_id": outbox_id,
+        },
+        separators=(",", ":"),
+    )
+    return base64.b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def parse_distribution_outbox_id(body: str) -> str:
+    """Parse a distribution queue payload and return its durable outbox identity."""
+
+    try:
+        decoded = base64.b64decode(body, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        decoded = body
+    try:
+        payload = json.loads(decoded)
+    except ValueError as exc:
+        raise ValueError("distribution message is not valid JSON") from exc
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != DISTRIBUTION_QUEUE_SCHEMA_VERSION
+    ):
+        raise ValueError("distribution message schema is invalid")
+    outbox_id = payload.get("outbox_id")
+    if not isinstance(outbox_id, str) or not re.fullmatch(r"[0-9a-f]{64}", outbox_id):
+        raise ValueError("distribution message outbox_id is invalid")
+    return outbox_id
 
 
 def parse_clip_job(body: str) -> tuple[str, int]:
@@ -291,9 +332,30 @@ def _parse_messages(payload: bytes) -> list[QueueMessage]:
                 pop_receipt=(element.findtext("PopReceipt") or "").strip(),
                 body=(element.findtext("MessageText") or ""),
                 dequeue_count=int((element.findtext("DequeueCount") or "0").strip() or "0"),
+                next_visible_on=_parse_queue_timestamp(element.findtext("NextVisibleTime")),
             )
         )
     return messages
+
+
+def _parse_queue_timestamp(value: object) -> datetime | None:
+    """Parse an Azure queue timestamp as an aware UTC datetime."""
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        text = value.strip()
+        try:
+            parsed = parsedate_to_datetime(text)
+        except (TypeError, ValueError):
+            try:
+                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+    else:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
 
 
 class ConnectionStringQueueBackend:
@@ -335,6 +397,7 @@ class ConnectionStringQueueBackend:
                     pop_receipt=msg.pop_receipt,
                     body=msg.content,
                     dequeue_count=int(msg.dequeue_count or 0),
+                    next_visible_on=_parse_queue_timestamp(getattr(msg, "next_visible_on", None)),
                 )
             )
             if len(messages) >= max_messages:
@@ -386,6 +449,59 @@ def create_video_queue_backend() -> QueueBackend | None:
     if not queue_url:
         return None
     return AzureStorageQueueBackend(queue_url, queue_name)
+
+
+def create_distribution_queue_backend() -> QueueBackend | None:
+    """Build the provider-distribution queue backend from the environment."""
+
+    queue_url = os.environ.get("PODCASTER_STORAGE_QUEUE_URL")
+    queue_name = os.environ.get("PODCASTER_DISTRIBUTION_QUEUE", "distribution-jobs")
+    conn = _connection_string()
+    if conn:
+        return ConnectionStringQueueBackend(conn, queue_name)
+    if not queue_url:
+        return None
+    return AzureStorageQueueBackend(queue_url, queue_name)
+
+
+def enqueue_distribution_job(
+    outbox_id: str,
+    *,
+    producer: QueueProducer | None = None,
+    authorize_send: Callable[[], bool] | None = None,
+    mark_accepted: Callable[[], bool] | None = None,
+) -> bool:
+    """Send an at-least-once hint for an authoritative outbox item.
+
+    ``authorize_send`` atomically consumes the sole initial-send authority.
+    ``mark_accepted`` records acceptance only after ``send_message`` returns.
+    A crash around broker I/O leaves that attempt ambiguous and non-replayable;
+    the outbox's independently scheduled provider reconciliation recovers the
+    item without granting a second provider mutation.
+    """
+
+    backend = producer or create_distribution_queue_backend()
+    if backend is None:
+        logging.warning(
+            "distribution queue not configured; outbox_id=%s remains repairable",
+            outbox_id,
+        )
+        return False
+    if authorize_send is not None and not authorize_send():
+        logging.info(
+            "distribution notification intent already accepted; "
+            "duplicate enqueue suppressed outbox_id=%s",
+            outbox_id,
+        )
+        return True
+    backend.send_message(encode_distribution_message(outbox_id))
+    if mark_accepted is not None and not mark_accepted():
+        logging.info(
+            "distribution notification acceptance was already recorded outbox_id=%s",
+            outbox_id,
+        )
+    logging.info("enqueued distribution outbox_id=%s", outbox_id)
+    return True
 
 
 def enqueue_synthesis_job(job_id: str, *, producer: QueueProducer | None = None) -> bool:

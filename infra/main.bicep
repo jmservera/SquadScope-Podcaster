@@ -106,6 +106,12 @@ param synthesisJobName string = '${baseName}-synth'
 @description('Queue-triggered video Container Apps Job name (#324).')
 param videoJobName string = '${baseName}-video'
 
+@description('Queue-triggered provider distribution Container Apps Job name.')
+param distributionJobName string = '${baseName}-distribution'
+
+@description('Scheduled reconciliation notifier Container Apps Job name.')
+param distributionSchedulerJobName string = '${baseName}-distribution-scheduler'
+
 @description('Queue-triggered scale-out recorder Container Apps Job name (#552/#565).')
 param videoRecorderJobName string = '${baseName}-recorder'
 
@@ -118,11 +124,26 @@ param synthesisQueueName string = 'synthesis-jobs'
 @description('Storage Queue carrying video-generation messages (job_id only; no secrets/PII).')
 param videoQueueName string = 'video-jobs'
 
+@description('Storage Queue carrying provider-distribution outbox identities only.')
+param distributionQueueName string = 'distribution-jobs'
+
 @description('Storage Queue carrying per-clip recording messages (job_id + clip_index only; no secrets/PII).')
 param videoClipQueueName string = 'video-clip-jobs'
 
 @description('Whether the synthesis job enqueues a video-generation message after publishing audio (#324).')
 param videoGenerationEnabled string = 'true'
+
+@description('Route provider distribution through the durable outbox. Disabled until canary.')
+param distributionOutboxEnabled string = 'false'
+
+@description('Optional Azure Monitor action group resource ID for operations alerts.')
+param distributionOperationsActionGroupId string = ''
+@description('Optional Azure Monitor action group resource ID for upstream dispatch alerts.')
+param distributionUpstreamActionGroupId string = ''
+@description('Optional Azure Monitor action group resource ID for publication operator alerts.')
+param distributionOperatorActionGroupId string = ''
+@description('Optional Azure Monitor action group resource ID for production-owner alerts.')
+param distributionProductionActionGroupId string = ''
 
 @description('Synthesis container image (ffmpeg baked in, built by #77).')
 param synthesisImage string = 'mcr.microsoft.com/k8se/quickstart-jobs:latest'
@@ -407,6 +428,7 @@ module aca 'modules/aca.bicep' = {
     logAnalyticsWorkspaceName: workspace.name
     synthesisQueueName: synthesisQueueName
     videoQueueName: videoQueueName
+    distributionQueueName: distributionQueueName
     videoClipQueueName: videoClipQueueName
     videoGenerationEnabled: videoGenerationEnabled
     storageContainerName: storageContainerName
@@ -449,6 +471,8 @@ module acaVideo 'modules/aca-video.bicep' = {
     jobIdentityClientId: aca.outputs.jobIdentityClientId
     storageAccountName: storage.name
     videoQueueName: aca.outputs.videoQueueName
+    distributionQueueName: aca.outputs.distributionQueueName
+    distributionOutboxEnabled: distributionOutboxEnabled
     videoClipQueueName: aca.outputs.videoClipQueueName
     storageContainerName: storageContainerName
     videoScratchContainerName: videoScratchContainerName
@@ -474,6 +498,19 @@ module acaVideo 'modules/aca-video.bicep' = {
     artifactContainer
     videoScratchContainer
   ]
+}
+
+module distributionAlerts 'modules/distribution-alerts.bicep' = {
+  name: 'provider-distribution-alerts'
+  params: {
+    location: location
+    logAnalyticsWorkspaceId: workspace.id
+    operationsActionGroupResourceId: distributionOperationsActionGroupId
+    upstreamActionGroupResourceId: distributionUpstreamActionGroupId
+    operatorActionGroupResourceId: distributionOperatorActionGroupId
+    productionActionGroupResourceId: distributionProductionActionGroupId
+    enabled: distributionOutboxEnabled == 'true'
+  }
 }
 
 // Scale-out video recorder (#552/#565): a queue-triggered ACA Job consuming the video-clip-jobs

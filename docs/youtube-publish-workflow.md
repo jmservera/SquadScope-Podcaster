@@ -75,6 +75,17 @@ The gate is explicit and auditable:
 Automation **may** set `approved=True` programmatically, but only as the
 explicit final step of a documented approval flow — never implicitly on upload.
 
+For the distribution outbox, only a human review record is accepted. The worker
+copies `review.approved_by`, `review.approved_at`, and the matching audit entry
+into durable provider state bound to the publication digest and manifest hash.
+Synthetic identities such as `system:auto-publish` do not authorize playlist
+insertion or public promotion.
+
+When a playlist is configured, the worker reconciles membership before any
+insert, consumes one fenced `playlist_insert` intent only after approval, then
+reads membership back externally. Public success is not recorded until that
+playlist readback and the final `privacyStatus=public` readback both succeed.
+
 ## Phase 2: Promotion to public (the explicit second phase)
 
 After the human review gate is satisfied, use `scripts/youtube_promote.py` to

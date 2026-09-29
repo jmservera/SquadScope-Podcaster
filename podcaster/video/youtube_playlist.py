@@ -26,6 +26,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from typing import Callable
 from urllib.parse import urlencode
 
 from podcaster.video.budget import ProviderMutationAdmissionError, VideoStageBudget
@@ -44,7 +45,6 @@ PLAYLIST_ITEMS_LIST_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
 _PLAYLIST_ENV_BASE = "VIDEO_YOUTUBE_PLAYLIST_ID"
 _DEFAULT_LOCALE = "en"
 _SUPPORTED_LOCALES = ("en", "es", "fr")
-_TRANSIENT_INSERT_STATUSES = {429, 500, 502, 503, 504}
 
 
 def _normalize_locale(locale: str | None) -> str:
@@ -109,7 +109,7 @@ class PlaylistAddResult:
     skipped: bool = False
     playlist_item_id: str = ""
     error: str = ""
-    outcome: str = "failed"
+    outcome: str = ""
     retry_blocked: bool = False
 
 
@@ -193,10 +193,10 @@ def add_video_to_playlist(
 ) -> PlaylistAddResult:
     """Insert ``video_id`` into ``playlist_id`` via ``playlistItems.insert``.
 
-    Never raises on an HTTP/transport error. A lost insert response is returned
-    as retry-blocked ``unknown`` because the provider may have committed the
-    mutation. The token is only sent in the ``Authorization`` header and never
-    logged.
+    Never raises on an HTTP/transport error — returns a failed
+    :class:`PlaylistAddResult` so a playlist failure cannot abort the rest of
+    distribution (the video itself is already uploaded). The token is only sent
+    in the ``Authorization`` header and never logged.
     """
     if not playlist_id:
         raise ValueError("playlist_id is required")
@@ -246,46 +246,27 @@ def add_video_to_playlist(
     if status in (200, 201):
         try:
             data = json.loads(body.decode("utf-8") if isinstance(body, bytes) else body)
-        except (TypeError, ValueError, AttributeError):
-            data = {}
-        item_id = data.get("id") if isinstance(data, dict) else None
-        if not isinstance(item_id, str) or not item_id.strip():
-            logger.warning(
-                "playlistItems.insert completion is ambiguous for %s -> %s",
-                video_id,
-                playlist_id,
-            )
+            if not isinstance(data, dict):
+                raise ValueError("playlist insert response is not an object")
+            item_id = str(data.get("id", "")).strip()
+            if not item_id:
+                raise ValueError("playlist insert response did not include an id")
+        except (ValueError, AttributeError) as exc:
+            logger.warning("playlistItems.insert outcome ambiguous for %s: %s", video_id, exc)
             return PlaylistAddResult(
                 video_id=video_id,
                 playlist_id=playlist_id,
                 succeeded=False,
-                error="playlist insert completed without a valid item id",
+                error=str(exc),
                 outcome="unknown",
                 retry_blocked=True,
             )
-        item_id = item_id.strip()
         logger.info("Added video %s to playlist %s", video_id, playlist_id)
         return PlaylistAddResult(
             video_id=video_id,
             playlist_id=playlist_id,
             succeeded=True,
             playlist_item_id=item_id,
-            outcome="completed",
-        )
-    if status in _TRANSIENT_INSERT_STATUSES:
-        logger.warning(
-            "playlistItems.insert outcome is ambiguous for %s -> %s: HTTP %s",
-            video_id,
-            playlist_id,
-            status,
-        )
-        return PlaylistAddResult(
-            video_id=video_id,
-            playlist_id=playlist_id,
-            succeeded=False,
-            error=f"HTTP {status}",
-            outcome="unknown",
-            retry_blocked=True,
         )
     logger.warning(
         "playlistItems.insert failed for %s -> %s: HTTP %s",
@@ -309,6 +290,7 @@ def add_to_show_playlist(
     *,
     transport: object | None = None,
     position: int | None = None,
+    before_mutation: Callable[[], None] | None = None,
     budget: VideoStageBudget | None = None,
 ) -> PlaylistAddResult:
     """Resolve the locale's playlist and add ``video_id`` idempotently.
@@ -327,13 +309,7 @@ def add_to_show_playlist(
             "No YouTube playlist configured for locale %s; skipping",
             _normalize_locale(locale),
         )
-        return PlaylistAddResult(
-            video_id=video_id,
-            playlist_id="",
-            succeeded=True,
-            skipped=True,
-            outcome="completed",
-        )
+        return PlaylistAddResult(video_id=video_id, playlist_id="", succeeded=True, skipped=True)
 
     try:
         already_present = playlist_contains_video(
@@ -344,7 +320,7 @@ def add_to_show_playlist(
             raise_on_error=True,
         )
     except RuntimeError as exc:
-        logger.warning("Playlist membership reconciliation failed for %s: %s", video_id, exc)
+        logger.warning("playlist membership outcome ambiguous for %s: %s", video_id, exc)
         return PlaylistAddResult(
             video_id=video_id,
             playlist_id=playlist_id,
@@ -365,9 +341,10 @@ def add_to_show_playlist(
             playlist_id=playlist_id,
             succeeded=True,
             skipped=True,
-            outcome="completed",
         )
 
+    if before_mutation is not None:
+        before_mutation()
     return add_video_to_playlist(
         playlist_id,
         video_id,

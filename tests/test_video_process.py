@@ -18,6 +18,7 @@ from podcaster.video.process import (
     OwnedProcessTimeout,
     ProbeEvidence,
     collect_media_evidence,
+    ensure_ffprobe_available,
     run_owned_callable,
     run_owned_process,
 )
@@ -38,6 +39,30 @@ def test_runner_keeps_optional_unbounded_compatibility():
     result = run_owned_process([sys.executable, "-c", "print('ok')"])
     assert result.returncode == 0
     assert result.stdout.strip() == "ok"
+
+
+def test_ffprobe_prerequisite_fails_fast_when_missing(monkeypatch):
+    monkeypatch.setattr("podcaster.video.process.shutil.which", lambda _name: None)
+
+    with pytest.raises(MediaValidationError) as exc_info:
+        ensure_ffprobe_available(context="video job terminal media validation")
+
+    assert exc_info.value.reason is MediaValidationReason.PROBE_FAILED
+    assert "video job terminal media validation requires ffprobe" in str(exc_info.value)
+
+
+def test_ffprobe_prerequisite_rejects_non_executable_probe(monkeypatch):
+    def fail_run(*args, **kwargs):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr("podcaster.video.process.shutil.which", lambda _name: "/bin/ffprobe")
+    monkeypatch.setattr("podcaster.video.process.subprocess.run", fail_run)
+
+    with pytest.raises(MediaValidationError) as exc_info:
+        ensure_ffprobe_available(context="video recorder media validation")
+
+    assert exc_info.value.reason is MediaValidationReason.PROBE_FAILED
+    assert "requires an executable ffprobe binary" in str(exc_info.value)
 
 
 def test_runner_drains_noisy_output_into_bounded_timeout_tail():

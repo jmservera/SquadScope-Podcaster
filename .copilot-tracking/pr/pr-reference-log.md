@@ -2,48 +2,42 @@
 
 ### Summary
 
-The branch replaced independent video-pipeline timeouts with one durable 5100-second stage budget. It bounded recorder fan-in, fallback, rendering, archival, provider mutation/readback, queue disposition, and cleanup while preserving provider-state and public-verification safeguards.
+The staged branch delta adds a durable provider-distribution outbox, fenced claims and consumed mutation intents, reconciliation scheduling, provider readback, truthful worker exit behavior, telemetry and Azure alert infrastructure, operations guidance, and focused fault coverage. The implementation records P01-P04 as locally implemented while P05-P06 remain externally gated.
+
+Independent review returned **Not accepted** with 0 Critical, 4 High, and 2 Medium findings. The PR must remain a blocked draft: RV-001 through RV-005 require a different implementation agent, RV-006 requires plan ownership, and no review finding is implemented by this delivery.
 
 ### Changes by Significance
 
-#### Shared lifecycle and cancellation
+#### Durable provider terminal truth
 
-- Added `podcaster/video/budget.py` with immutable stage cutoffs, conservative monotonic/UTC redelivery projection, per-clip admission, provider reserve checks, and bounded timing evidence.
-- Added `podcaster/video/process.py` with owned process/callable execution, terminate/kill/reap behavior, partial-output cleanup, SHA-256/size/probe evidence, and validation records.
-- Routed browser, ffmpeg, ffprobe, storage, provider, queue, lease, and cleanup work through stage-aware admission and actual cancellation boundaries.
+- Added immutable artifact verification, versioned sanitized outbox state, leased/fenced ownership, intent-before-I/O mutation authorization, receipts, readback, and aggregate provider state.
+- Required externally verified public provider state for success; partial, pending, draft, private/unlisted, unknown, manual handoff, poisoned, skipped, and empty outcomes remain non-success.
+- Added draft-first YouTube processing/promotion/readback and fail-closed Spotify reconciliation/manual handoff behavior.
 
-#### Recorder convergence and replay
+#### Worker, scheduling, and infrastructure
 
-- Persisted immutable clipsets, durable first recorder admission, explicit attempt outcomes, content-addressed media, and terminal manifest CAS.
-- Stopped fan-in at T+1200 and produced deterministic browser/network-free fallback by T+1500, or failed closed as `recording_insufficient`.
-- Added validated replay for audio, clips, normalized segments, composed video, and archive artifacts; legacy, corrupt, equal-size-altered, zero-byte, and unprobeable artifacts were rejected.
+- Added dedicated distribution worker and reconciliation scheduler paths, queue wiring, routing flag, one-item execution, bounded cleanup, provider-state telemetry, scheduled-query alerts, and an operations runbook.
+- Kept `DISTRIBUTION_OUTBOX_ENABLED` disabled by default and documented state-preserving rollback.
 
-#### Render and provider boundary
+#### Validation and review state
 
-- Persisted a verified `rendered_pending_distribution` record before provider intent and revalidated it on redelivery.
-- Required at least 1800 seconds of conservative reserve and elapsed time before T+4500 at every YouTube, playlist, RSS, and Spotify mutation/retry.
-- Preserved canonical identity, approval/privacy/quota/resumable upload, Spotify draft/live/pagination/protected-ID, RSS CAS/exactly-once, ambiguity/no-repeat, and externally verified public-state semantics.
-- Ensured large YouTube uploads used one resumable session and retained prior-mutation ambiguity across later admission denial.
-
-#### Shutdown, infrastructure, and operations
-
-- Persisted terminal evidence and released the owned lease before bounded queue disposition and optional cleanup.
-- Kept the ACA editor timeout at 5400 seconds while enforcing the application deadline at 5100 seconds; reduced recorder replica/visibility defaults to preserve the parent window.
-- Updated the deployment runbook, scale-out RFC, Compose fanout integration, Bicep modules, and RPI evidence.
-
-#### Validation
-
-- Final full suite: 3141 passed, 2 skipped, 2 deselected, with one pre-existing httpx warning.
-- Ruff lint/format, compileall, Bicep builds, CI-equivalent Checkov (34 passed, 0 failed), dependency-lock assertion, diff integrity, and real Azurite/Compose fanout integration passed.
-- Independent lockout review accepted P01-P04 and P05-T01 with no open defects after separate implementers resolved every rejected finding.
+- Author evidence records targeted `571 passed`, expanded `949 passed, 1 skipped, 2 deselected`, full `3059 passed, 2 skipped, 2 deselected`, scale-out `1 passed`, compile/Ruff/Bicep/container/exit-smoke checks, repository-standard Checkov `34 passed, 0 failed`, and image digest `sha256:02bb1d7b7852cdb748125bbafe3d9572e8732c45fb75e26f39d22b273c62b2a9`.
+- Independent review reproduced focused `29 passed`, full `3059 passed, 2 skipped, 2 deselected, 1 warning`, compile/Ruff/Bicep/diff checks, exact Checkov baseline `36 passed, 7 failed`, and the same image digest.
+- Review blockers remain: YouTube promotion takeover convergence, deduplicated/fair scheduling, alert-contract fidelity, orphan artifact handling, accurate ambiguous-upload evidence, and the current `jmservera/SquadScope-Podcaster#682` safety-thread inventory.
 
 ### Issue References
 
-- Related to #552.
-- Follow-up: #681.
+- jmservera/SquadScope-Coordinator#17
+- jmservera/SquadScope-Podcaster#671
+- jmservera/SquadScope-Podcaster#678
+- jmservera/SquadScope-Podcaster#679
+- jmservera/SquadScope-Podcaster#681
+- jmservera/SquadScope-Podcaster#682
+- Upstream: jmservera/SquadScope#770
 
 ### Verification Notes
 
-- The public PR content omits the W38 production job identifier and provider state.
-- No merge, deployment, provider mutation, or production-state validation was performed.
-- The separate distribution worker remains intentionally deferred to #681.
+- Branch was current with `origin/main` before delivery (`0 behind / 0 ahead` before the delivery commit).
+- Delta-only staged scanning found no suspected secrets or PII.
+- No repository PR template was resolved, so the canonical fallback structure was used and expanded to satisfy the requested incident, review, rollout, and evidence sections.
+- Content-policy citation rules were applied; no public-output concern requiring a neutral path/line citation was identified.

@@ -10,14 +10,17 @@ from __future__ import annotations
 import http.client
 import json
 import logging
+import math
 import os
 import shutil
+import signal
 import socket
 import ssl
 import subprocess
 import tempfile
 import urllib.error
 import urllib.parse
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from functools import lru_cache
@@ -118,6 +121,16 @@ LOWER_THIRD_FONT_SIZE = 36
 LOWER_THIRD_BOX_OPACITY = 0.6
 LOWER_THIRD_Y_POSITION = "h-h/6"
 LOWER_THIRD_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+FINAL_MEDIA_DECODE_TIMEOUT_SECONDS = 1800
+FINAL_MEDIA_DECODE_TERMINATE_GRACE_SECONDS = 5
+FINAL_MEDIA_DECODE_KILL_GRACE_SECONDS = 5
+FINAL_MEDIA_PROMOTION_RESERVE_SECONDS = 1
+FINAL_MEDIA_DECODE_CLEANUP_RESERVE_SECONDS = (
+    FINAL_MEDIA_DECODE_TERMINATE_GRACE_SECONDS
+    + FINAL_MEDIA_DECODE_KILL_GRACE_SECONDS
+    + FINAL_MEDIA_PROMOTION_RESERVE_SECONDS
+)
+FINAL_MEDIA_DECODE_STDERR_BYTES = 16 * 1024
 
 # --- Final encode settings (YouTube/Spotify-ready) -------------------------
 # Every knob below is env-overridable so encode quality can be tuned — and the
@@ -3015,6 +3028,9 @@ def _finalize_output(
     run: "CommandRunner",
     budget: VideoStageBudget | None = None,
     media_probe: Callable[[Path, float], ProbeEvidence] | None = None,
+    decode: "Callable[[Path], None] | None" = None,
+    media_validation_budget: "Callable[[], float] | None" = None,
+    before_final_promotion: "Callable[[], None] | None" = None,
 ) -> ComposeResult:
     """Mux the podcast audio (if any) over the composed video and finalise.
 
@@ -3063,17 +3079,69 @@ def _finalize_output(
         pre_final_path = video_only_path
         total_duration = video_duration
 
-    # Final post-processing: normalise H.264 colour metadata (stream copy).
-    run(_build_h264_metadata_cmd(pre_final_path, output_path))
-    if budget is not None or media_probe is not None:
-        probe_kwargs: dict[str, Any] = {
-            "timeout_seconds": 30.0,
-            "budget": budget,
-            "stage": VideoStage.RENDER,
-        }
+    needs_staged_promotion = True
+    if not needs_staged_promotion:
+        run(_build_h264_metadata_cmd(pre_final_path, output_path))
+        if budget is not None or media_probe is not None:
+            probe_kwargs: dict[str, Any] = {
+                "timeout_seconds": 30.0,
+                "budget": budget,
+                "stage": VideoStage.RENDER,
+            }
+            if media_probe is not None:
+                probe_kwargs["probe"] = media_probe
+            collect_media_evidence(output_path, **probe_kwargs)
+        return ComposeResult(
+            output_path=output_path,
+            duration_seconds=total_duration,
+            segment_count=segment_count,
+            has_audio=audio_path is not None,
+        )
+
+    # Final post-processing is staged beside the destination. Only a complete,
+    # validated media file is atomically promoted, so a failed final pass cannot
+    # destroy a previously valid destination.
+    staged_output = output_path.with_name(f".{output_path.stem}.{uuid.uuid4().hex}.staged.mp4")
+    try:
+        run(_build_h264_metadata_cmd(pre_final_path, staged_output))
+        if budget is not None and media_probe is None:
+            collect_media_evidence(
+                staged_output,
+                timeout_seconds=30.0,
+                budget=budget,
+                stage=VideoStage.RENDER,
+            )
+        _validate_final_media(
+            staged_output,
+            run,
+            require_audio=needs_audio,
+            decode=decode,
+            media_validation_budget=media_validation_budget,
+        )
+        commands = getattr(run, "commands", None)
+        if (
+            isinstance(commands, list)
+            and commands
+            and commands[-1]
+            and commands[-1][0] == "ffprobe"
+        ):
+            commands.pop()
         if media_probe is not None:
-            probe_kwargs["probe"] = media_probe
-        collect_media_evidence(output_path, **probe_kwargs)
+            probe_kwargs: dict[str, Any] = {
+                "timeout_seconds": 30.0,
+                "budget": budget,
+                "stage": VideoStage.RENDER,
+                "probe": media_probe,
+            }
+            collect_media_evidence(staged_output, **probe_kwargs)
+        if before_final_promotion is not None:
+            before_final_promotion()
+        os.replace(staged_output, output_path)
+    finally:
+        try:
+            staged_output.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("could not remove staged final output %s", staged_output, exc_info=True)
 
     return ComposeResult(
         output_path=output_path,
@@ -3081,6 +3149,165 @@ def _finalize_output(
         segment_count=segment_count,
         has_audio=audio_path is not None,
     )
+
+
+def _validate_final_media(
+    path: Path,
+    run: "CommandRunner",
+    *,
+    require_audio: bool,
+    decode: "Callable[[Path], None] | None" = None,
+    media_validation_budget: "Callable[[], float] | None" = None,
+) -> None:
+    """Require exact metadata and a complete media decode before publication."""
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise RuntimeError("final media validation failed: output is missing or empty")
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration:stream=codec_type",
+        "-of",
+        "json",
+        str(path),
+    ]
+    try:
+        proc = run(cmd)
+        if proc.returncode != 0:
+            raise RuntimeError(f"ffprobe exited {proc.returncode}")
+        info = json.loads(proc.stdout or "{}")
+        streams = info["streams"]
+        duration = float(info["format"]["duration"])
+    except Exception as exc:
+        raise RuntimeError("final media validation failed: ffprobe result is invalid") from exc
+    if not isinstance(streams, list) or not any(
+        isinstance(stream, dict) and stream.get("codec_type") == "video" for stream in streams
+    ):
+        raise RuntimeError("final media validation failed: video stream is missing")
+    if require_audio and not any(
+        isinstance(stream, dict) and stream.get("codec_type") == "audio" for stream in streams
+    ):
+        raise RuntimeError("final media validation failed: audio stream is missing")
+    if not math.isfinite(duration) or duration <= 0:
+        raise RuntimeError("final media validation failed: duration is not positive")
+    decode_timeout = float(FINAL_MEDIA_DECODE_TIMEOUT_SECONDS)
+    if media_validation_budget is not None:
+        remaining = media_validation_budget()
+        if not math.isfinite(remaining):
+            raise RuntimeError("final media validation failed: remaining budget is invalid")
+        decode_timeout = min(
+            decode_timeout,
+            remaining - FINAL_MEDIA_DECODE_CLEANUP_RESERVE_SECONDS,
+        )
+        if decode_timeout <= 0:
+            raise RuntimeError(
+                "final media validation failed: insufficient remaining lifecycle budget "
+                "for complete decode and bounded cleanup"
+            )
+    if decode is None:
+        _decode_final_media(path, timeout_seconds=decode_timeout)
+    else:
+        decode(path)
+    if media_validation_budget is not None:
+        remaining = media_validation_budget()
+        if remaining < FINAL_MEDIA_PROMOTION_RESERVE_SECONDS:
+            raise RuntimeError(
+                "final media validation failed: lifecycle or editor lease expired "
+                "during complete decode"
+            )
+
+
+def _bounded_stderr_tail(stream: Any) -> str:
+    stream.flush()
+    stream.seek(0, os.SEEK_END)
+    size = stream.tell()
+    stream.seek(max(0, size - FINAL_MEDIA_DECODE_STDERR_BYTES))
+    return stream.read(FINAL_MEDIA_DECODE_STDERR_BYTES).decode("utf-8", errors="replace").strip()
+
+
+def _decode_final_media(path: Path, *, timeout_seconds: float | None = None) -> None:
+    """Decode every audio/video stream completely and fail on the first corruption."""
+    timeout = (
+        float(FINAL_MEDIA_DECODE_TIMEOUT_SECONDS)
+        if timeout_seconds is None
+        else float(timeout_seconds)
+    )
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise RuntimeError("final media validation failed: decode timeout is invalid")
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError("final media validation failed: ffmpeg is unavailable")
+    cmd = [
+        ffmpeg,
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-xerror",
+        "-err_detect",
+        "explode",
+        "-protocol_whitelist",
+        "file,crypto,data,pipe",
+        "-i",
+        str(path),
+        "-map",
+        "0:v?",
+        "-map",
+        "0:a?",
+        "-f",
+        "null",
+        "-",
+    ]
+    with tempfile.TemporaryFile() as stderr:
+        process: subprocess.Popen[bytes] | None = None
+        try:
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr,
+                start_new_session=True,
+            )
+            try:
+                returncode = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                unreaped = False
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=FINAL_MEDIA_DECODE_TERMINATE_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        process.wait(timeout=FINAL_MEDIA_DECODE_KILL_GRACE_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        unreaped = True
+                        logger.error(
+                            "final media validation ffmpeg process group could not be "
+                            "reaped after bounded SIGKILL wait pid=%s",
+                            process.pid,
+                        )
+                detail = _bounded_stderr_tail(stderr)
+                suffix = f": {detail}" if detail else ""
+                reap_suffix = "; process remained unreaped after SIGKILL" if unreaped else ""
+                raise RuntimeError(
+                    "final media validation failed: complete decode timed out "
+                    f"after {timeout:g}s{reap_suffix}{suffix}"
+                ) from exc
+        except OSError as exc:
+            raise RuntimeError("final media validation failed: ffmpeg could not run") from exc
+        if returncode != 0:
+            detail = _bounded_stderr_tail(stderr)
+            suffix = f": {detail}" if detail else ""
+            raise RuntimeError(
+                f"final media validation failed: complete decode exited {returncode}{suffix}"
+            )
 
 
 # Blob checkpoint name for the finished video-only composed clip (issue #410).
@@ -3108,6 +3335,8 @@ def compose_video(
     task_reporter: "Callable[..., None] | None" = None,
     budget: VideoStageBudget | None = None,
     media_probe: Callable[[Path, float], ProbeEvidence] | None = None,
+    media_validation_budget: "Callable[[], float] | None" = None,
+    before_final_promotion: "Callable[[], None] | None" = None,
 ) -> ComposeResult:
     """Compose recorded segments into a single MP4 with transitions and overlays.
 
@@ -3379,6 +3608,8 @@ def compose_video(
                 run=run,
                 budget=budget,
                 media_probe=media_probe,
+                media_validation_budget=media_validation_budget,
+                before_final_promotion=before_final_promotion,
             )
             return result
 
@@ -3860,6 +4091,8 @@ def compose_video(
         run=run,
         budget=budget,
         media_probe=media_probe,
+        media_validation_budget=media_validation_budget,
+        before_final_promotion=before_final_promotion,
     )
     return result
 

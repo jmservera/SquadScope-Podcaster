@@ -30,6 +30,7 @@ from podcaster.video.distribution import (
     upload_to_youtube,
 )
 from podcaster.video.intermediates import StorageOperationTimeout
+from podcaster.video.ownership import OwnershipError
 from podcaster.video.process import ProbeEvidence
 
 
@@ -147,7 +148,7 @@ class TestVideoDistributionConfig:
             "youtube_enabled": True,
             "youtube_playlist_id": "PLpayload",
             "youtube_category_id": "22",
-            "youtube_privacy": "public",
+            "youtube_privacy": "private",
             "spotify_rss_enabled": True,
             "spotify_rss_feed_path": "feeds/test.xml",
             "spotify_video_publish_mode": "live",
@@ -158,11 +159,18 @@ class TestVideoDistributionConfig:
         assert config.youtube_enabled is True
         assert config.youtube_playlist_id == "PLpayload"
         assert config.youtube_category_id == "22"
-        assert config.youtube_privacy == "public"
+        assert config.youtube_privacy == "private"
         assert config.spotify_rss_enabled is True
         assert config.spotify_video_publish_mode == "live"
         assert config.blob_archive_enabled is False
         assert config.dry_run is True
+
+    def test_public_privacy_is_rejected_during_config_parse(self, monkeypatch):
+        monkeypatch.setenv("VIDEO_YOUTUBE_PRIVACY", "public")
+        with pytest.raises(ValueError, match="private or unlisted"):
+            VideoDistributionConfig.from_env()
+        with pytest.raises(ValueError, match="private or unlisted"):
+            VideoDistributionConfig.from_payload({"youtube_privacy": "public"})
 
     def test_defaults(self):
         config = VideoDistributionConfig()
@@ -234,10 +242,8 @@ class TestUploadToYouTube:
 
     def test_public_initial_upload_is_rejected_before_provider_io(self, video_file):
         transport = FakeTransport()
-        config = VideoDistributionConfig(youtube_enabled=True, youtube_privacy="public")
-
         with pytest.raises(ValueError, match="private or unlisted"):
-            upload_to_youtube(video_file, "title", "desc", config, transport=transport)
+            VideoDistributionConfig(youtube_enabled=True, youtube_privacy="public")
 
         assert transport.requests == []
 
@@ -353,22 +359,24 @@ class TestUploadToYouTube:
                 transport=FakeTransport(),
             )
 
-    def test_upload_failure_returns_none(self, video_file, youtube_config):
+    def test_upload_init_500_is_ambiguous_and_not_retried(self, video_file, youtube_config):
         transport = FakeTransport(
             responses=[
                 (200, json.dumps({"access_token": "tok"}).encode()),
                 (500, b"error"),  # init fails
             ]
         )
-        vid_id, vid_url = upload_to_youtube(
-            video_file,
-            "title",
-            "desc",
-            youtube_config,
-            transport=transport,
-        )
-        assert vid_id is None
-        assert vid_url is None
+        with pytest.raises(YouTubeDeliveryError) as exc:
+            upload_to_youtube(
+                video_file,
+                "title",
+                "desc",
+                youtube_config,
+                transport=transport,
+            )
+        assert exc.value.mutation_ambiguous is True
+        assert exc.value.retryable is False
+        assert len(transport.requests) == 2
 
     def test_required_permanent_upload_failure_is_not_retried(self, video_file, youtube_config):
         transport = FakeTransport(
@@ -845,6 +853,46 @@ class TestVerifiedArchive:
 
 
 class TestDistributionBudget:
+    def test_spotify_upload_rechecks_provider_mutation_budget(
+        self,
+        video_file,
+        monkeypatch,
+    ):
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        calls: list[str] = []
+
+        def fake_spotify(*args, **kwargs):
+            before_mutation = kwargs["before_mutation"]
+            before_mutation()
+            calls.append("admitted")
+            clock.elapsed = 4501.0
+            before_mutation()
+            raise AssertionError("second mutation should be denied")
+
+        monkeypatch.setattr("podcaster.video.distribution.upload_to_spotify_episode", fake_spotify)
+
+        with pytest.raises(ProviderMutationAdmissionError) as captured:
+            distribute_video(
+                video_file,
+                "job-spotify-budget",
+                "title",
+                "desc",
+                120.0,
+                VideoDistributionConfig(
+                    spotify_upload_enabled=True,
+                    blob_archive_enabled=False,
+                    dry_run=False,
+                ),
+                budget=budget,
+                operation_runner=lambda func, _timeout: func(),
+                spotify_anchor_id=123,
+            )
+
+        assert calls == ["admitted"]
+        assert captured.value.provider == "spotify"
+        assert captured.value.mutation_started is True
+
     @pytest.mark.parametrize("denied_elapsed", [3301.0, 4500.0, 4501.0])
     def test_youtube_rechecks_admission_before_later_put(
         self,
@@ -2047,6 +2095,7 @@ class TestSpotifyEpisodeUpload:
             content_type="video/mp4",
             season_number=None,
             episode_number=None,
+            **_kwargs,
         ):
             return PublishResult(
                 anchor_episode_id=999,
@@ -2076,6 +2125,7 @@ class TestSpotifyEpisodeUpload:
             content_type="video/mp4",
             season_number=None,
             episode_number=None,
+            **kwargs,
         ):
             captured["path"] = path
             captured["anchor_id"] = anchor_id
@@ -2084,6 +2134,7 @@ class TestSpotifyEpisodeUpload:
             captured["description"] = description
             captured["season_number"] = season_number
             captured["episode_number"] = episode_number
+            captured["before_mutation"] = kwargs.get("before_mutation")
             from podcaster.publish import PublishResult
 
             return PublishResult(anchor_episode_id=12345, status="draft")
@@ -2124,6 +2175,7 @@ class TestSpotifyEpisodeUpload:
         assert captured["title"] == "My Show"
         assert captured["season_number"] == 2026
         assert captured["episode_number"] == 24
+        assert "before_mutation" in captured
         assert promote_calls["video_anchor_id"] == 12345
         assert promote_calls["audio_anchor_id"] == 99
         assert promote_calls["spotify_video_publish_mode"] == "live"
@@ -2138,6 +2190,7 @@ class TestSpotifyEpisodeUpload:
             content_type="video/mp4",
             season_number=None,
             episode_number=None,
+            **_kwargs,
         ):
             from podcaster.publish import PublishResult
 
@@ -2268,6 +2321,37 @@ class TestSpotifyEpisodeUpload:
         assert all(not err.startswith("Spotify video promote:") for err in result.errors)
         assert result.status == "completed"
 
+    def test_spotify_promotion_ownership_error_raises(self, video_file, monkeypatch):
+        from podcaster.publish import PublishResult
+
+        def fake_upload(*args, **kwargs):
+            return PublishResult(status="uploaded", anchor_episode_id=321)
+
+        def fail_promote(*args, **kwargs):
+            raise OwnershipError("stale owner")
+
+        monkeypatch.setattr(
+            "podcaster.publish.upload_video_to_episode",
+            fake_upload,
+        )
+        monkeypatch.setattr(
+            "podcaster.publish.promote_spotify_video_draft",
+            fail_promote,
+        )
+
+        with pytest.raises(OwnershipError):
+            upload_to_spotify_episode(
+                video_file,
+                123,
+                VideoDistributionConfig(
+                    spotify_upload_enabled=True,
+                    spotify_video_publish_mode="live",
+                    blob_archive_enabled=False,
+                    dry_run=False,
+                ),
+                return_episode_id=True,
+            )
+
 
 class TestPlaylistIntegration:
     """distribute_video calls add_to_show_playlist after successful YouTube upload (#449)."""
@@ -2277,9 +2361,19 @@ class TestPlaylistIntegration:
         calls: list[dict] = []
         monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID_ES", "PLes")
 
-        def fake_add(config, locale, video_id, token, *, transport=None, position=None):
+        def fake_add(
+            config,
+            locale,
+            video_id,
+            token,
+            *,
+            transport=None,
+            position=None,
+            before_mutation=None,
+        ):
             calls.append({"locale": locale, "video_id": video_id})
             assert getattr(config, "youtube_playlist_id", "") == "PLes"
+            assert before_mutation is None
             from podcaster.video.youtube_playlist import PlaylistAddResult
 
             return PlaylistAddResult(video_id=video_id, playlist_id="PLes", succeeded=True)
@@ -2558,11 +2652,21 @@ class TestPlaylistIntegration:
             lambda config, transport: "playlist-token",
         )
 
-        def fake_add(config, locale, video_id, token, *, transport=None, position=None):
+        def fake_add(
+            config,
+            locale,
+            video_id,
+            token,
+            *,
+            transport=None,
+            position=None,
+            before_mutation=None,
+        ):
             from podcaster.video.youtube_playlist import PlaylistAddResult
 
             calls.append(video_id)
             assert token == "playlist-token"
+            assert before_mutation is None
             return PlaylistAddResult(
                 video_id=video_id,
                 playlist_id="PLshow",
@@ -2591,3 +2695,56 @@ class TestPlaylistIntegration:
         assert result.youtube_id == "yt-prior"
         assert result.youtube_playlist_id == "PLshow"
         assert result.youtube_playlist_succeeded is True
+
+    def test_playlist_insert_forwards_single_ownership_fence(self, video_file, monkeypatch):
+        events: list[str] = []
+        monkeypatch.setattr(
+            "podcaster.video.distribution._get_youtube_access_token",
+            lambda config, transport: "playlist-token",
+        )
+
+        def fake_add(
+            config,
+            locale,
+            video_id,
+            token,
+            *,
+            transport=None,
+            position=None,
+            before_mutation=None,
+        ):
+            from podcaster.video.youtube_playlist import PlaylistAddResult
+
+            events.append("readback")
+            assert before_mutation is not None
+            before_mutation()
+            events.append("insert")
+            return PlaylistAddResult(
+                video_id=video_id,
+                playlist_id="PLshow",
+                succeeded=True,
+            )
+
+        monkeypatch.setattr("podcaster.video.distribution._add_to_show_playlist", fake_add)
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            youtube_playlist_id="PLshow",
+            blob_archive_enabled=False,
+            dry_run=False,
+        )
+
+        result = distribute_video(
+            video_file,
+            "job1",
+            "title",
+            "desc",
+            120.0,
+            config,
+            published={"youtube": {"status": "published", "video_id": "yt-prior"}},
+            before_mutation=lambda provider, operation: events.append(
+                f"fence:{provider}:{operation}"
+            ),
+        )
+
+        assert result.youtube_playlist_succeeded is True
+        assert events == ["readback", "fence:youtube:playlist_insert", "insert"]
