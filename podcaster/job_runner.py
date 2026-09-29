@@ -40,7 +40,6 @@ from podcaster.failure_reporting import report_failure
 from podcaster.generation import checksum, manifest_bytes
 from podcaster.job_logs import LogLevel, emit_log
 from podcaster.notifications import notify_failure
-from podcaster.orchestration import auto_publish_enabled, auto_publish_job
 from podcaster.pipeline_lock import PIPELINE_AUDIO, claim_pipeline
 from podcaster.progress import PipelineStage, emit_progress
 from podcaster.publication_state import (
@@ -450,9 +449,7 @@ def run_synthesis(
             # validates them itself; a video hand-off counts as a target when it will
             # reach an audience (YouTube, or a live-authorized Spotify video episode).
             audio_publish_enabled = spotify_audio_publish_enabled()
-            has_spotify_audio = (
-                spotify_publish_config is not None and audio_publish_enabled
-            ) or auto_publish_enabled()
+            has_spotify_audio = spotify_publish_config is not None and audio_publish_enabled
             video_enabled = video_generation_enabled()
             has_youtube = (
                 video_enabled and os.environ.get("VIDEO_YOUTUBE_ENABLED", "").lower() == "true"
@@ -478,21 +475,7 @@ def run_synthesis(
             # (SPOTIFY_PUBLISH_ENABLED=false) the audio publish is skipped and
             # recorded as ``skipped`` — not failed — and only the video pipeline
             # publishes.
-            auto_publish = auto_publish_enabled()
-            if auto_publish:
-                try:
-                    auto_outcome = auto_publish_job(job_id, storage=storage, now=current)
-                    logger.info(
-                        "auto publish attempted job_id=%s status=%s",
-                        job_id,
-                        auto_outcome.manifest.get("status"),
-                    )
-                except Exception:
-                    logger.warning(
-                        "auto publish failed job_id=%s; continuing to video enqueue",
-                        job_id,
-                        exc_info=True,
-                    )
+            auto_publish = False
 
             if (
                 spotify_publish_config is not None

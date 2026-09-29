@@ -249,27 +249,31 @@ def test_changes_requested_does_not_publish(tmp_path: Path, monkeypatch) -> None
     assert outcome.manifest["status"] == "changes_requested"
 
 
-def test_auto_publish_job_records_system_review(tmp_path: Path, monkeypatch) -> None:
+def test_auto_publish_job_is_disabled_without_mutation(tmp_path: Path, monkeypatch) -> None:
     storage = LocalStorageBackend(tmp_path / "artifacts", "https://example.invalid/artifacts")
     _stage(storage, _synthesized_manifest())
     monkeypatch.setattr(
         "podcaster.orchestration.publish_episode",
-        lambda *args, **kwargs: PublishResult(status="published", anchor_episode_id=7),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("auto-publish must not mutate Spotify")
+        ),
     )
 
-    outcome = auto_publish_job(_job_id(), storage=storage)
+    with pytest.raises(RuntimeError, match="automatic Spotify publishing is disabled"):
+        auto_publish_job(_job_id(), storage=storage)
+
     persisted = json.loads(storage.get_bytes(manifest_path(_job_id())).decode("utf-8"))
-    assert outcome.manifest["review"]["approved_by"] == "system:auto-publish"
-    assert persisted["status"] == "published"
+    assert persisted["status"] == "synthesized_review_ready"
+    assert persisted["review"]["status"] == "pending"
 
 
-def test_auto_publish_requires_spotify_publish_enable(monkeypatch) -> None:
+def test_auto_publish_flag_is_disabled_even_when_spotify_publish_enabled(monkeypatch) -> None:
     monkeypatch.setenv("PODCAST_AUTO_PUBLISH", "true")
     monkeypatch.delenv("SPOTIFY_PUBLISH_ENABLED", raising=False)
     assert auto_publish_enabled() is False
 
     monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "true")
-    assert auto_publish_enabled() is True
+    assert auto_publish_enabled() is False
 
 
 def test_persist_manifest_uses_storage_update_bytes() -> None:
