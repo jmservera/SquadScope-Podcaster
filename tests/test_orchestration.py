@@ -13,6 +13,7 @@ from podcaster.orchestration import (
     _show_notes_text,
     auto_publish_enabled,
     auto_publish_job,
+    load_manifest,
     manifest_path,
     persist_manifest,
     process_review_decision,
@@ -50,6 +51,28 @@ def test_show_notes_text_includes_claracle_music_credit() -> None:
     description = _show_notes_text(manifest, Path("episode.mp3"), Path("episode.wav"))
     assert "Intro/outro music: Claracle theme" in description
     assert "AudioCoffee" not in description
+
+
+def test_load_manifest_keeps_blob_paths_posix_when_normpath_uses_backslashes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_id = _job_id()
+    requested_paths: list[str] = []
+
+    class ManifestStorage:
+        def get_bytes(self, path: str) -> bytes | None:
+            requested_paths.append(path)
+            if path == manifest_path(job_id):
+                return json.dumps({"job_id": job_id}).encode("utf-8")
+            return None
+
+    monkeypatch.setattr(
+        "podcaster.orchestration.os.path.normpath",
+        lambda value: value.replace("/", "\\"),
+    )
+
+    assert load_manifest(ManifestStorage(), job_id) == {"job_id": job_id}  # type: ignore[arg-type]
+    assert requested_paths == [manifest_path(job_id)]
 
 
 def _synthesized_manifest() -> dict:

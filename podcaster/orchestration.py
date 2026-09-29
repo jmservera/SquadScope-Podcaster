@@ -152,7 +152,7 @@ def publish_staged_job(
 
 def load_manifest(storage: StorageBackend, job_id: str) -> dict[str, Any]:
     safe_job_id = _safe_blob_path(job_id)
-    safe_manifest_path = os.path.normpath(f"jobs/{safe_job_id}/manifest.json")
+    safe_manifest_path = os.path.normpath(f"jobs/{safe_job_id}/manifest.json").replace("\\", "/")
     if safe_manifest_path.startswith("jobs/"):
         raw = storage.get_bytes(safe_manifest_path)
     else:
