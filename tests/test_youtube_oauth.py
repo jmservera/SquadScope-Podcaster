@@ -273,7 +273,8 @@ def test_cli_refuses_without_client_context(monkeypatch, capsys):
     rc = cli.main([])
     assert rc == 3
     err = capsys.readouterr().err
-    assert "VIDEO_YOUTUBE_CLIENT_ID" in err
+    assert "VIDEO_YOUTUBE_CLIENT_ID" not in err
+    assert "VIDEO_YOUTUBE_CLIENT_SECRET" not in err
     assert "Refusing to start" in err
 
 

@@ -172,8 +172,7 @@ def load_youtube_refresh_token(
     loader = secret_loader or KeyVaultSecretLoader(vault_url)
     token = loader.get_secret(secret_name)
     logger.info(
-        "YouTube refresh token loaded from Key Vault secret '%s' (present=%s)",
-        secret_name,
+        "YouTube refresh token loaded from Key Vault (present=%s)",
         bool(token),
     )
     return token
