@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime
 from typing import Any, Callable
@@ -150,7 +151,7 @@ class TestPodcastConfigApi:
             )
         assert handler.response_code == 200
 
-    def test_podcast_config_rejects_invalid_payload(self):
+    def test_podcast_config_rejects_invalid_payload(self, caplog):
         storage = MemoryStorageBackend()
         body = json.dumps({"name": "", "publish_targets": {}, "auto_publish": "yes"}).encode()
         with (
@@ -165,8 +166,12 @@ class TestPodcastConfigApi:
                 clear=True,
             ),
         ):
-            handler = make_handler(
-                "POST", "/api/podcast-config", body=body, headers=self._headers(body)
-            )
+            with caplog.at_level(logging.WARNING, logger="podcaster.api"):
+                handler = make_handler(
+                    "POST", "/api/podcast-config", body=body, headers=self._headers(body)
+                )
         assert handler.response_code == 400
-        assert handler.get_response_json()["error"] == "name is required"
+        assert handler.get_response_json()["error"] == "invalid podcast config request"
+        assert any(
+            "name is required" in record.exc_text for record in caplog.records if record.exc_text
+        )
