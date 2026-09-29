@@ -20,9 +20,11 @@ is never really published (dry-run distribution / mocked compose).
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import uuid
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -63,6 +65,7 @@ SCRATCH = "video-scratch"
 ARTIFACTS = "podcaster-artifacts"
 CLIP_QUEUE = "video-clip-jobs"
 VIDEO_QUEUE = "video-jobs"
+FANOUT_IMAGE = f"podcaster-synthesis:fanout-{Path.cwd().name.lower()}"
 
 # Host-side connection string (127.0.0.1; compose internal one points at azurite).
 HOST_CONN = (
@@ -83,8 +86,13 @@ SCRIPT = (
 
 
 def _compose(*args: str, check: bool = True, timeout: int = 300):
+    env = {
+        **os.environ,
+        "PODCASTER_FANOUT_IMAGE": FANOUT_IMAGE,
+    }
     return subprocess.run(
         ["docker", "compose", "-f", COMPOSE_FILE, *args],
+        env=env,
         capture_output=True,
         text=True,
         check=check,
@@ -113,6 +121,7 @@ def azurite_stack():
     try:
         _compose("down", "-v", check=False, timeout=120)
         _compose("up", "-d", "azurite", timeout=180)
+        _compose("build", "recorder", timeout=600)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         pytest.skip(f"docker compose unavailable: {exc}")
     # Wait for azurite healthy.
