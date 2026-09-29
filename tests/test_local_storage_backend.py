@@ -107,19 +107,19 @@ def test_upload_file_does_not_create_temp_file_after_parent_symlink_swap(
     outside.mkdir()
     source = tmp_path / "source.txt"
     source.write_bytes(b"uploaded")
-    target_parent = root / "nested"
-    original_mkdir = Path.mkdir
+    original_mkdir = __import__("os").mkdir
 
-    def mkdir_and_swap(self: Path, *args: object, **kwargs: object) -> None:
-        original_mkdir(self, *args, **kwargs)
-        if self == target_parent:
-            self.rmdir()
-            self.symlink_to(outside, target_is_directory=True)
+    def mkdir_and_swap(path: str | bytes | Path, *args: object, **kwargs: object) -> None:
+        original_mkdir(path, *args, **kwargs)
+        if path == "nested":
+            swapped = root / "nested"
+            swapped.rmdir()
+            swapped.symlink_to(outside, target_is_directory=True)
 
-    monkeypatch.setattr(Path, "mkdir", mkdir_and_swap)
+    monkeypatch.setattr("podcaster.storage.os.mkdir", mkdir_and_swap)
     storage = LocalStorageBackend(root, "https://example.invalid/artifacts")
 
-    with pytest.raises(OSError):
+    with pytest.raises(ValueError):
         storage.upload_file("nested/blob.txt", source, "text/plain")
 
     assert list(outside.iterdir()) == []
