@@ -587,7 +587,7 @@ def test_generation_outputs_are_deterministic_and_documented() -> None:
     assert first[7].content_type == "application/zip"
 
 
-def test_local_storage_backend_stages_under_safe_project_relative_paths(monkeypatch) -> None:
+def test_local_storage_backend_rejects_traversal_project_relative_paths(monkeypatch) -> None:
     artifact_root = Path(".test-artifacts-storage")
     shutil.rmtree(artifact_root, ignore_errors=True)
     monkeypatch.delenv("PODCASTER_STORAGE_ACCOUNT_URL", raising=False)
@@ -595,14 +595,11 @@ def test_local_storage_backend_stages_under_safe_project_relative_paths(monkeypa
     monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://example.invalid/base/")
 
     storage = create_storage_backend()
-    stored = storage.put_bytes("../jobs/./podcast-safe/../manifest.json", b"{}", "application/json")
 
     assert isinstance(storage, LocalStorageBackend)
-    assert stored.path == "jobs/podcast-safe/manifest.json"
-    assert stored.url == "https://example.invalid/base/jobs/podcast-safe/manifest.json"
-    assert stored.size_bytes == 2
-    assert stored.content_type == "application/json"
-    assert (artifact_root / "jobs" / "podcast-safe" / "manifest.json").read_bytes() == b"{}"
+    with pytest.raises(ValueError, match="traversal"):
+        storage.put_bytes("../jobs/./podcast-safe/../manifest.json", b"{}", "application/json")
+    assert not (artifact_root / "jobs" / "podcast-safe" / "manifest.json").exists()
     assert not Path("manifest.json").exists()
     shutil.rmtree(artifact_root, ignore_errors=True)
 
