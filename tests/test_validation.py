@@ -23,6 +23,19 @@ def test_valid_minimal_payload_has_no_errors() -> None:
     assert errors == []
 
 
+def test_squadscope_handoff_contract_fixture_is_accepted() -> None:
+    payload = json.loads(
+        (FIXTURE_ROOT / "squadscope_podcaster_handoff_request.json").read_text(encoding="utf-8")
+    )
+
+    result = validate_payload_details(payload)
+
+    assert result.errors == []
+    assert result.warnings == []
+    assert payload["dry_run"] is True
+    assert "x-podcaster-api-key" not in json.dumps(payload)
+
+
 def test_canonical_publication_identity_fields_are_complete_and_validated() -> None:
     payload = {
         "week": "2026-W23",
