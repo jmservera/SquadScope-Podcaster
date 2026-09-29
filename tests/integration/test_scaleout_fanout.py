@@ -124,24 +124,26 @@ def azurite_stack():
         _compose("down", "-v", check=False, timeout=120)
         _compose("up", "-d", "azurite", timeout=180)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        pytest.skip(f"docker compose unavailable: {exc}")
-    _compose("build", "recorder", timeout=600)
-    # Wait for azurite healthy.
-    import time
-
-    deadline = time.monotonic() + 60
-    healthy = False
-    while time.monotonic() < deadline:
-        ps = _compose("ps", check=False)
-        if "healthy" in ps.stdout:
-            healthy = True
-            break
-        time.sleep(2)
-    if not healthy:
         _compose("down", "-v", check=False, timeout=120)
-        pytest.skip("azurite did not become healthy within deadline")
-    yield
-    _compose("down", "-v", check=False, timeout=120)
+        pytest.skip(f"docker compose unavailable: {exc}")
+    try:
+        _compose("build", "recorder", timeout=600)
+        # Wait for azurite healthy.
+        import time
+
+        deadline = time.monotonic() + 60
+        healthy = False
+        while time.monotonic() < deadline:
+            ps = _compose("ps", check=False)
+            if "healthy" in ps.stdout:
+                healthy = True
+                break
+            time.sleep(2)
+        if not healthy:
+            pytest.skip("azurite did not become healthy within deadline")
+        yield
+    finally:
+        _compose("down", "-v", check=False, timeout=120)
 
 
 def _seed(scratch, storage, job_id: str, n: int) -> None:
