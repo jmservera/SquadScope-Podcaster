@@ -107,6 +107,8 @@ class PlaylistAddResult:
     skipped: bool = False
     playlist_item_id: str = ""
     error: str = ""
+    outcome: str = ""
+    retry_blocked: bool = False
 
 
 # --- API calls ---------------------------------------------------------------
@@ -210,12 +212,23 @@ def add_video_to_playlist(
         )
 
     if status in (200, 201):
-        item_id = ""
         try:
             data = json.loads(body.decode("utf-8") if isinstance(body, bytes) else body)
-            item_id = str(data.get("id", ""))
-        except (ValueError, AttributeError):
-            pass
+            if not isinstance(data, dict):
+                raise ValueError("playlist insert response is not an object")
+            item_id = str(data.get("id", "")).strip()
+            if not item_id:
+                raise ValueError("playlist insert response did not include an id")
+        except (ValueError, AttributeError) as exc:
+            logger.warning("playlistItems.insert outcome ambiguous for %s: %s", video_id, exc)
+            return PlaylistAddResult(
+                video_id=video_id,
+                playlist_id=playlist_id,
+                succeeded=False,
+                error=str(exc),
+                outcome="unknown",
+                retry_blocked=True,
+            )
         logger.info("Added video %s to playlist %s", video_id, playlist_id)
         return PlaylistAddResult(
             video_id=video_id,

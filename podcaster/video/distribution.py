@@ -39,12 +39,19 @@ from podcaster.publication_state import (
     outcome_from_spotify_terminal_state,
 )
 from podcaster.video.budget import (
+    RENDER_DEADLINE_SECONDS,
     ProviderMutationAdmissionError,
     VideoStage,
     VideoStageBudget,
 )
-from podcaster.video.intermediates import run_storage_operation
+from podcaster.video.intermediates import StorageOperationTimeout, run_storage_operation
 from podcaster.video.ownership import OwnershipError
+from podcaster.video.process import (
+    MediaValidationRecord,
+    ProbeEvidence,
+    collect_media_evidence,
+    validate_media_record,
+)
 from podcaster.video.youtube_playlist import add_to_show_playlist as _add_to_show_playlist
 from podcaster.video.youtube_playlist import resolve_playlist_id as _resolve_playlist_id
 from podcaster.video.youtube_reconcile import ERROR as RECONCILE_ERROR
@@ -214,6 +221,30 @@ class DistributionResult:
     @property
     def succeeded(self) -> bool:
         return self.status in ("completed", "partial")
+
+
+@dataclass(frozen=True)
+class ArchiveResult:
+    """Verified archive boundary consumed by the later provider phase."""
+
+    blob_path: str
+    blob_url: str
+    validation: MediaValidationRecord
+    completed_elapsed_seconds: float
+    pending_only: bool
+    reused: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "status": "verified",
+            "blob_path": self.blob_path,
+            "blob_url": self.blob_url,
+            "validation": self.validation.to_dict(),
+            "completed_elapsed_seconds": self.completed_elapsed_seconds,
+            "pending_only": self.pending_only,
+            "reused": self.reused,
+        }
 
 
 def _record_from_snapshot(
@@ -1075,6 +1106,193 @@ def update_spotify_rss(
 # --- Blob Archive ---
 
 
+def archive_video_verified(
+    video_path: Path,
+    job_id: str,
+    *,
+    storage: Any,
+    budget: VideoStageBudget,
+    config: VideoDistributionConfig | None = None,
+    probe: Callable[[Path, float], ProbeEvidence] | None = None,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
+) -> ArchiveResult:
+    """Upload or reuse an immutable archive after checksum, probe, and readback."""
+
+    if not budget.admit(VideoStage.ARCHIVE).allowed:
+        raise StorageOperationTimeout("archive deadline reached before validation")
+    probe_kwargs: dict[str, Any] = {
+        "timeout_seconds": 30.0,
+        "budget": budget,
+        "stage": VideoStage.ARCHIVE,
+    }
+    if probe is not None:
+        probe_kwargs["probe"] = probe
+    source_evidence = collect_media_evidence(video_path, **probe_kwargs)
+    blob_path = f"jobs/{job_id}/video/{job_id}.mp4"
+    validation_path = f"{blob_path}.validation.json"
+    identity = {"job_id": job_id, "source_sha256": source_evidence.sha256}
+    expected_record = MediaValidationRecord(
+        artifact_kind="video_archive",
+        identity=identity,
+        media=source_evidence,
+    )
+
+    if config and config.dry_run:
+        elapsed = budget.elapsed_seconds()
+        return ArchiveResult(
+            blob_path=blob_path,
+            blob_url=f"https://dry-run.blob.core.windows.net/{blob_path}",
+            validation=expected_record,
+            completed_elapsed_seconds=elapsed,
+            pending_only=elapsed > RENDER_DEADLINE_SECONDS,
+        )
+    if storage is None:
+        raise RuntimeError("storage backend is required for verified archive")
+
+    def _remaining() -> float:
+        timeout = budget.operation_timeout(VideoStage.ARCHIVE, 30.0)
+        if timeout <= 0:
+            raise StorageOperationTimeout("archive deadline reached")
+        return timeout
+
+    def _read_validation() -> MediaValidationRecord | None:
+        raw = operation_runner(lambda: storage.get_bytes(validation_path), _remaining())
+        if raw is None:
+            return None
+        try:
+            document = json.loads(raw.decode("utf-8"))
+            if not isinstance(document, dict):
+                return None
+            if (
+                document.get("schema_version") != 1
+                or document.get("status") != "verified"
+                or document.get("blob_path") != blob_path
+            ):
+                return None
+            validation = document.get("validation")
+            if not isinstance(validation, dict):
+                return None
+            record = MediaValidationRecord.from_dict(validation)
+            record.require_identity("video_archive", identity)
+            return record
+        except (UnicodeDecodeError, ValueError, TypeError):
+            return None
+
+    readback = video_path.with_name(f".{video_path.name}.archive-readback")
+
+    def _download_readback() -> bool:
+        readback.unlink(missing_ok=True)
+        downloader = getattr(storage, "download_file", None)
+        if downloader is not None:
+            return bool(downloader(blob_path, readback))
+        content = storage.get_bytes(blob_path)
+        if content is None:
+            return False
+        readback.write_bytes(content)
+        return True
+
+    def _validate_readback(record: MediaValidationRecord) -> bool:
+        try:
+            if not operation_runner(_download_readback, _remaining()):
+                return False
+            validate_media_record(
+                readback,
+                record,
+                artifact_kind="video_archive",
+                identity=identity,
+                **probe_kwargs,
+            )
+            return True
+        except Exception:
+            return False
+        finally:
+            readback.unlink(missing_ok=True)
+
+    existing = _read_validation()
+    if existing is not None and _validate_readback(existing):
+        elapsed = budget.elapsed_seconds()
+        return ArchiveResult(
+            blob_path=blob_path,
+            blob_url=str(getattr(storage, "base_url", "")).rstrip("/") + f"/{blob_path}",
+            validation=existing,
+            completed_elapsed_seconds=elapsed,
+            pending_only=elapsed > RENDER_DEADLINE_SECONDS,
+            reused=True,
+        )
+
+    if not budget.admit(VideoStage.ARCHIVE).allowed:
+        raise StorageOperationTimeout("archive deadline reached before upload")
+    uploader = getattr(storage, "upload_file", None)
+    if uploader is not None:
+        artifact = operation_runner(
+            lambda: uploader(blob_path, video_path, "video/mp4"),
+            _remaining(),
+        )
+        blob_url = str(getattr(artifact, "url", blob_path))
+    else:
+        content = video_path.read_bytes()
+        legacy_uploader = getattr(storage, "upload", None)
+        if legacy_uploader is not None:
+            artifact = operation_runner(
+                lambda: legacy_uploader(blob_path, content, "video/mp4"),
+                _remaining(),
+            )
+            blob_url = str(artifact)
+        else:
+            artifact = operation_runner(
+                lambda: storage.put_bytes(blob_path, content, "video/mp4"),
+                _remaining(),
+            )
+            blob_url = str(getattr(artifact, "url", blob_path))
+
+    if not _validate_readback(expected_record):
+        deleter = getattr(storage, "delete_blob", None)
+        if deleter is not None:
+            try:
+                operation_runner(lambda: deleter(blob_path), _remaining())
+            except Exception:
+                logger.debug("could not delete rejected archive %s", blob_path, exc_info=True)
+        raise RuntimeError("archive readback failed media validation")
+
+    completed_before_write = budget.elapsed_seconds()
+    if completed_before_write > 3600:
+        raise StorageOperationTimeout("archive completed after T+3600")
+    archive_document = {
+        "schema_version": 1,
+        "status": "verified",
+        "blob_path": blob_path,
+        "blob_url": blob_url,
+        "validation": expected_record.to_dict(),
+        "completed_elapsed_seconds": completed_before_write,
+        "pending_only": completed_before_write > RENDER_DEADLINE_SECONDS,
+    }
+    operation_runner(
+        lambda: storage.put_bytes(
+            validation_path,
+            json.dumps(archive_document, sort_keys=True, separators=(",", ":")).encode(),
+            "application/json",
+        ),
+        _remaining(),
+    )
+    elapsed = budget.elapsed_seconds()
+    if elapsed > 3600:
+        deleter = getattr(storage, "delete_blob", None)
+        if deleter is not None:
+            for path in (validation_path, blob_path):
+                try:
+                    operation_runner(lambda path=path: deleter(path), _remaining())
+                except Exception:
+                    logger.debug("could not delete late archive %s", path, exc_info=True)
+        raise StorageOperationTimeout("archive completed after T+3600")
+    return ArchiveResult(
+        blob_path=blob_path,
+        blob_url=blob_url,
+        validation=expected_record,
+        completed_elapsed_seconds=elapsed,
+        pending_only=elapsed > RENDER_DEADLINE_SECONDS,
+    )
+
+
 def archive_to_blob(
     video_path: Path,
     job_id: str,
@@ -1730,7 +1948,8 @@ def distribute_video(
             )
             result.youtube_playlist_id = playlist_result.playlist_id
             result.youtube_playlist_succeeded = playlist_result.succeeded
-            if playlist_result.outcome == "unknown":
+            playlist_outcome = getattr(playlist_result, "outcome", None)
+            if playlist_outcome == "unknown":
                 result.errors.append(f"YouTube playlist outcome unknown: {playlist_result.error}")
                 result.provider_outcomes["youtube_playlist"] = PUBLICATION_UNKNOWN
                 result.provider_records["youtube_playlist"] = {
@@ -1761,6 +1980,32 @@ def distribute_video(
             raise
         except Exception as exc:
             logger.warning("Playlist add skipped for %s: %s", result.youtube_id, exc)
+            result.youtube_playlist_succeeded = False
+            result.provider_outcomes["youtube_playlist"] = PUBLICATION_UNKNOWN
+            result.provider_records["youtube_playlist"] = {
+                "provider": "youtube_playlist",
+                "outcome": PUBLICATION_UNKNOWN,
+                "status": "unknown",
+                "provider_id": _resolve_playlist_id(config, locale),
+                "native_state": None,
+                "transport_status": "ambiguous",
+                "verification": "none",
+                "checked_at": datetime.now(timezone.utc).isoformat(),
+                "evidence_source": "playlist_reconciliation",
+                "last_error_code": "youtube_playlist_outcome_ambiguous",
+                "retry_blocked": True,
+            }
+            if on_published is not None:
+                on_published(
+                    "youtube_playlist",
+                    {
+                        **result.provider_records["youtube_playlist"],
+                        "status": "published",
+                        "provider_status": "unknown",
+                        "publish_run_id": publish_run_id,
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
     elif playlist_retry_blocked:
         result.youtube_playlist_id = str(
             playlist_record.get("provider_id")
@@ -1968,18 +2213,46 @@ def distribute_video(
         else:
             if before_mutation is not None:
                 before_mutation("spotify", "episode_upload")
-            upload_result = upload_to_spotify_episode(
-                video_path,
-                spotify_anchor_id,
-                config,
-                title=title,
-                description=description,
-                season_number=season_number,
-                episode_number=episode_number,
-                return_episode_id=True,
-                job_id=job_id,
-                publish_run_id=publish_run_id,
-            )
+
+            def _spotify_upload_call():
+                return upload_to_spotify_episode(
+                    video_path,
+                    spotify_anchor_id,
+                    config,
+                    title=title,
+                    description=description,
+                    season_number=season_number,
+                    episode_number=episode_number,
+                    return_episode_id=True,
+                    job_id=job_id,
+                    publish_run_id=publish_run_id,
+                )
+
+            try:
+                if budget is not None:
+                    upload_result = operation_runner(
+                        _spotify_upload_call,
+                        budget.operation_timeout(VideoStage.EVIDENCE, 30.0),
+                    )
+                else:
+                    upload_result = _spotify_upload_call()
+            except TimeoutError:
+                result.errors.append("Spotify upload cancelled at evidence deadline")
+                result.provider_outcomes["spotify_upload"] = PUBLICATION_UNKNOWN
+                result.provider_records["spotify_video"] = {
+                    "provider": "spotify",
+                    "outcome": PUBLICATION_UNKNOWN,
+                    "status": "unknown",
+                    "provider_id": None,
+                    "native_state": None,
+                    "transport_status": "not_attempted",
+                    "verification": "none",
+                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                    "evidence_source": "provider_mutation_admission",
+                    "last_error_code": "spotify_upload_evidence_deadline",
+                    "retry_blocked": True,
+                }
+                upload_result = (False, None, "publication_state_unknown", PUBLICATION_UNKNOWN)
             upload_outcome = None
             if isinstance(upload_result, tuple) and len(upload_result) == 4:
                 upload_ok, spotify_episode_id, promote_state, upload_outcome = upload_result

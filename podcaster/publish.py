@@ -71,6 +71,7 @@ _SPOTIFY_CLIENT_ID = (
 ).strip() or "05a1371ee5194c27860b3ff3ff3979d2"
 _SPOTIFY_CONNECTOR_BASE_URL = "https://generic.wg.spotify.com/podcasters/v0"
 
+
 def _approved_media_roots() -> tuple[Path, ...]:
     roots = [Path.cwd(), Path(tempfile.gettempdir())]
     for env_name in ("PODCASTER_LOCAL_STORAGE_PATH", "PODCASTER_LOCAL_SCRATCH_PATH"):
@@ -3176,11 +3177,11 @@ def publish_episode(
                 details=create_details,
             )
 
-            # Step 3 & 4: Upload file (video uses multipart GCS, audio uses single S3)
-            is_video = content_type.startswith("video/")
-            file_data = _local_upload_read_bytes(upload_path)
+        # Step 3 & 4: Upload file (video uses multipart GCS, audio uses single S3)
+        is_video = content_type.startswith("video/")
+        file_data = _local_upload_read_bytes(upload_path)
 
-            if is_video:
+        if is_video:
             upload_result = _get_upload_url(
                 session,
                 anchor_id,

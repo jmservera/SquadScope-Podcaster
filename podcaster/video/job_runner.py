@@ -1395,6 +1395,7 @@ def run_video_generation(
                         scratch=scratch,
                         producer=producer,
                         heartbeat=_heartbeat,
+                        budget=stage_budget,
                     )
                 else:
                     recording = record_episode(

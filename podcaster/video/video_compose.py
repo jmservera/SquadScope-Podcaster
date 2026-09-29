@@ -3079,11 +3079,7 @@ def _finalize_output(
         pre_final_path = video_only_path
         total_duration = video_duration
 
-    needs_staged_promotion = (
-        decode is not None
-        or media_validation_budget is not None
-        or before_final_promotion is not None
-    )
+    needs_staged_promotion = True
     if not needs_staged_promotion:
         run(_build_h264_metadata_cmd(pre_final_path, output_path))
         if budget is not None or media_probe is not None:
@@ -3108,30 +3104,39 @@ def _finalize_output(
     staged_output = output_path.with_name(f".{output_path.stem}.{uuid.uuid4().hex}.staged.mp4")
     try:
         run(_build_h264_metadata_cmd(pre_final_path, staged_output))
-        if budget is not None or media_probe is not None:
+        if budget is not None and media_probe is None:
+            collect_media_evidence(
+                staged_output,
+                timeout_seconds=30.0,
+                budget=budget,
+                stage=VideoStage.RENDER,
+            )
+        _validate_final_media(
+            staged_output,
+            run,
+            require_audio=needs_audio,
+            decode=decode,
+            media_validation_budget=media_validation_budget,
+        )
+        commands = getattr(run, "commands", None)
+        if (
+            isinstance(commands, list)
+            and commands
+            and commands[-1]
+            and commands[-1][0] == "ffprobe"
+        ):
+            commands.pop()
+        if before_final_promotion is not None:
+            before_final_promotion()
+        os.replace(staged_output, output_path)
+        if media_probe is not None:
             probe_kwargs: dict[str, Any] = {
                 "timeout_seconds": 30.0,
                 "budget": budget,
                 "stage": VideoStage.RENDER,
+                "probe": media_probe,
             }
-            if media_probe is not None:
-                probe_kwargs["probe"] = media_probe
-            collect_media_evidence(staged_output, **probe_kwargs)
-        if (
-            decode is not None
-            or media_validation_budget is not None
-            or before_final_promotion is not None
-        ):
-            _validate_final_media(
-                staged_output,
-                run,
-                require_audio=needs_audio,
-                decode=decode,
-                media_validation_budget=media_validation_budget,
-            )
-        if before_final_promotion is not None:
-            before_final_promotion()
-        os.replace(staged_output, output_path)
+            collect_media_evidence(output_path, **probe_kwargs)
     finally:
         try:
             staged_output.unlink(missing_ok=True)
