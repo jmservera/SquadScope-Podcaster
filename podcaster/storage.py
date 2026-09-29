@@ -329,14 +329,13 @@ class LocalStorageBackend:
             try:
                 parent_fd, leaf_name = _open_local_parent_fd(self.root, safe_path, create=False)
                 source_fd = _open_local_leaf(parent_fd, leaf_name, os.O_RDONLY | os.O_NOFOLLOW)
-            except FileNotFoundError:
-                return False
-            try:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 with os.fdopen(source_fd, "rb") as source_file, dest.open("wb") as dest_file:
                     source_fd = None
                     shutil.copyfileobj(source_file, dest_file)
                 return True
+            except FileNotFoundError:
+                return False
             finally:
                 if source_fd is not None:
                     os.close(source_fd)
@@ -1193,6 +1192,8 @@ def _normalize_blob_reference(value: str, *, allow_trailing_slash: bool) -> str:
         parts = parts[:-1]
     if not parts or any(part in {"", ".", ".."} for part in parts):
         raise ValueError("artifact path must not contain empty or traversal components")
+    if any(secure_filename(part) != part for part in parts):
+        raise ValueError("artifact path components must be safe filenames")
     first = parts[0]
     if ":" in first:
         raise ValueError("artifact path must be a relative POSIX path")
