@@ -13,7 +13,8 @@
 #
 # Usage:
 #   docker compose -f docker-compose.fanout.yml up -d azurite
-#   docker compose -f docker-compose.fanout.yml up --scale recorder=3 recorder
+#   docker compose -f docker-compose.fanout.yml up -d --build --scale recorder=3 recorder
+#   docker wait $(docker compose -f docker-compose.fanout.yml ps -a -q recorder)
 #   docker compose -f docker-compose.fanout.yml up editor
 #   docker compose -f docker-compose.fanout.yml down -v
 

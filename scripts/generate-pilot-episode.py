@@ -53,8 +53,20 @@ MUSIC_PATH = Path("assets/music/claracle-theme.mp3")
 def get_managed_identity_token(scope: str) -> str:
     """Get an access token using the az CLI managed identity."""
     result = subprocess.run(
-        ["az", "account", "get-access-token", "--resource", scope.rstrip("/.default"), "--query", "accessToken", "-o", "tsv"],
-        capture_output=True, text=True, check=True,
+        [
+            "az",
+            "account",
+            "get-access-token",
+            "--resource",
+            scope.rstrip("/.default"),
+            "--query",
+            "accessToken",
+            "-o",
+            "tsv",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return result.stdout.strip()
 
@@ -138,10 +150,10 @@ def main() -> None:
     # Build script
     script = build_episode_script(article)
     print(f"\nScript length: {len(script)} chars")
-    print(f"Script preview:\n{'='*60}")
+    print(f"Script preview:\n{'=' * 60}")
     for line in script.splitlines()[:15]:
         print(f"  {line}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     # Operator review decision (allows synthesis for review artifact)
     decision = operator_review_decision(config)
@@ -199,9 +211,9 @@ def main() -> None:
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     # Report
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("✅ PILOT EPISODE GENERATED SUCCESSFULLY")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"  Audio: {episode.output_path} ({episode.byte_length / 1024:.1f} KB)")
     print(f"  SHA256: {episode.sha256}")
     print(f"  Segments: {episode.segment_count}")

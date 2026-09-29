@@ -240,6 +240,20 @@ def test_render_edl_propagates_ffmpeg_failure():
     assert calls["cmd"][0] == "ffmpeg"
 
 
+def test_render_edl_removes_partial_output_on_ffmpeg_failure(tmp_path):
+    edl = _edl([_clip_seg(0, 10_000, "clip-a", [(0, 10_000)])])
+    output = tmp_path / "partial.mp4"
+
+    def fake_runner(cmd):
+        output.write_bytes(b"partial")
+        return subprocess.CompletedProcess(cmd, 7, stdout="", stderr="encoder failed")
+
+    with pytest.raises(EdlRenderError, match="encoder failed"):
+        render_edl(edl, {"clip-a": "/clips/a.mp4"}, output, runner=fake_runner)
+
+    assert not output.exists()
+
+
 def _screenshot_seg(start, end, image_id, *, repo=None, section=None, card=None, xfade=0):
     return EdlSegment(
         kind=EdlSegmentKind.SCREENSHOT,

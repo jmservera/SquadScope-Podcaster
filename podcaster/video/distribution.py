@@ -38,6 +38,19 @@ from podcaster.publication_state import (
     UPLOADED,
     outcome_from_spotify_terminal_state,
 )
+from podcaster.video.budget import (
+    RENDER_DEADLINE_SECONDS,
+    ProviderMutationAdmissionError,
+    VideoStage,
+    VideoStageBudget,
+)
+from podcaster.video.intermediates import StorageOperationTimeout, run_storage_operation
+from podcaster.video.process import (
+    MediaValidationRecord,
+    ProbeEvidence,
+    collect_media_evidence,
+    validate_media_record,
+)
 from podcaster.video.youtube_playlist import add_to_show_playlist as _add_to_show_playlist
 from podcaster.video.youtube_playlist import resolve_playlist_id as _resolve_playlist_id
 from podcaster.video.youtube_reconcile import ERROR as RECONCILE_ERROR
@@ -194,6 +207,30 @@ class DistributionResult:
         return self.status in ("completed", "partial")
 
 
+@dataclass(frozen=True)
+class ArchiveResult:
+    """Verified archive boundary consumed by the later provider phase."""
+
+    blob_path: str
+    blob_url: str
+    validation: MediaValidationRecord
+    completed_elapsed_seconds: float
+    pending_only: bool
+    reused: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "status": "verified",
+            "blob_path": self.blob_path,
+            "blob_url": self.blob_url,
+            "validation": self.validation.to_dict(),
+            "completed_elapsed_seconds": self.completed_elapsed_seconds,
+            "pending_only": self.pending_only,
+            "reused": self.reused,
+        }
+
+
 def _record_from_snapshot(
     snapshot: Mapping[str, Any],
     *,
@@ -270,6 +307,7 @@ class YouTubeDeliveryError(RuntimeError):
         code: str,
         stage: str,
         retryable: bool,
+        mutation_ambiguous: bool = False,
         http_status: int | None = None,
         oauth_error: str | None = None,
         oauth_error_subtype: str | None = None,
@@ -278,6 +316,7 @@ class YouTubeDeliveryError(RuntimeError):
         self.code = code
         self.stage = stage
         self.retryable = retryable
+        self.mutation_ambiguous = mutation_ambiguous
         self.http_status = http_status
         self.oauth_error = oauth_error
         self.oauth_error_subtype = oauth_error_subtype
@@ -287,6 +326,7 @@ class YouTubeDeliveryError(RuntimeError):
             "code": self.code,
             "stage": self.stage,
             "retryable": self.retryable,
+            "mutation_ambiguous": self.mutation_ambiguous,
         }
         if self.http_status is not None:
             details["http_status"] = self.http_status
@@ -365,6 +405,9 @@ def _read_http_error_body(exc: HTTPError) -> bytes:
 class _DefaultTransport:
     """Default HTTP transport using urllib."""
 
+    def __init__(self, timeout_seconds: float = 300.0) -> None:
+        self.timeout_seconds = max(0.001, float(timeout_seconds))
+
     def request(
         self,
         url: str,
@@ -375,7 +418,7 @@ class _DefaultTransport:
     ) -> tuple[int, bytes]:
         req = Request(url, data=data, method=method, headers=headers or {})
         try:
-            with urlopen(req, timeout=300) as resp:
+            with urlopen(req, timeout=self.timeout_seconds) as resp:
                 return resp.status, resp.read()
         except HTTPError as exc:
             # Non-2xx responses (e.g. 308 "Resume Incomplete" during a resumable
@@ -393,7 +436,7 @@ class _DefaultTransport:
     ) -> tuple[int, dict[str, str], bytes]:
         req = Request(url, data=data, method=method, headers=headers or {})
         try:
-            with urlopen(req, timeout=300) as resp:
+            with urlopen(req, timeout=self.timeout_seconds) as resp:
                 resp_headers = {k.lower(): v for k, v in resp.getheaders()}
                 return resp.status, resp_headers, resp.read()
         except HTTPError as exc:
@@ -401,6 +444,70 @@ class _DefaultTransport:
             # are an expected part of the resumable upload protocol.
             resp_headers = {k.lower(): v for k, v in (exc.headers or {}).items()}
             return exc.code, resp_headers, _read_http_error_body(exc)
+
+
+class _BudgetedTransport:
+    """Clamp provider HTTP calls to the shared evidence/readback deadline."""
+
+    def __init__(
+        self,
+        delegate: HttpTransport,
+        budget: VideoStageBudget,
+        operation_runner: Callable[[Callable[[], Any], float], Any],
+    ) -> None:
+        self._delegate = delegate
+        self._budget = budget
+        self._operation_runner = operation_runner
+
+    def _timeout(self) -> float:
+        timeout = self._budget.operation_timeout(VideoStage.EVIDENCE, 300.0)
+        if timeout <= 0:
+            raise TimeoutError("provider readback/evidence deadline reached")
+        return timeout
+
+    def request(
+        self,
+        url: str,
+        *,
+        method: str = "GET",
+        headers: dict[str, str] | None = None,
+        data: bytes | None = None,
+    ) -> tuple[int, bytes]:
+        timeout = self._timeout()
+        if isinstance(self._delegate, _DefaultTransport):
+            self._delegate.timeout_seconds = timeout
+            return self._delegate.request(url, method=method, headers=headers, data=data)
+        return self._operation_runner(
+            lambda: self._delegate.request(url, method=method, headers=headers, data=data),
+            timeout,
+        )
+
+    def request_with_headers(
+        self,
+        url: str,
+        *,
+        method: str = "GET",
+        headers: dict[str, str] | None = None,
+        data: bytes | None = None,
+    ) -> tuple[int, dict[str, str], bytes]:
+        timeout = self._timeout()
+        if isinstance(self._delegate, _DefaultTransport):
+            self._delegate.timeout_seconds = timeout
+            return self._delegate.request_with_headers(
+                url,
+                method=method,
+                headers=headers,
+                data=data,
+            )
+        return self._operation_runner(
+            lambda: self._delegate.request_with_headers(
+                url,
+                method=method,
+                headers=headers,
+                data=data,
+            ),
+            timeout,
+        )
 
 
 class StorageUploader(Protocol):
@@ -623,6 +730,7 @@ def upload_to_youtube(
     tags: list[str] | None = None,
     transport: HttpTransport | None = None,
     raise_on_failure: bool = False,
+    budget: VideoStageBudget | None = None,
     identity_tag: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Upload a video to YouTube via the Data API v3.
@@ -674,7 +782,19 @@ def upload_to_youtube(
             return None, None
 
     http = transport or _DefaultTransport()
-    access_token = _get_youtube_access_token(config, http)
+    mutation_started = False
+
+    def admit_mutation() -> None:
+        nonlocal mutation_started
+        if budget is None:
+            return
+        try:
+            budget.require_provider_mutation()
+        except ProviderMutationAdmissionError as exc:
+            exc.provider = "youtube"
+            exc.mutation_started = mutation_started
+            raise
+        mutation_started = True
 
     metadata = {
         "snippet": {
@@ -689,6 +809,25 @@ def upload_to_youtube(
         },
     }
 
+    # Budgeted production uploads use the ambiguity-aware uploader from
+    # initialization through completion so admission failures after mutation are
+    # persisted as unknown/no-repeat rather than retried as a fresh create.
+    if budget is not None:
+        chunked = _try_chunked_upload(
+            video_path,
+            title,
+            description,
+            config,
+            tags=tags,
+            transport=http,
+            raise_on_failure=raise_on_failure,
+            budget=budget,
+        )
+        if chunked is not None:
+            return chunked
+
+    access_token = _get_youtube_access_token(config, http)
+
     # Initiate resumable upload
     params = urlencode(
         {
@@ -700,6 +839,7 @@ def upload_to_youtube(
     metadata_bytes = json.dumps(metadata).encode("utf-8")
 
     try:
+        admit_mutation()
         status, resp_headers, body = http.request_with_headers(
             init_url,
             method="POST",
@@ -711,6 +851,8 @@ def upload_to_youtube(
             },
             data=metadata_bytes,
         )
+    except ProviderMutationAdmissionError:
+        raise
     except _TRANSIENT_TRANSPORT_ERRORS as exc:
         if raise_on_failure:
             raise YouTubeDeliveryError(
@@ -761,6 +903,8 @@ def upload_to_youtube(
             transport=http,
             raise_on_failure=raise_on_failure,
             uploader=chunked_uploader,
+            budget=budget,
+            mutation_started=mutation_started,
         )
 
     video_bytes = video_path.read_bytes()
@@ -769,6 +913,7 @@ def upload_to_youtube(
 
     for attempt in range(_MAX_RETRIES):
         try:
+            admit_mutation()
             upload_status, upload_body = http.request(
                 upload_url,
                 method="PUT",
@@ -789,6 +934,8 @@ def upload_to_youtube(
             logger.warning("YouTube upload attempt %d failed: HTTP %s", attempt + 1, upload_status)
             if not _is_transient_http_status(upload_status):
                 break
+        except ProviderMutationAdmissionError:
+            raise
         except _TRANSIENT_TRANSPORT_ERRORS as exc:
             last_error = exc
             logger.warning("YouTube upload attempt %d network error", attempt + 1)
@@ -849,6 +996,7 @@ def update_spotify_rss(
     *,
     pub_date: datetime | None = None,
     storage: StorageUploader | None = None,
+    budget: VideoStageBudget | None = None,
 ) -> bool:
     """Update the podcast RSS feed with a video enclosure for Spotify.
 
@@ -910,6 +1058,13 @@ def update_spotify_rss(
             else:
                 updated_feed = _create_rss_feed(item_xml)
 
+            if budget is not None:
+                try:
+                    budget.require_provider_mutation()
+                except ProviderMutationAdmissionError as exc:
+                    exc.provider = "spotify_rss"
+                    exc.mutation_started = False
+                    raise
             storage.upload(
                 config.spotify_rss_feed_path,
                 updated_feed.encode("utf-8"),
@@ -917,6 +1072,8 @@ def update_spotify_rss(
             )
             logger.info("Spotify RSS feed updated at: %s", config.spotify_rss_feed_path)
             return True
+        except ProviderMutationAdmissionError:
+            raise
         except Exception as exc:
             logger.error("Spotify RSS update failed: %s", exc)
             return False
@@ -942,24 +1099,19 @@ def archive_to_blob(
     if config and not config.blob_archive_enabled:
         logger.info("Blob archive disabled")
         return None
-
     if config and config.dry_run:
         blob_path = f"jobs/{job_id}/video/{job_id}.mp4"
         dry_run_url = f"https://dry-run.blob.core.windows.net/{blob_path}"
         logger.info("Blob archive dry-run: %s", dry_run_url)
         return dry_run_url
-
     if storage is None:
         logger.warning("No storage backend for blob archive")
         return None
-
     if not video_path.exists():
         logger.error("Video file not found for archival: %s", video_path)
         return None
-
     blob_path = f"jobs/{job_id}/video/{job_id}.mp4"
     video_bytes = video_path.read_bytes()
-
     try:
         blob_url = storage.upload(blob_path, video_bytes, "video/mp4")
         logger.info("Video archived to blob: %s (%d bytes)", blob_url, len(video_bytes))
@@ -967,6 +1119,193 @@ def archive_to_blob(
     except Exception as exc:
         logger.error("Blob archive failed: %s", exc)
         return None
+
+
+def archive_video_verified(
+    video_path: Path,
+    job_id: str,
+    *,
+    storage: Any,
+    budget: VideoStageBudget,
+    config: VideoDistributionConfig | None = None,
+    probe: Callable[[Path, float], ProbeEvidence] | None = None,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
+) -> ArchiveResult:
+    """Upload or reuse an immutable archive after checksum, probe, and readback."""
+
+    if not budget.admit(VideoStage.ARCHIVE).allowed:
+        raise StorageOperationTimeout("archive deadline reached before validation")
+    probe_kwargs: dict[str, Any] = {
+        "timeout_seconds": 30.0,
+        "budget": budget,
+        "stage": VideoStage.ARCHIVE,
+    }
+    if probe is not None:
+        probe_kwargs["probe"] = probe
+    source_evidence = collect_media_evidence(video_path, **probe_kwargs)
+    blob_path = f"jobs/{job_id}/video/{job_id}.mp4"
+    validation_path = f"{blob_path}.validation.json"
+    identity = {"job_id": job_id, "source_sha256": source_evidence.sha256}
+    expected_record = MediaValidationRecord(
+        artifact_kind="video_archive",
+        identity=identity,
+        media=source_evidence,
+    )
+
+    if config and config.dry_run:
+        elapsed = budget.elapsed_seconds()
+        return ArchiveResult(
+            blob_path=blob_path,
+            blob_url=f"https://dry-run.blob.core.windows.net/{blob_path}",
+            validation=expected_record,
+            completed_elapsed_seconds=elapsed,
+            pending_only=elapsed > RENDER_DEADLINE_SECONDS,
+        )
+    if storage is None:
+        raise RuntimeError("storage backend is required for verified archive")
+
+    def _remaining() -> float:
+        timeout = budget.operation_timeout(VideoStage.ARCHIVE, 30.0)
+        if timeout <= 0:
+            raise StorageOperationTimeout("archive deadline reached")
+        return timeout
+
+    def _read_validation() -> MediaValidationRecord | None:
+        raw = operation_runner(lambda: storage.get_bytes(validation_path), _remaining())
+        if raw is None:
+            return None
+        try:
+            document = json.loads(raw.decode("utf-8"))
+            if not isinstance(document, dict):
+                return None
+            if (
+                document.get("schema_version") != 1
+                or document.get("status") != "verified"
+                or document.get("blob_path") != blob_path
+            ):
+                return None
+            validation = document.get("validation")
+            if not isinstance(validation, dict):
+                return None
+            record = MediaValidationRecord.from_dict(validation)
+            record.require_identity("video_archive", identity)
+            return record
+        except (UnicodeDecodeError, ValueError, TypeError):
+            return None
+
+    readback = video_path.with_name(f".{video_path.name}.archive-readback")
+
+    def _download_readback() -> bool:
+        readback.unlink(missing_ok=True)
+        downloader = getattr(storage, "download_file", None)
+        if downloader is not None:
+            return bool(downloader(blob_path, readback))
+        content = storage.get_bytes(blob_path)
+        if content is None:
+            return False
+        readback.write_bytes(content)
+        return True
+
+    def _validate_readback(record: MediaValidationRecord) -> bool:
+        try:
+            if not operation_runner(_download_readback, _remaining()):
+                return False
+            validate_media_record(
+                readback,
+                record,
+                artifact_kind="video_archive",
+                identity=identity,
+                **probe_kwargs,
+            )
+            return True
+        except Exception:
+            return False
+        finally:
+            readback.unlink(missing_ok=True)
+
+    existing = _read_validation()
+    if existing is not None and _validate_readback(existing):
+        elapsed = budget.elapsed_seconds()
+        return ArchiveResult(
+            blob_path=blob_path,
+            blob_url=str(getattr(storage, "base_url", "")).rstrip("/") + f"/{blob_path}",
+            validation=existing,
+            completed_elapsed_seconds=elapsed,
+            pending_only=elapsed > RENDER_DEADLINE_SECONDS,
+            reused=True,
+        )
+
+    if not budget.admit(VideoStage.ARCHIVE).allowed:
+        raise StorageOperationTimeout("archive deadline reached before upload")
+    uploader = getattr(storage, "upload_file", None)
+    if uploader is not None:
+        artifact = operation_runner(
+            lambda: uploader(blob_path, video_path, "video/mp4"),
+            _remaining(),
+        )
+        blob_url = str(getattr(artifact, "url", blob_path))
+    else:
+        content = video_path.read_bytes()
+        legacy_uploader = getattr(storage, "upload", None)
+        if legacy_uploader is not None:
+            artifact = operation_runner(
+                lambda: legacy_uploader(blob_path, content, "video/mp4"),
+                _remaining(),
+            )
+            blob_url = str(artifact)
+        else:
+            artifact = operation_runner(
+                lambda: storage.put_bytes(blob_path, content, "video/mp4"),
+                _remaining(),
+            )
+            blob_url = str(getattr(artifact, "url", blob_path))
+
+    if not _validate_readback(expected_record):
+        deleter = getattr(storage, "delete_blob", None)
+        if deleter is not None:
+            try:
+                operation_runner(lambda: deleter(blob_path), _remaining())
+            except Exception:
+                logger.debug("could not delete rejected archive %s", blob_path, exc_info=True)
+        raise RuntimeError("archive readback failed media validation")
+
+    completed_before_write = budget.elapsed_seconds()
+    if completed_before_write > 3600:
+        raise StorageOperationTimeout("archive completed after T+3600")
+    archive_document = {
+        "schema_version": 1,
+        "status": "verified",
+        "blob_path": blob_path,
+        "blob_url": blob_url,
+        "validation": expected_record.to_dict(),
+        "completed_elapsed_seconds": completed_before_write,
+        "pending_only": completed_before_write > RENDER_DEADLINE_SECONDS,
+    }
+    operation_runner(
+        lambda: storage.put_bytes(
+            validation_path,
+            json.dumps(archive_document, sort_keys=True, separators=(",", ":")).encode(),
+            "application/json",
+        ),
+        _remaining(),
+    )
+    elapsed = budget.elapsed_seconds()
+    if elapsed > 3600:
+        deleter = getattr(storage, "delete_blob", None)
+        if deleter is not None:
+            for path in (validation_path, blob_path):
+                try:
+                    operation_runner(lambda path=path: deleter(path), _remaining())
+                except Exception:
+                    logger.debug("could not delete late archive %s", path, exc_info=True)
+        raise StorageOperationTimeout("archive completed after T+3600")
+    return ArchiveResult(
+        blob_path=blob_path,
+        blob_url=blob_url,
+        validation=expected_record,
+        completed_elapsed_seconds=elapsed,
+        pending_only=elapsed > RENDER_DEADLINE_SECONDS,
+    )
 
 
 # --- Spotify Episode Upload (#340) ---
@@ -984,6 +1323,7 @@ def upload_to_spotify_episode(
     return_episode_id: bool = False,
     job_id: str | None = None,
     publish_run_id: str | None = None,
+    budget: VideoStageBudget | None = None,
     publication_storage: Any | None = None,
     publication_identity_context: Any | None = None,
 ) -> bool | tuple[bool, int | None, str | None] | tuple[bool, int | None, str | None, str]:
@@ -1005,6 +1345,21 @@ def upload_to_spotify_episode(
         from podcaster.publish import promote_spotify_video_draft, upload_video_to_episode
 
         promote_terminal_state: str | None = None
+        mutation_started = False
+
+        def admit_mutation() -> object:
+            nonlocal mutation_started
+            if budget is None:
+                return None
+            try:
+                decision = budget.require_provider_mutation()
+            except ProviderMutationAdmissionError as exc:
+                exc.provider = "spotify_upload"
+                exc.mutation_started = mutation_started
+                raise
+            mutation_started = True
+            return decision
+
         upload_kwargs: dict[str, Any] = {
             "title": title,
             "description": description,
@@ -1012,6 +1367,8 @@ def upload_to_spotify_episode(
             "season_number": season_number,
             "episode_number": episode_number,
         }
+        if budget is not None:
+            upload_kwargs["before_mutation"] = admit_mutation
         if publication_storage is not None and publication_identity_context is not None:
             upload_kwargs["publication_storage"] = publication_storage
             upload_kwargs["publication_identity_context"] = publication_identity_context
@@ -1025,14 +1382,19 @@ def upload_to_spotify_episode(
             )
         if result.anchor_episode_id is not None:
             try:
-                promote_result = promote_spotify_video_draft(
-                    result.anchor_episode_id,
-                    audio_anchor_id=anchor_id,
-                    spotify_video_publish_mode=getattr(
+                promote_kwargs: dict[str, Any] = {
+                    "audio_anchor_id": anchor_id,
+                    "spotify_video_publish_mode": getattr(
                         config, "spotify_video_publish_mode", "draft"
                     ),
-                    job_id=job_id,
-                    run_id=publish_run_id,
+                    "job_id": job_id,
+                    "run_id": publish_run_id,
+                }
+                if budget is not None:
+                    promote_kwargs["before_mutation"] = admit_mutation
+                promote_result = promote_spotify_video_draft(
+                    result.anchor_episode_id,
+                    **promote_kwargs,
                 )
                 promote_terminal_state = promote_result.terminal_state
                 logger.info(
@@ -1040,6 +1402,8 @@ def upload_to_spotify_episode(
                     promote_result.terminal_state,
                     promote_result.is_published,
                 )
+            except ProviderMutationAdmissionError:
+                raise
             except Exception as promote_exc:  # noqa: BLE001
                 promote_terminal_state = "failed"
                 logger.warning(
@@ -1057,6 +1421,8 @@ def upload_to_spotify_episode(
         if return_episode_id:
             return True, result.anchor_episode_id, promote_terminal_state
         return True
+    except ProviderMutationAdmissionError:
+        raise
     except Exception as exc:
         logger.error("Spotify video upload error: %s", exc)
         return (False, None, None, PUBLICATION_UNKNOWN) if return_episode_id else False
@@ -1076,37 +1442,62 @@ def _load_chunked_uploader() -> Callable[..., Any] | None:
 
 def _try_chunked_upload(
     video_path: Path,
-    *,
-    session_uri: str,
-    access_token: str,
-    file_size: int,
+    *legacy_args: Any,
+    session_uri: str | None = None,
+    access_token: str | None = None,
+    file_size: int | None = None,
     transport: HttpTransport,
     raise_on_failure: bool = False,
     uploader: Callable[..., Any] | None = None,
+    budget: VideoStageBudget | None = None,
+    mutation_started: bool = False,
+    tags: list[str] | None = None,
 ) -> tuple[str | None, str | None]:
-    """Upload *video_path* in chunks over an already-open resumable session.
+    """Upload *video_path* in chunks, optionally over an existing session.
 
-    The caller has already opened the session (the videos.insert). This helper
-    must never open another one, otherwise YouTube keeps an orphan zero-length
-    video for the abandoned session (#698). Transient chunk failures resume
-    the same ``session_uri`` from the server-acknowledged offset.
+    When ``session_uri`` is supplied, the caller has already opened the session
+    (the videos.insert). That path must never open another one, otherwise
+    YouTube keeps an orphan zero-length video for the abandoned session (#698).
+    The legacy argument form is retained for budgeted uploads, where the
+    ambiguity-aware uploader owns init-through-final-status.
 
     Returns ``(video_id, video_url)`` on completion or ``(None, None)`` on a
     handled upload failure (raises instead when ``raise_on_failure``).
     """
-    upload_chunked = uploader or _load_chunked_uploader()
-    if upload_chunked is None:
-        # upload_to_youtube resolves the uploader before init; this is a guard.
-        raise RuntimeError("chunked uploader unavailable after session init")
-
     try:
-        result = upload_chunked(
-            transport,
-            session_uri,
-            access_token,
-            video_path,
-            file_size,
-        )
+        if session_uri is None:
+            if len(legacy_args) < 3:
+                raise TypeError("legacy chunked upload requires title, description, and config")
+            title, description, config = legacy_args[:3]
+            from podcaster.video.youtube import upload_video
+
+            result = upload_video(
+                video_path,
+                title,
+                description,
+                config,
+                tags=tags,
+                transport=transport,
+                budget=budget,
+            )
+        else:
+            if access_token is None or file_size is None:
+                raise TypeError("session chunked upload requires access_token and file_size")
+            upload_chunked = uploader or _load_chunked_uploader()
+            if upload_chunked is None:
+                # upload_to_youtube resolves the uploader before init; this is a guard.
+                raise RuntimeError("chunked uploader unavailable after session init")
+            result = upload_chunked(
+                transport,
+                session_uri,
+                access_token,
+                video_path,
+                file_size,
+                budget=budget,
+                mutation_started=mutation_started,
+            )
+    except ProviderMutationAdmissionError:
+        raise
     except _TRANSIENT_TRANSPORT_ERRORS as exc:
         if raise_on_failure:
             raise YouTubeDeliveryError(
@@ -1119,6 +1510,19 @@ def _try_chunked_upload(
         return None, None
     if result.succeeded:
         return result.video_id, result.video_url
+    if result.status == "unknown":
+        code = str(result.details.get("code", "youtube_resumable_outcome_ambiguous"))
+        stage = {
+            "youtube_resumable_init_ambiguous": "resumable_session_init",
+            "youtube_resumable_chunk_outcome_ambiguous": "upload_chunked",
+        }.get(code, "resumable_final_status")
+        raise YouTubeDeliveryError(
+            result.error or "YouTube resumable upload outcome is unknown",
+            code=code,
+            stage=stage,
+            retryable=False,
+            mutation_ambiguous=bool(result.details.get("mutation_ambiguous")),
+        )
     if raise_on_failure:
         error_text = (result.error or "").strip()
         lowered = error_text.lower()
@@ -1193,6 +1597,9 @@ def distribute_video(
     published: Mapping[str, Any] | None = None,
     on_published: Callable[[str, dict[str, Any]], None] | None = None,
     publish_run_id: str | None = None,
+    budget: VideoStageBudget | None = None,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
+    archived_blob_url: str | None = None,
     publication_storage: Any | None = None,
     publication_identity_context: Any | None = None,
 ) -> DistributionResult:
@@ -1227,6 +1634,17 @@ def distribute_video(
     result = DistributionResult(publish_run_id=publish_run_id)
     prior_published = published or {}
     youtube_required_failure: YouTubeDeliveryError | None = None
+    provider_transport: HttpTransport | None = transport
+    if budget is not None:
+        if not budget.admit(VideoStage.EVIDENCE).allowed:
+            result.status = "failed"
+            result.errors.append("Provider readback/evidence deadline reached")
+            return result
+        provider_transport = _BudgetedTransport(
+            transport or _DefaultTransport(),
+            budget,
+            operation_runner,
+        )
 
     # Abort only if no distribution target at all is enabled (#337)
     if not (
@@ -1257,7 +1675,12 @@ def distribute_video(
 
     # 1. Archive to blob — always done first so the video is stored even when no
     #    listener-facing target succeeds (#337). Also provides the RSS enclosure URL.
-    blob_path = archive_to_blob(video_path, job_id, storage=storage, config=config)
+    blob_path = archived_blob_url or archive_to_blob(
+        video_path,
+        job_id,
+        storage=storage,
+        config=config,
+    )
     result.blob_path = blob_path
 
     # 2. Upload to YouTube (config-gated, and optionally per show/locale, #444)
@@ -1313,14 +1736,19 @@ def distribute_video(
         identity_tag = youtube_identity_tag(publication_identity_context)
         upload_identity = {"identity_tag": identity_tag} if identity_tag else {}
         try:
+            youtube_kwargs: dict[str, Any] = {
+                "tags": tags,
+                "transport": provider_transport,
+                "raise_on_failure": config.youtube_required,
+            }
+            if budget is not None:
+                youtube_kwargs["budget"] = budget
             video_id, video_url = upload_to_youtube(
                 video_path,
                 title,
                 description,
                 config,
-                tags=tags,
-                transport=transport,
-                raise_on_failure=config.youtube_required,
+                **youtube_kwargs,
                 **upload_identity,
             )
             result.youtube_id = video_id
@@ -1368,9 +1796,77 @@ def distribute_video(
                             "at": datetime.now(timezone.utc).isoformat(),
                         },
                     )
+        except ProviderMutationAdmissionError as exc:
+            if not exc.mutation_started:
+                raise
+            reason = exc.decision.reason.value
+            result.errors.append(str(exc))
+            result.provider_outcomes["youtube"] = PUBLICATION_UNKNOWN
+            result.provider_records["youtube"] = {
+                "provider": "youtube",
+                "outcome": PUBLICATION_UNKNOWN,
+                "status": "unknown",
+                "provider_id": None,
+                "native_state": None,
+                "transport_status": "not_attempted",
+                "verification": "none",
+                "checked_at": datetime.now(timezone.utc).isoformat(),
+                "evidence_source": "provider_mutation_admission",
+                "last_error_code": reason,
+                "retry_blocked": True,
+            }
+            if on_published is not None and not config.dry_run:
+                on_published(
+                    "youtube",
+                    {
+                        **result.provider_records["youtube"],
+                        "status": "published",
+                        "provider_status": "unknown",
+                        "publish_run_id": publish_run_id,
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+            if config.youtube_required:
+                youtube_required_failure = YouTubeDeliveryError(
+                    "Required YouTube mutation denied by shared budget",
+                    code=reason,
+                    stage="provider_mutation_admission",
+                    retryable=False,
+                )
         except YouTubeDeliveryError as exc:
             result.errors.append(str(exc))
-            if config.youtube_required:
+            if exc.mutation_ambiguous or exc.code in {
+                "youtube_resumable_init_ambiguous",
+                "youtube_resumable_chunk_outcome_ambiguous",
+                "youtube_resumable_completion_ambiguous",
+                "youtube_resumable_final_status_ambiguous",
+            }:
+                result.provider_outcomes["youtube"] = PUBLICATION_UNKNOWN
+                result.provider_records["youtube"] = {
+                    "provider": "youtube",
+                    "outcome": PUBLICATION_UNKNOWN,
+                    "status": "unknown",
+                    "provider_id": None,
+                    "native_state": None,
+                    "transport_status": "response_lost",
+                    "verification": "none",
+                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                    "evidence_source": exc.stage,
+                    "last_error_code": exc.code,
+                    "retry_blocked": True,
+                }
+                if on_published is not None and not config.dry_run:
+                    on_published(
+                        "youtube",
+                        {
+                            **result.provider_records["youtube"],
+                            "status": "published",
+                            "provider_status": "unknown",
+                            "publish_run_id": publish_run_id,
+                            "at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+            if config.youtube_required and not exc.mutation_ambiguous:
                 youtube_required_failure = exc
             logger.error(
                 "YouTube distribution failed stage=%s code=%s retryable=%s",
@@ -1389,33 +1885,91 @@ def distribute_video(
                     retryable=False,
                 )
 
-    # Reconcile playlist membership independently from upload state. The playlist
-    # API is idempotent, so a retry can repair an upload that was persisted before
-    # its playlist insertion completed.
+    # Reconcile playlist membership independently from upload state. A confirmed
+    # prior upload can repair playlist membership, but an ambiguous insert is
+    # durably retry-blocked because repeating it could create a duplicate item.
+    playlist_record = prior_published.get("youtube_playlist")
+    playlist_retry_blocked = (
+        isinstance(playlist_record, Mapping)
+        and playlist_record.get("outcome") == PUBLICATION_UNKNOWN
+        and bool(playlist_record.get("retry_blocked"))
+    )
     if (
         result.youtube_id is not None
         and not config.dry_run
         and _resolve_playlist_id(config, locale)
+        and not playlist_retry_blocked
     ):
         try:
-            playlist_http = transport or _DefaultTransport()
+            playlist_http = provider_transport or _DefaultTransport()
             playlist_token = _get_youtube_access_token(config, playlist_http)
+            playlist_kwargs: dict[str, Any] = {"transport": provider_transport}
+            if budget is not None:
+                playlist_kwargs["budget"] = budget
             playlist_result = _add_to_show_playlist(
                 config,
                 locale,
                 result.youtube_id,
                 playlist_token,
-                transport=transport,
+                **playlist_kwargs,
             )
             result.youtube_playlist_id = playlist_result.playlist_id
             result.youtube_playlist_succeeded = playlist_result.succeeded
+            if playlist_result.outcome == "unknown":
+                result.errors.append(f"YouTube playlist outcome unknown: {playlist_result.error}")
+                result.provider_outcomes["youtube_playlist"] = PUBLICATION_UNKNOWN
+                result.provider_records["youtube_playlist"] = {
+                    "provider": "youtube_playlist",
+                    "outcome": PUBLICATION_UNKNOWN,
+                    "status": "unknown",
+                    "provider_id": playlist_result.playlist_id,
+                    "native_state": None,
+                    "transport_status": "response_lost",
+                    "verification": "none",
+                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                    "evidence_source": "playlist_reconciliation",
+                    "last_error_code": "youtube_playlist_outcome_ambiguous",
+                    "retry_blocked": playlist_result.retry_blocked,
+                }
+                if on_published is not None:
+                    on_published(
+                        "youtube_playlist",
+                        {
+                            **result.provider_records["youtube_playlist"],
+                            "status": "published",
+                            "provider_status": "unknown",
+                            "publish_run_id": publish_run_id,
+                            "at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+        except ProviderMutationAdmissionError:
+            raise
         except Exception as exc:
             logger.warning("Playlist add skipped for %s: %s", result.youtube_id, exc)
+    elif playlist_retry_blocked:
+        result.youtube_playlist_id = str(
+            playlist_record.get("provider_id")
+            or playlist_record.get("playlist_id")
+            or _resolve_playlist_id(config, locale)
+        )
+        result.youtube_playlist_succeeded = False
+        result.provider_outcomes["youtube_playlist"] = PUBLICATION_UNKNOWN
+        result.provider_records["youtube_playlist"] = _record_from_snapshot(
+            playlist_record,
+            provider="youtube_playlist",
+            provider_id_field="playlist_id",
+        )
+        logger.info(
+            "YouTube playlist mutation skipped for job_id=%s: prior outcome is retry-blocked",
+            job_id,
+        )
 
+    youtube_publication_unknown = result.provider_outcomes.get("youtube") == PUBLICATION_UNKNOWN
     # A bound video ID does not satisfy required delivery when a required failure
     # was recorded after binding (e.g. evidence persistence failed, #708 review).
     if config.youtube_required and (
-        result.youtube_id is None or youtube_required_failure is not None
+        youtube_required_failure is not None
+        or (result.youtube_id is None and not youtube_publication_unknown)
     ):
         result.youtube_required_failed = True
         if youtube_required_failure is None:
@@ -1507,14 +2061,44 @@ def distribute_video(
                     "retry_blocked": False,
                 }
             else:
-                rss_ok = update_spotify_rss(
-                    enclosure_url,
-                    title,
-                    description,
-                    duration_seconds,
-                    config,
-                    storage=storage,
-                )
+                rss_ambiguous = False
+                if budget is None:
+                    rss_ok = update_spotify_rss(
+                        enclosure_url,
+                        title,
+                        description,
+                        duration_seconds,
+                        config,
+                        storage=storage,
+                    )
+                else:
+                    timeout = budget.operation_timeout(VideoStage.EVIDENCE, 300.0)
+                    if timeout <= 0:
+                        rss_ok = False
+                    else:
+                        try:
+                            rss_ok = bool(
+                                operation_runner(
+                                    lambda: update_spotify_rss(
+                                        enclosure_url,
+                                        title,
+                                        description,
+                                        duration_seconds,
+                                        config,
+                                        storage=storage,
+                                        budget=budget,
+                                    ),
+                                    timeout,
+                                )
+                            )
+                        except ProviderMutationAdmissionError as exc:
+                            if not exc.mutation_started:
+                                raise
+                            rss_ambiguous = True
+                            rss_ok = False
+                        except TimeoutError:
+                            rss_ambiguous = True
+                            rss_ok = False
                 result.spotify_rss_updated = rss_ok
                 if rss_ok:
                     result.provider_outcomes["spotify_rss"] = PUBLISHED
@@ -1546,20 +2130,13 @@ def distribute_video(
                         "last_error_code": "spotify_rss_update_failed",
                         "retry_blocked": True,
                     }
-                if rss_ok and on_published is not None and not config.dry_run:
+                if (rss_ok or rss_ambiguous) and on_published is not None and not config.dry_run:
                     on_published(
                         "spotify_rss",
                         {
+                            **result.provider_records["spotify_rss"],
                             "status": "published",
-                            "provider_status": "pending",
-                            "outcome": PUBLISHED,
-                            "provider": "spotify_rss",
-                            "provider_id": config.spotify_rss_feed_path or None,
-                            "native_state": "feed_updated",
-                            "transport_status": "accepted",
-                            "verification": "none",
-                            "evidence_source": "rss_storage_update",
-                            "retry_blocked": True,
+                            "provider_status": result.provider_records["spotify_rss"]["status"],
                             "publish_run_id": publish_run_id,
                             "at": datetime.now(timezone.utc).isoformat(),
                         },
@@ -1595,20 +2172,42 @@ def distribute_video(
                 provider_id_field="episode_id",
             )
         else:
-            upload_result = upload_to_spotify_episode(
-                video_path,
-                spotify_anchor_id,
-                config,
-                title=title,
-                description=description,
-                season_number=season_number,
-                episode_number=episode_number,
-                return_episode_id=True,
-                job_id=job_id,
-                publish_run_id=publish_run_id,
-                publication_storage=publication_storage,
-                publication_identity_context=publication_identity_context,
-            )
+            spotify_ambiguous = False
+
+            def upload_call():
+                return upload_to_spotify_episode(
+                    video_path,
+                    spotify_anchor_id,
+                    config,
+                    title=title,
+                    description=description,
+                    season_number=season_number,
+                    episode_number=episode_number,
+                    return_episode_id=True,
+                    job_id=job_id,
+                    publish_run_id=publish_run_id,
+                    budget=budget,
+                    publication_storage=publication_storage,
+                    publication_identity_context=publication_identity_context,
+                )
+
+            if budget is None:
+                upload_result = upload_call()
+            else:
+                timeout = budget.operation_timeout(VideoStage.EVIDENCE, 300.0)
+                if timeout <= 0:
+                    upload_result = (False, None, None, PUBLICATION_UNKNOWN)
+                else:
+                    try:
+                        upload_result = operation_runner(upload_call, timeout)
+                    except ProviderMutationAdmissionError as exc:
+                        if not exc.mutation_started:
+                            raise
+                        spotify_ambiguous = True
+                        upload_result = (False, None, None, PUBLICATION_UNKNOWN)
+                    except TimeoutError:
+                        spotify_ambiguous = True
+                        upload_result = (False, None, None, PUBLICATION_UNKNOWN)
             upload_outcome = None
             if isinstance(upload_result, tuple) and len(upload_result) == 4:
                 upload_ok, spotify_episode_id, promote_state, upload_outcome = upload_result
@@ -1667,7 +2266,7 @@ def distribute_video(
                 "retry_blocked": spotify_outcome
                 in (DRAFT_CREATED, PUBLISHED, PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED),
             }
-            if upload_ok and on_published is not None and not config.dry_run:
+            if (upload_ok or spotify_ambiguous) and on_published is not None and not config.dry_run:
                 on_published(
                     "spotify_upload",
                     {

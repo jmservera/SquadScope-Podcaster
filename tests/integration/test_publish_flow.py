@@ -7,8 +7,11 @@ import pytest
 
 import podcaster.orchestration as orchestration
 from podcaster.config import SpotifyPublishConfig
+from podcaster.costs import build_cost_ledger
+from podcaster.generation import manifest_bytes
 from podcaster.music import TRACK_ATTRIBUTION
 from podcaster.publish import publish_episode
+from podcaster.storage import LocalStorageBackend
 from podcaster.video.distribution import (
     DistributionResult,
     VideoDistributionConfig,
@@ -18,8 +21,9 @@ from podcaster.video.distribution import (
 pytestmark = pytest.mark.integration
 
 
-def test_audio_only_publish_flow_calls_publish_episode(
+def test_audio_only_publish_requires_approved_gate(
     monkeypatch,
+    tmp_path: Path,
     fake_mp3: Path,
 ) -> None:
     calls: list[dict[str, object]] = []
@@ -37,8 +41,12 @@ def test_audio_only_publish_flow_calls_publish_episode(
 
     monkeypatch.setattr(orchestration, "publish_episode", fake_publish_episode)
 
+    job_id = "audio-only-265"
+    mp3_blob = f"jobs/{job_id}/audio/{job_id}.mp3"
+    wav_blob = f"jobs/{job_id}/audio/{job_id}.wav"
     manifest = {
-        "job_id": "audio-only-265",
+        "job_id": job_id,
+        "status": "synthesized_review_ready",
         "request": {
             "week": "2026-W25",
             "article_url": "https://example.invalid/post",
@@ -48,34 +56,93 @@ def test_audio_only_publish_flow_calls_publish_episode(
                 "upload_format": "mp3",
             },
         },
-    }
-
-    result = orchestration._publish_from_manifest((fake_mp3, None), manifest)
-
-    assert result.status == "published"
-    assert calls == [
-        {
-            "mp3_path": fake_mp3,
-            "title": "Audio-only integration",
-            "description": (
-                "<p>Claracle week 2026-W25.</p>"
-                "<p>Source article: https://example.invalid/post</p>"
-                f"<p>Generated audio artifact: {fake_mp3.name}</p>"
-                f"<p>Intro/outro music: {TRACK_ATTRIBUTION}</p>"
-            ),
-            "kwargs": {
-                "spotify_publish_config": SpotifyPublishConfig(
-                    publish_mode="immediate",
-                    upload_format="mp3",
-                ),
-                "year": 2026,
-                "week": 25,
-                "article_title": "Audio-only integration",
-                "wav_path": None,
-                "language": "en",
+        "review": {"status": "pending", "audit_trail": [], "gate": {"status": "blocked"}},
+        "cost_ledger": build_cost_ledger(
+            week="2026-W25",
+            month="2026-06",
+            provider="openai-tts",
+            voice="fable,alloy",
+            voice_config_hash="abc123",
+            billable_characters=100,
+            duration_seconds=300,
+            audio_byte_length=3,
+            staged_byte_length=6,
+        ),
+        "generation": {
+            "audio_mode": "synthesized",
+            "audio_validation": {"status": "passed", "ready": True},
+            "synthesis_runner": {
+                "status": "completed",
+                "audio": {
+                    "path": mp3_blob,
+                    "artifacts": {
+                        "mp3": {"path": mp3_blob},
+                        "wav": {"path": wav_blob},
+                    },
+                },
             },
-        }
-    ]
+        },
+        "publishing": {
+            "mode": "review_gate",
+            "eligible": False,
+            "packet_ready": True,
+            "blocked_by": ["human_review"],
+            "readiness_checks": {
+                "editorial_review_complete": False,
+                "real_audio_available": True,
+                "audio_validation_passed": True,
+            },
+        },
+        "lifecycle": {"status": "synthesized_review_ready", "revision": 1, "transitions": []},
+        "artifacts": {
+            mp3_blob: {"url": f"https://example.invalid/{mp3_blob}"},
+            wav_blob: {"url": f"https://example.invalid/{wav_blob}"},
+        },
+    }
+    storage = LocalStorageBackend(tmp_path / "artifacts", "https://example.invalid/artifacts")
+    storage.put_bytes(
+        orchestration.manifest_path(job_id),
+        manifest_bytes(manifest),
+        "application/json; charset=utf-8",
+    )
+    storage.put_bytes(mp3_blob, fake_mp3.read_bytes(), "audio/mpeg")
+    storage.put_bytes(wav_blob, b"wav", "audio/wav")
+
+    blocked = orchestration.publish_staged_job(
+        job_id,
+        storage=storage,
+        actor="operator",
+        trigger="manual_request",
+    )
+    assert blocked.publish_result is None
+    assert blocked.manifest["publishing"]["result"]["status"] == "blocked"
+    assert calls == []
+
+    approved = orchestration.process_review_decision(
+        job_id,
+        reviewer="leela",
+        decision="approved",
+        reviewed_at="2026-09-15T17:00:00Z",
+        storage=storage,
+    )
+
+    assert approved.publish_result is not None
+    assert approved.publish_result.status == "published"
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["mp3_path"] == storage.root / mp3_blob
+    assert call["title"] == "Audio-only integration"
+    assert "Source article: https://example.invalid/post" in str(call["description"])
+    assert f"Intro/outro music: {TRACK_ATTRIBUTION}" in str(call["description"])
+    kwargs = call["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["spotify_publish_config"].publish_mode == "immediate"
+    assert kwargs["spotify_publish_config"].upload_format == "mp3"
+    assert kwargs["year"] == 2026
+    assert kwargs["week"] == 25
+    assert kwargs["article_title"] == "Audio-only integration"
+    assert kwargs["wav_path"] == storage.root / wav_blob
+    assert kwargs["language"] == "en"
 
 
 def test_review_gated_audio_blocks_partial_implicit_canonical_identity(

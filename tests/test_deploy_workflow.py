@@ -175,6 +175,17 @@ def test_reusable_deploy_workflow_threads_required_youtube_settings() -> None:
     )
 
 
+def test_video_aca_preserves_platform_kill_reserve_for_application_deadline() -> None:
+    aca_video_module = (ROOT / "infra/modules/aca-video.bicep").read_text(encoding="utf-8")
+    budget_module = (ROOT / "podcaster/video/budget.py").read_text(encoding="utf-8")
+
+    assert "param replicaTimeoutSeconds int = 5400" in aca_video_module
+    assert "param videoVisibilityTimeoutSeconds int = 5400" in aca_video_module
+    assert "JOB_DEADLINE_SECONDS = 5100" in budget_module
+    assert "five minutes before this 5400-second platform limit" in aca_video_module
+    assert "args: [\n            '--max-messages'\n            '1'\n          ]" in aca_video_module
+
+
 def test_reusable_deploy_workflow_deploys_bicep_infrastructure() -> None:
     """Reusable ACA workflow deploys infra via az deployment group create with main.bicep."""
     workflow = _reusable_workflow_text()

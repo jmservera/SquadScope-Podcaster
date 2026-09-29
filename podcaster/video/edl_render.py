@@ -37,6 +37,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from podcaster.video.budget import TimeoutReason, VideoStage, VideoStageBudget
 from podcaster.video.edl import (
     DEFAULT_FALLBACK_CHAIN,
     EditDecisionList,
@@ -45,6 +46,7 @@ from podcaster.video.edl import (
     default_card_text,
     resolve_fallback,
 )
+from podcaster.video.process import OwnedProcessTimeout, run_owned_process
 
 logger = logging.getLogger("podcaster.video.edl_render")
 
@@ -509,6 +511,7 @@ def render_edl(
     config: RenderConfig | None = None,
     degrade_missing: bool = True,
     runner: CommandRunner | None = None,
+    budget: VideoStageBudget | None = None,
 ) -> Path:
     """Render *edl* to ``output_path`` with ffmpeg; return the output path.
 
@@ -523,7 +526,13 @@ def render_edl(
     """
     if runner is None and shutil.which("ffmpeg") is None:
         raise EdlRenderError("ffmpeg is not available on PATH")
-    runner = runner or _default_runner
+    if budget is not None and not budget.admit(VideoStage.RENDER).allowed:
+        Path(output_path).unlink(missing_ok=True)
+        raise OwnedProcessTimeout(
+            ["ffmpeg"],
+            0.0,
+            reason=TimeoutReason.STAGE_DEADLINE,
+        )
 
     if degrade_missing:
         edl = degrade_for_render(
@@ -533,15 +542,29 @@ def render_edl(
             screenshots=screenshots,
             repo_labels=repo_labels,
             section_titles=section_titles,
-            check_files=runner is _default_runner,
+            check_files=runner is None,
         )
 
     plan = build_render_plan(edl, clip_paths, output_path, image_paths=image_paths, config=config)
-    result = runner(plan.argv)
+    try:
+        if runner is None and budget is not None:
+            result = run_owned_process(
+                plan.argv,
+                budget=budget,
+                stage=VideoStage.RENDER,
+                output_paths=(output_path,),
+            )
+        else:
+            result = (runner or _default_runner)(plan.argv)
+    except BaseException:
+        Path(output_path).unlink(missing_ok=True)
+        raise
     if result.returncode != 0:
+        Path(output_path).unlink(missing_ok=True)
         stderr = (result.stderr or "")[-2000:]
         raise EdlRenderError(f"ffmpeg failed (exit {result.returncode}): {stderr}")
     out = Path(output_path)
-    if not out.exists():
+    if not out.exists() or (budget is not None and out.stat().st_size <= 0):
+        out.unlink(missing_ok=True)
         raise EdlRenderError(f"ffmpeg reported success but {out} is missing")
     return out

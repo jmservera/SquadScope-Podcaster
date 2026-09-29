@@ -155,7 +155,17 @@ def az_cli_token_provider(scope: str) -> str:
 
     resource = scope.removesuffix("/.default")
     result = subprocess.run(
-        ["az", "account", "get-access-token", "--resource", resource, "--query", "accessToken", "-o", "tsv"],
+        [
+            "az",
+            "account",
+            "get-access-token",
+            "--resource",
+            resource,
+            "--query",
+            "accessToken",
+            "-o",
+            "tsv",
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -220,11 +230,18 @@ def stage_review_upload(
     blob_manifest = f"{safe_prefix}/claracle-{week}-review-manifest.json"
 
     stored_mp3 = storage.put_bytes(blob_mp3, mp3_bytes, _content_type_for(blob_mp3))
-    stored_script = storage.put_bytes(blob_script, script_text.encode("utf-8"), _content_type_for(blob_script))
+    stored_script = storage.put_bytes(
+        blob_script, script_text.encode("utf-8"), _content_type_for(blob_script)
+    )
 
     expires_at = base_manifest.get("expires_at")
     if not isinstance(expires_at, str):
-        expires_at = expiry.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        expires_at = (
+            expiry.astimezone(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
 
     artifact_storage = {
         "container": os.environ.get("PODCASTER_STORAGE_CONTAINER", "podcaster-artifacts"),
@@ -232,8 +249,17 @@ def stage_review_upload(
         "uploaded_with": "managed_identity",
         "account_key_used": False,
         "objects": [
-            {"path": stored_mp3.path, "size_bytes": stored_mp3.size_bytes, "content_type": stored_mp3.content_type, "sha256": base_manifest.get("audio", {}).get("sha256")},
-            {"path": stored_script.path, "size_bytes": stored_script.size_bytes, "content_type": stored_script.content_type},
+            {
+                "path": stored_mp3.path,
+                "size_bytes": stored_mp3.size_bytes,
+                "content_type": stored_mp3.content_type,
+                "sha256": base_manifest.get("audio", {}).get("sha256"),
+            },
+            {
+                "path": stored_script.path,
+                "size_bytes": stored_script.size_bytes,
+                "content_type": stored_script.content_type,
+            },
             {"path": blob_manifest, "content_type": _content_type_for(blob_manifest)},
         ],
         "access": operator_download_access_metadata(generated_at, expires_at),
@@ -242,7 +268,11 @@ def stage_review_upload(
     signed_mp3 = storage.generate_download_url(blob_mp3, expiry=expiry)
     signed_script = storage.generate_download_url(blob_script, expiry=expiry)
     signed_manifest = storage.generate_download_url(blob_manifest, expiry=expiry)
-    signed = {"audio_mp3": signed_mp3, "script_txt": signed_script, "review_manifest": signed_manifest}
+    signed = {
+        "audio_mp3": signed_mp3,
+        "script_txt": signed_script,
+        "review_manifest": signed_manifest,
+    }
 
     storage_manifest = dict(base_manifest)
     storage_manifest["artifact_storage"] = artifact_storage
@@ -251,11 +281,15 @@ def stage_review_upload(
         "note": "Signed SAS download URLs are secrets and are NOT stored here; request them out-of-band.",
         "method": signed_mp3.method,
         "expires_at": expires_at,
-        "urls": {key: sas_download_record(value, include_url=False) for key, value in signed.items()},
+        "urls": {
+            key: sas_download_record(value, include_url=False) for key, value in signed.items()
+        },
     }
 
     # Upload the SAS-free manifest to shared storage.
-    storage.put_bytes(blob_manifest, _manifest_bytes(storage_manifest), _content_type_for(blob_manifest))
+    storage.put_bytes(
+        blob_manifest, _manifest_bytes(storage_manifest), _content_type_for(blob_manifest)
+    )
 
     local_manifest = dict(base_manifest)
     local_manifest["artifact_storage"] = artifact_storage
@@ -263,7 +297,9 @@ def stage_review_upload(
         "note": "Short-lived user-delegation SAS download URLs (secret; do not commit or forward).",
         "method": signed_mp3.method,
         "expires_at": expires_at,
-        "urls": {key: sas_download_record(value, include_url=True) for key, value in signed.items()},
+        "urls": {
+            key: sas_download_record(value, include_url=True) for key, value in signed.items()
+        },
     }
     return local_manifest, storage_manifest
 
@@ -273,7 +309,9 @@ def _manifest_bytes(manifest: dict[str, object]) -> bytes:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Produce one real Claracle episode for operator review.")
+    parser = argparse.ArgumentParser(
+        description="Produce one real Claracle episode for operator review."
+    )
     parser.add_argument(
         "--out",
         default=str(REPO_ROOT / ".podcaster-artifacts" / "review"),
@@ -338,7 +376,10 @@ def main() -> int:
 
     config = load_tts_config()
     if not config.production_ready:
-        print("ERROR: TTS config is not production-ready; check AZURE_OPENAI_* settings.", file=sys.stderr)
+        print(
+            "ERROR: TTS config is not production-ready; check AZURE_OPENAI_* settings.",
+            file=sys.stderr,
+        )
         print(json.dumps(config.safe_summary(), indent=2), file=sys.stderr)
         return 2
 
@@ -364,8 +405,12 @@ def main() -> int:
 
     script_path.write_text(script, encoding="utf-8")
 
-    print(f"Synthesizing {len(segments)} segments via Azure OpenAI TTS (deployment={config.tts_deployment})...")
-    print(f"Mixing Claracle theme under the episode (intro={intro_asset.path.name}, outro={outro_asset.path.name})...")
+    print(
+        f"Synthesizing {len(segments)} segments via Azure OpenAI TTS (deployment={config.tts_deployment})..."
+    )
+    print(
+        f"Mixing Claracle theme under the episode (intro={intro_asset.path.name}, outro={outro_asset.path.name})..."
+    )
     episode = synthesize_episode(
         script,
         config,
@@ -379,7 +424,9 @@ def main() -> int:
     duration = episode.validation.metadata.duration_seconds if episode.validation.metadata else 0.0
     cost_usd = estimate_cost_usd(billable_characters)
 
-    generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    generated_at = (
+        datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
     expiry = datetime.now(timezone.utc) + timedelta(days=max(1, args.sas_expiry_days))
     expires_at = expiry.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -405,8 +452,18 @@ def main() -> int:
         "source_article_sha256": article.sha256,
         "injection_flags": list(article.injection_flags),
         "hosts": {
-            "host_a": {"name": HOST_A_NAME, "voice": "fable", "persona": "enthusiast", "tts_style": HOST_A_STYLE},
-            "host_b": {"name": HOST_B_NAME, "voice": "alloy", "persona": "veteran", "tts_style": HOST_B_STYLE},
+            "host_a": {
+                "name": HOST_A_NAME,
+                "voice": "fable",
+                "persona": "enthusiast",
+                "tts_style": HOST_A_STYLE,
+            },
+            "host_b": {
+                "name": HOST_B_NAME,
+                "voice": "alloy",
+                "persona": "veteran",
+                "tts_style": HOST_B_STYLE,
+            },
         },
         "voices": {"host_a": "fable", "host_b": "alloy"},
         "music": {
@@ -457,7 +514,9 @@ def main() -> int:
     if not args.no_upload:
         try:
             storage = create_storage_backend()
-            print(f"Uploading review artifacts to storage (prefix={args.storage_prefix}) and minting SAS...")
+            print(
+                f"Uploading review artifacts to storage (prefix={args.storage_prefix}) and minting SAS..."
+            )
             local_manifest, _storage_manifest = stage_review_upload(
                 storage,
                 prefix=args.storage_prefix,
@@ -475,7 +534,9 @@ def main() -> int:
                     download_urls[key] = url
         except Exception as exc:  # noqa: BLE001 - surface upload issues without aborting the staged episode
             upload_error = str(exc)
-            print(f"WARNING: artifact upload / SAS generation failed: {upload_error}", file=sys.stderr)
+            print(
+                f"WARNING: artifact upload / SAS generation failed: {upload_error}", file=sys.stderr
+            )
 
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
@@ -523,7 +584,9 @@ def main() -> int:
             for key in download_urls:
                 print(f"    {key}: {download_urls[key]}")
         else:
-            print(f"  Download SAS URLs minted ({len(download_urls)}; expire {expires_at}; SECRET).")
+            print(
+                f"  Download SAS URLs minted ({len(download_urls)}; expire {expires_at}; SECRET)."
+            )
             print(f"  Read them from the gitignored local manifest: {manifest_path.resolve()}")
             print("  Re-run with --show-download-urls to print them (avoid in CI/captured logs).")
     elif not args.no_upload and upload_error is None:

@@ -381,19 +381,18 @@ def test_run_synthesis_does_not_log_secrets(monkeypatch, caplog):
     assert "Bearer" not in combined
 
 
-def test_run_synthesis_calls_auto_publish_when_enabled(monkeypatch):
+def test_run_synthesis_ignores_podcast_auto_publish_flag(monkeypatch):
     _patch_audio(monkeypatch)
     monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "false")
+    monkeypatch.setenv("PODCAST_AUTO_PUBLISH", "true")
+    monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "false")
     storage = FakeStorage()
     _stage(storage, _base_manifest(), _two_voice_script())
-    called: list[str] = []
-
-    monkeypatch.setattr(job_runner, "auto_publish_enabled", lambda: True)
     monkeypatch.setattr(
         job_runner,
-        "auto_publish_job",
-        lambda job_id, storage=None, now=None: (
-            called.append(job_id) or type("Result", (), {"manifest": {"status": "published"}})()
+        "publish_episode",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("auto-publish must not mutate Spotify")
         ),
     )
 
@@ -406,7 +405,6 @@ def test_run_synthesis_calls_auto_publish_when_enabled(monkeypatch):
     )
 
     assert outcome.status == job_runner.STATUS_COMPLETED
-    assert called == [JOB_ID]
 
 
 def test_run_synthesis_direct_publishes_when_spotify_config_present(monkeypatch):
@@ -425,8 +423,6 @@ def test_run_synthesis_direct_publishes_when_spotify_config_present(monkeypatch)
     }
     _stage(storage, manifest, _two_voice_script())
     published: list[dict[str, object]] = []
-
-    monkeypatch.setattr(job_runner, "auto_publish_enabled", lambda: False)
 
     def fake_publish_episode(mp3_path, title, description, **kwargs):
         published.append(
@@ -487,7 +483,6 @@ def test_run_synthesis_blocks_invalid_canonical_identity_before_spotify_mutation
         "spotify_publish": {"publish_mode": "draft", "upload_format": "wav"},
     }
     _stage(storage, manifest, _two_voice_script())
-    monkeypatch.setattr(job_runner, "auto_publish_enabled", lambda: False)
     monkeypatch.setattr(
         job_runner,
         "publish_episode",
@@ -517,6 +512,7 @@ def test_run_synthesis_blocks_invalid_canonical_identity_before_spotify_mutation
 def test_run_synthesis_enqueues_video_and_publishes_audio_when_video_enabled(monkeypatch):
     _patch_audio(monkeypatch)
     monkeypatch.delenv("VIDEO_GENERATION_ENABLED", raising=False)
+    monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "true")
     storage = FakeStorage()
     manifest = _base_manifest()
     manifest["request"] = {
@@ -528,14 +524,13 @@ def test_run_synthesis_enqueues_video_and_publishes_audio_when_video_enabled(mon
     _stage(storage, manifest, _two_voice_script())
 
     enqueued: list[str] = []
-    auto_published: list[str] = []
+    published: list[str] = []
 
-    def fake_auto_publish_job(job_id, **kwargs):
-        auto_published.append(job_id)
-        return _FakeAutoOutcome()
+    def fake_publish_episode(*args, **kwargs):
+        published.append(str(args[1]))
+        return job_runner.PublishResult(status="draft")
 
-    monkeypatch.setattr(job_runner, "auto_publish_enabled", lambda: True)
-    monkeypatch.setattr(job_runner, "auto_publish_job", fake_auto_publish_job)
+    monkeypatch.setattr(job_runner, "publish_episode", fake_publish_episode)
 
     outcome = job_runner.run_synthesis(
         JOB_ID,
@@ -547,9 +542,9 @@ def test_run_synthesis_enqueues_video_and_publishes_audio_when_video_enabled(mon
     )
 
     assert outcome.status == job_runner.STATUS_COMPLETED
-    # Video is enqueued AND audio is published immediately — both independently.
+    # Video is enqueued AND explicitly-enabled audio publishing runs immediately.
     assert enqueued == [JOB_ID]
-    assert auto_published == [JOB_ID]
+    assert published == ["Skills go vertical"]
 
 
 def _video_only_manifest(**request_extra) -> dict:
@@ -579,7 +574,6 @@ def test_run_synthesis_video_only_skips_audio_publish_and_records_skipped(monkey
     storage = FakeStorage()
     _stage(storage, _video_only_manifest(), _two_voice_script())
     monkeypatch.setattr(job_runner, "publish_episode", _no_spotify_mutation)
-    monkeypatch.setattr(job_runner, "auto_publish_job", _no_spotify_mutation)
     enqueued: list[str] = []
 
     with caplog.at_level("INFO"):
@@ -705,10 +699,6 @@ def test_spotify_audio_publish_flag_matches_publisher_gate(monkeypatch):
         else:
             monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", value)
         assert spotify_audio_publish_enabled() is publish._is_enabled(), value
-
-
-class _FakeAutoOutcome:
-    manifest = {"status": "published"}
 
 
 def test_run_synthesis_video_enqueue_failure_does_not_break_completion(monkeypatch):

@@ -59,7 +59,7 @@ Without Azure storage settings, generated manifests, script drafts, transcripts,
 
 ## Human review gate
 
-Non-dry-run jobs now synthesize first, then wait for review before publication. `.github/workflows/podcast-review-gate.yml` uses the GitHub Environment `podcast-review`, calls the runtime `/api/review` route for the real stored manifest, and uploads the returned `review-manifest.json` as the audit artifact. Automatic approval only activates when both `PODCAST_AUTO_PUBLISH=true` and `SPOTIFY_PUBLISH_ENABLED=true`; otherwise jobs remain manually reviewable after synthesis.
+Non-dry-run jobs now synthesize first, then wait for review before publication. `.github/workflows/podcast-review-gate.yml` uses the GitHub Environment `podcast-review`, calls the runtime `/api/review` route for the real stored manifest, and uploads the returned `review-manifest.json` as the audit artifact. Spotify mutation requires an approved review or explicit operator publication request; the legacy `PODCAST_AUTO_PUBLISH` flag is ignored.
 
 Example request:
 
@@ -99,7 +99,7 @@ Optional `prod` environment variables:
 - `AZURE_STORAGE_ACCOUNT_NAME` - override the deterministic default Storage Account name.
 - `SPOTIFY_PUBLISH_ENABLED` - set to `true` to let runtime publish the **audio** Spotify episode for approved jobs. `false` (production since 2026-09-24) is video-only mode: audio publish is recorded as `skipped`, not failed. See [docs/video-only-mode.md](docs/video-only-mode.md).
 - `SPOTIFY_VIDEO_PUBLISH_MODE` / `SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH` - set to `live` / `true` to take the separate Spotify **video** episode live (video job).
-- `PODCAST_AUTO_PUBLISH` - set to `true` to auto-approve after synthesis, but publication still requires `SPOTIFY_PUBLISH_ENABLED=true`.
+- `PODCAST_AUTO_PUBLISH` - legacy no-op; automatic Spotify approval is disabled. Use `/api/review` or an operator publication request after synthesis.
 
 Optional `prod` environment secret:
 
