@@ -35,9 +35,9 @@ Usage:
     export VIDEO_YOUTUBE_CLIENT_SECRET=...
     python scripts/youtube_oauth_setup.py
 
-Stop rule: if the client id/secret are missing this script prints the exact
-missing variable names and exits non-zero instead of attempting a workaround.
-The refresh token is printed only to the operator's terminal — never logged,
+Stop rule: if the client id/secret are missing this script prints a fixed
+configuration error and exits non-zero instead of attempting a workaround. The
+refresh token is printed only to the operator's terminal — never logged,
 committed, or echoed elsewhere. Store it immediately as a secret.
 """
 
@@ -180,8 +180,7 @@ def main(argv: list[str] | None = None) -> int:
     missing = missing_client_context()
     if missing:
         print(
-            "Refusing to start consent flow: missing required environment variables:\n  "
-            + "\n  ".join(missing),
+            "Refusing to start consent flow: missing required YouTube OAuth client configuration.",
             file=sys.stderr,
         )
         return 3
