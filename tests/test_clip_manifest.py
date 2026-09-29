@@ -137,6 +137,16 @@ def test_round_trip_serialization():
     assert restored.schema_version == CLIP_MANIFEST_SCHEMA_VERSION
 
 
+def test_from_dict_rejects_legacy_or_unknown_schema():
+    data = build_clip_manifest("clip", 1_000, is_fallback=True).to_dict()
+    data.pop("schema_version")
+    with pytest.raises(ClipManifestError, match="schema"):
+        ClipManifest.from_dict(data)
+    data["schema_version"] = "99.0"
+    with pytest.raises(ClipManifestError, match="schema"):
+        ClipManifest.from_dict(data)
+
+
 def test_to_dict_shape():
     m = build_clip_manifest("clip-s", 60_000, is_fallback=True)
     data = m.to_dict()

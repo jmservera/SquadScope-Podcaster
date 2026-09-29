@@ -14,6 +14,7 @@ import ssl
 import struct
 import subprocess
 import zlib
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError, URLError
@@ -23,6 +24,8 @@ import pytest
 from podcaster import ssrf, watermark
 from podcaster.image_validation import sniff_image
 from podcaster.video import video_compose as vc
+from podcaster.video.budget import VideoStageBudget
+from podcaster.video.process import MediaValidationError
 from podcaster.video.sync_plan import EpisodePlan, RepoReference, VideoSegment
 from podcaster.video.video_compose import (
     BOUNDARY_CONTENT_TO_CONTENT,
@@ -77,6 +80,25 @@ from podcaster.video.video_compose import (
     trim_recording_cmd,
 )
 from podcaster.video.video_gen import RecordedSegment
+
+
+class _RenderClock:
+    def __init__(self) -> None:
+        self.elapsed = 0.0
+        self.started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+
+    def monotonic(self):
+        return self.elapsed
+
+    def utcnow(self):
+        return self.started + timedelta(seconds=self.elapsed)
+
+    def budget(self):
+        return VideoStageBudget.start(
+            now_utc=self.started,
+            monotonic=self.monotonic,
+            utcnow=self.utcnow,
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -2338,6 +2360,38 @@ class TestThirdPartyLogoNeverSubstituted:
         assert result.read_bytes() == _PNG_1X1
 
 
+class TestRenderBudgetBoundary:
+    def test_exact_t3300_rejects_new_ffmpeg_work(self, tmp_path):
+        clock = _RenderClock()
+        budget = clock.budget()
+        clock.elapsed = 3300.0
+        runner = MagicMock()
+        output = tmp_path / "partial.mp4"
+        output.write_bytes(b"partial")
+
+        bounded = vc._budgeted_runner(runner, budget)
+        with pytest.raises(TimeoutError):
+            bounded(["ffmpeg", "-i", "input.mp4", str(output)])
+
+        runner.assert_not_called()
+        assert not output.exists()
+
+    def test_zero_byte_ffmpeg_output_is_rejected_and_removed(self, tmp_path):
+        clock = _RenderClock()
+        budget = clock.budget()
+        clock.elapsed = 3299.0
+        output = tmp_path / "empty.mp4"
+
+        def runner(command):
+            output.touch()
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        bounded = vc._budgeted_runner(runner, budget)
+        with pytest.raises(RuntimeError, match="empty output"):
+            bounded(["ffmpeg", "-i", "input.mp4", str(output)])
+        assert not output.exists()
+
+
 class TestFetchDogLogoValidation:
     """Remote logo bodies are validated on their bytes, not their headers."""
 
@@ -3345,6 +3399,184 @@ class TestComposeVideoCheckpointResume:
         assert runner.call_count <= 2
         ran = [str(c[0][0]) for c in runner.call_args_list]
         assert not any("scale" in r for r in ran)
+
+    def test_budgeted_resumed_checkpoint_validates_final_mux(self, tmp_path):
+        store = self._store(tmp_path)
+        clip = tmp_path / "seg.webm"
+        clip.write_bytes(b"\x00" * 2048)
+        seg = _make_recorded_segment(duration=10.0, video_path=clip)
+
+        def probe(_path, _timeout):
+            return vc.ProbeEvidence(format_name="mov,mp4", duration_seconds=10.0)
+
+        compose_video(
+            segments=[seg],
+            output_dir=tmp_path / "initial",
+            runner=_touch_output_runner(),
+            intermediates=store,
+            budget=_RenderClock().budget(),
+            media_probe=probe,
+        )
+
+        final_output = tmp_path / "resumed" / "episode.mp4"
+
+        def fail_final_probe(path, _timeout):
+            if path == final_output:
+                raise OSError("final mux is corrupt")
+            return vc.ProbeEvidence(format_name="mov,mp4", duration_seconds=10.0)
+
+        with pytest.raises(MediaValidationError):
+            compose_video(
+                segments=[seg],
+                output_path=final_output,
+                runner=_touch_output_runner(),
+                intermediates=store,
+                budget=_RenderClock().budget(),
+                media_probe=fail_final_probe,
+            )
+
+    def test_fresh_final_metadata_output_is_validated_with_remaining_budget(self, tmp_path):
+        store = self._store(tmp_path)
+        clip = tmp_path / "seg.webm"
+        clip.write_bytes(b"\x00" * 2048)
+        seg = _make_recorded_segment(duration=10.0, video_path=clip)
+        final_output = tmp_path / "out" / "episode.mp4"
+        clock = _RenderClock()
+        clock.elapsed = 3299.75
+        probe_calls: list[tuple[Path, float]] = []
+
+        def reject_corrupt_final(path, timeout):
+            probe_calls.append((path, timeout))
+            if path == final_output:
+                raise OSError("final metadata output is corrupt")
+            return vc.ProbeEvidence(format_name="mov,mp4", duration_seconds=10.0)
+
+        with pytest.raises(MediaValidationError):
+            compose_video(
+                segments=[seg],
+                output_path=final_output,
+                runner=_touch_output_runner(),
+                intermediates=store,
+                budget=clock.budget(),
+                media_probe=reject_corrupt_final,
+            )
+
+        assert store.exists("composed_video.mp4") is True
+        assert probe_calls[-1][0] == final_output
+        assert 0 < probe_calls[-1][1] <= 0.25
+
+    @pytest.mark.parametrize(
+        ("initial_metadata", "updated_metadata"),
+        [
+            (
+                {"source_url": "https://example.test/old"},
+                {"source_url": "https://example.test/new"},
+            ),
+            (
+                {"removed_reason": None},
+                {"removed_reason": "Repository removed"},
+            ),
+        ],
+        ids=["source-url", "removed-reason"],
+    )
+    def test_segment_metadata_change_invalidates_composed_checkpoint(
+        self, tmp_path, initial_metadata, updated_metadata
+    ):
+        store = self._store(tmp_path)
+        clip = tmp_path / "seg.webm"
+        clip.write_bytes(b"\x00" * 2048)
+
+        def _probe(_path, _timeout):
+            return vc.ProbeEvidence(format_name="matroska,webm", duration_seconds=10.0)
+
+        initial = RecordedSegment(
+            segment=VideoSegment(
+                start_seconds=0.0,
+                duration_seconds=10.0,
+                **initial_metadata,
+            ),
+            video_path=clip,
+        )
+        compose_video(
+            segments=[initial],
+            output_dir=tmp_path / "initial",
+            runner=_touch_output_runner(),
+            intermediates=store,
+            budget=_RenderClock().budget(),
+            media_probe=_probe,
+        )
+
+        changed = RecordedSegment(
+            segment=VideoSegment(
+                start_seconds=0.0,
+                duration_seconds=10.0,
+                **updated_metadata,
+            ),
+            video_path=clip,
+        )
+        runner = MagicMock(side_effect=_touch_output_runner())
+        compose_video(
+            segments=[changed],
+            output_dir=tmp_path / "changed",
+            runner=runner,
+            intermediates=store,
+            budget=_RenderClock().budget(),
+            media_probe=_probe,
+        )
+
+        commands = [[str(arg) for arg in call.args[0]] for call in runner.call_args_list]
+        assert any("-vf" in command and "scale=" in " ".join(command) for command in commands)
+
+    @pytest.mark.parametrize("initial_has_logo", [False, True], ids=["no-logo", "logo-a"])
+    def test_dog_logo_change_invalidates_composed_checkpoint(
+        self, tmp_path, monkeypatch, initial_has_logo
+    ):
+        store = self._store(tmp_path)
+        clip = tmp_path / "seg.webm"
+        clip.write_bytes(b"\x00" * 2048)
+        logo_a = tmp_path / "logo-a.png"
+        logo_b = tmp_path / "logo-b.png"
+        logo_a.write_bytes(b"logo-a")
+        logo_b.write_bytes(b"logo-b")
+        requested_logo = "https://example.test/logo.png"
+        resolved_logo = logo_a
+
+        def _fetch_logo(url, _cache):
+            assert url == requested_logo
+            return resolved_logo
+
+        monkeypatch.setattr(vc, "_fetch_dog_logo", _fetch_logo)
+
+        def _probe(_path, _timeout):
+            return vc.ProbeEvidence(format_name="matroska,webm", duration_seconds=10.0)
+
+        seg = _make_recorded_segment(duration=10.0, video_path=clip)
+        initial_logo = DogLogoConfig(url=requested_logo) if initial_has_logo else None
+        compose_video(
+            segments=[seg],
+            output_dir=tmp_path / "initial",
+            runner=_touch_output_runner(),
+            intermediates=store,
+            budget=_RenderClock().budget(),
+            media_probe=_probe,
+            dog_logo=initial_logo,
+        )
+
+        resolved_logo = logo_b
+        runner = MagicMock(side_effect=_touch_output_runner())
+        compose_video(
+            segments=[seg],
+            output_dir=tmp_path / "changed",
+            runner=runner,
+            intermediates=store,
+            budget=_RenderClock().budget(),
+            media_probe=_probe,
+            dog_logo=DogLogoConfig(url=requested_logo),
+        )
+
+        commands = [[str(arg) for arg in call.args[0]] for call in runner.call_args_list]
+        assert any(str(logo_b) in command for command in commands)
+        assert any("overlay=" in " ".join(command) for command in commands)
 
     def test_resumes_normalized_segment(self, tmp_path):
         store = self._store(tmp_path)

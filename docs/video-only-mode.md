@@ -12,7 +12,7 @@ Container Apps settings.
 
 | Variable | Value | Applies to | Effect |
 |---|---|---|---|
-| `SPOTIFY_PUBLISH_ENABLED` | `false` | synthesis job, API | Turns off the **audio** Spotify publish, including auto-publish (`PODCAST_AUTO_PUBLISH` also requires this to be `true`). |
+| `SPOTIFY_PUBLISH_ENABLED` | `false` | synthesis job, API | Turns off the **audio** Spotify publish. The legacy `PODCAST_AUTO_PUBLISH` flag is ignored; publication requires an approved review or operator request. |
 | `SPOTIFY_VIDEO_PUBLISH_MODE` | `live` | video job | Asks for the Spotify video episode to go live instead of staying a draft. |
 | `SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH` | `true` | video job | The operator's opt-in for making the video episode public. Without it, `live` falls back to a draft. |
 

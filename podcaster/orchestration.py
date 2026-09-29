@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -37,7 +36,10 @@ from podcaster.storage import (
 
 logger = logging.getLogger("podcaster.orchestration")
 
-AUTO_REVIEWER = "system:auto-publish"
+AUTO_PUBLISH_DISABLED_MESSAGE = (
+    "automatic Spotify publishing is disabled; use an approved review or "
+    "operator publication request"
+)
 
 
 @dataclass(frozen=True)
@@ -47,10 +49,7 @@ class JobPublishOutcome:
 
 
 def auto_publish_enabled() -> bool:
-    return (
-        os.environ.get("PODCAST_AUTO_PUBLISH", "").lower() == "true"
-        and os.environ.get("SPOTIFY_PUBLISH_ENABLED", "").lower() == "true"
-    )
+    return False
 
 
 def process_review_decision(
@@ -92,17 +91,7 @@ def auto_publish_job(
     storage: StorageBackend | None = None,
     now: datetime | None = None,
 ) -> JobPublishOutcome:
-    reviewed_at = _iso(now or datetime.now(timezone.utc))
-    return process_review_decision(
-        job_id,
-        reviewer=AUTO_REVIEWER,
-        decision=APPROVED,
-        reviewed_at=reviewed_at,
-        notes="Auto-publish approved by runtime because PODCAST_AUTO_PUBLISH=true.",
-        run_url=None,
-        storage=storage,
-        publish_on_approval=True,
-    )
+    raise RuntimeError(AUTO_PUBLISH_DISABLED_MESSAGE)
 
 
 def publish_staged_job(
@@ -369,7 +358,7 @@ def _mark_publish_requested(
     publishing["blocked_by"] = blocked_by
     publishing["eligible"] = not blocked_by
     publishing["packet_ready"] = not _audio_pending(updated)
-    publishing["mode"] = "auto" if actor == AUTO_REVIEWER else "review_gate"
+    publishing["mode"] = "review_gate"
     publishing["auto_publish_enabled"] = auto_publish_enabled()
     request = updated.get("request")
     request_run_id = request.get("publish_run_id") if isinstance(request, dict) else None
@@ -424,7 +413,7 @@ def _apply_publish_result(
         and not blocked_by
     )
     publishing["packet_ready"] = not _audio_pending(updated)
-    publishing["mode"] = "auto" if actor == AUTO_REVIEWER else "review_gate"
+    publishing["mode"] = "review_gate"
     publishing["auto_publish_enabled"] = auto_publish_enabled()
     publishing["result"] = {
         "status": publish_result.status,

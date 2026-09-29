@@ -27,7 +27,8 @@ Config-driven podcast generation engine. Receives article content and editorial 
   - queue.py — Azure Storage Queue client
   - storage.py — Blob/local storage abstraction
   - validation.py — Request auth + validation
-  - publish.py — Spotify for Creators auto-publish (draft mode, scheduling, metadata)
+  - publish.py — Spotify for Creators mutation adapter used only by explicit publication orchestration
+  - orchestration.py — approved/manual `process_review_decision` → `publish_staged_job` publication owner
   - costs.py — Monthly budget/ledger guardrails
   - sanitization.py — Prompt injection neutralization
   - claim_extraction.py — Claim ledger from articles
@@ -52,7 +53,8 @@ Config-driven podcast generation engine. Receives article content and editorial 
 7. audio.py stitches segments + mixes intro/outro music (ffmpeg, eval=frame volume expressions)
 8. Validation pass (duration, file size, format checks)
 9. Artifacts stored to Azure Blob Storage
-10. publish.py auto-publishes to Spotify (opt-in, non-blocking on failure)
+10. Validated audio remains staged and is never published by synthesis
+11. An explicit approved/manual orchestration request runs `process_review_decision` → `publish_staged_job`; video generation and distribution remain independent
 
 ## API Contract
 ### Config Contract (received via API payload)

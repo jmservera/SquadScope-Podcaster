@@ -116,7 +116,9 @@ def _probe_duration(path: Path) -> float:
 
 def main() -> int:
     ASSET_DIR.mkdir(parents=True, exist_ok=True)
-    generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    generated_at = (
+        datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
 
     assets = []
     for spec in (_INTRO, _OUTRO):
@@ -158,7 +160,9 @@ def main() -> int:
 
     print("Generated stingers and registry:")
     for asset in assets:
-        print(f"  {asset['file']}: {asset['duration_seconds']}s, sha256={asset['sha256'][:12]}…, {asset['license']}")
+        print(
+            f"  {asset['file']}: {asset['duration_seconds']}s, sha256={asset['sha256'][:12]}…, {asset['license']}"
+        )
     print(f"  registry: {REGISTRY_PATH}")
     return 0
 

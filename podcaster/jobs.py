@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -425,7 +424,6 @@ def run_generation_job(
         audio_validation = placeholder_audio_validation(byte_length=0, sha256="")
 
     created_at = current.replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    auto_publish = os.environ.get("PODCAST_AUTO_PUBLISH", "").lower() == "true"
     manifest_status = "dry_run" if payload.get("dry_run") else "accepted"
     manifest = {
         "schema_version": "squadscope-podcaster-job-v1",
@@ -457,8 +455,8 @@ def run_generation_job(
             },
         },
         "publishing": {
-            "mode": "auto" if auto_publish else "review_gate",
-            "auto_publish_enabled": auto_publish,
+            "mode": "review_gate",
+            "auto_publish_enabled": False,
             "packet_ready": False,
             "eligible": False,
             "blocked_by": [

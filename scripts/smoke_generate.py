@@ -16,8 +16,14 @@ REQUIRED_RESPONSE_FIELDS = ("job_id", "manifest_url", "errors")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Smoke test a deployed Podcaster /api/generate endpoint.")
-    parser.add_argument("--endpoint", default=os.environ.get("PODCASTER_GENERATE_URL"), help="Full /api/generate URL.")
+    parser = argparse.ArgumentParser(
+        description="Smoke test a deployed Podcaster /api/generate endpoint."
+    )
+    parser.add_argument(
+        "--endpoint",
+        default=os.environ.get("PODCASTER_GENERATE_URL"),
+        help="Full /api/generate URL.",
+    )
     parser.add_argument(
         "--api-key",
         default=os.environ.get("PODCASTER_API_KEY"),
@@ -70,7 +76,9 @@ def load_payload(path: Path) -> dict[str, Any]:
     return payload
 
 
-def post_generate(endpoint: str, api_key: str, payload: dict[str, Any], timeout: float) -> tuple[int, dict[str, Any]]:
+def post_generate(
+    endpoint: str, api_key: str, payload: dict[str, Any], timeout: float
+) -> tuple[int, dict[str, Any]]:
     request = Request(
         endpoint,
         data=json.dumps(payload).encode("utf-8"),

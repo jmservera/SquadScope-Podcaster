@@ -33,12 +33,15 @@ from podcaster.queue import (
     encode_video_message,
 )
 from podcaster.storage import ConnectionStringStorageBackend
+from podcaster.video.budget import VideoStageBudget
 from podcaster.video.clipset import (
-    clip_blob_path,
+    ClipPlanEntry,
+    Clipset,
     clip_manifest_blob_path,
     clips_prefix,
     clipset_blob_path,
 )
+from podcaster.video.distribution import VideoDistributionConfig
 from podcaster.video.editor import acquire_or_renew_lease
 from podcaster.video.job_runner import (
     REASON_ALREADY_PROCESSED,
@@ -50,6 +53,7 @@ from podcaster.video.job_runner import (
     run_video_generation,
     script_path,
 )
+from podcaster.video.process import ProbeEvidence
 from podcaster.video.recorder import MAX_DEQUEUE_COUNT, process_clip_message
 
 pytestmark = pytest.mark.integration
@@ -88,6 +92,20 @@ def _compose(*args: str, check: bool = True, timeout: int = 300):
     )
 
 
+def _wait_for_service(service: str, *, timeout: int = 300) -> None:
+    containers = _compose("ps", "-a", "-q", service).stdout.split()
+    assert containers, f"no containers found for service {service}"
+    result = subprocess.run(
+        ["docker", "wait", *containers],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=timeout,
+    )
+    exit_codes = [int(line) for line in result.stdout.splitlines()]
+    assert exit_codes == [0] * len(containers), f"{service} containers exited with {exit_codes}"
+
+
 @pytest.fixture(scope="module")
 def azurite_stack():
     if shutil.which("docker") is None:
@@ -116,23 +134,31 @@ def azurite_stack():
 
 
 def _seed(scratch, storage, job_id: str, n: int) -> None:
+    budget = VideoStageBudget.start()
     storage.put_bytes(
-        manifest_path(job_id), json.dumps({"request": {}}).encode(), "application/json"
+        manifest_path(job_id),
+        json.dumps(
+            {
+                "request": {},
+                "generation": {"video_budget": budget.to_dict()},
+            }
+        ).encode(),
+        "application/json",
     )
     storage.put_bytes(script_path(job_id), SCRIPT.encode(), "text/plain")
-    entries = [
-        {
-            "clip_index": i,
-            "start_seconds": float(i * 2),
-            "duration_seconds": 2.0,
-            "repo_owner": "o",
-            "repo_name": f"r{i}",
-        }
+    entries = tuple(
+        ClipPlanEntry(
+            clip_index=i,
+            start_seconds=float(i * 2),
+            duration_seconds=2.0,
+            repo_owner="o",
+            repo_name=f"r{i}",
+        )
         for i in range(n)
-    ]
+    )
     scratch.put_bytes(
         clipset_blob_path(job_id),
-        json.dumps({"job_id": job_id, "count": n, "clips": entries}).encode(),
+        Clipset(job_id=job_id, clips=entries, budget=budget.projection).to_json_bytes(),
         "application/json",
     )
 
@@ -150,14 +176,19 @@ def test_scaleout_fanout_end_to_end(azurite_stack):
     # --- Fan-out: 3 recorder replicas each record exactly one clip + manifest ---
     for i in range(n):
         clipq.send_message(encode_clip_message(job_id, i))
-    res = _compose("up", "--scale", "recorder=3", "--abort-on-container-failure", "recorder")
-    assert res.returncode == 0, res.stderr
+    _compose("up", "-d", "--build", "--scale", "recorder=3", "recorder")
+    _wait_for_service("recorder")
+    immutable_media_paths = set()
     for i in range(n):
-        assert scratch.blob_exists(clip_blob_path(job_id, i)), f"clip {i} missing"
         assert scratch.blob_exists(clip_manifest_blob_path(job_id, i)), f"manifest {i} missing"
-    # Each appears exactly once.
+        manifest = json.loads(scratch.get_bytes(clip_manifest_blob_path(job_id, i)))
+        media_blob_path = manifest["media_blob_path"]
+        assert scratch.blob_exists(media_blob_path), f"clip {i} media missing"
+        immutable_media_paths.add(media_blob_path)
+    # Each clip has one immutable content-addressed blob and one compatibility path.
     blobs = scratch.list_blobs(clips_prefix(job_id), limit=50)
-    assert sum(b.endswith(".webm") for b in blobs) == n
+    assert len(immutable_media_paths) == n
+    assert sum(b.endswith(".webm") for b in blobs) == n * 2
     assert sum(b.endswith(".manifest.json") for b in blobs) == n
 
     # --- Fan-in: editor composes once (compose/distribute mocked; DRAFT only) ---
@@ -193,7 +224,17 @@ def test_scaleout_fanout_end_to_end(azurite_stack):
         patch("podcaster.video.sync_plan.check_repo_removed", return_value=False),
         patch("podcaster.video.job_runner.distribute_video", return_value=dist) as md,
     ):
-        outcome = run_video_generation(job_id, storage, fanout_scratch=scratch, clip_producer=clipq)
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=VideoDistributionConfig(youtube_enabled=True, dry_run=True),
+            fanout_scratch=scratch,
+            clip_producer=clipq,
+            media_probe=lambda path, _timeout: ProbeEvidence(
+                "matroska,webm" if path.suffix == ".webm" else "mov,mp4",
+                1.0 if path.suffix == ".webm" else 6.0,
+            ),
+        )
     assert outcome.status == STATUS_COMPLETED
     assert not scratch.blob_exists(clipset_blob_path(job_id))  # scratch cleaned post-publish
     assert md.call_count == 1  # single publish

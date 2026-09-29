@@ -26,7 +26,9 @@ DEFAULT_ENV_FILE = REPO_ROOT / ".env"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument(
         "--env-file",
         default=str(DEFAULT_ENV_FILE),
@@ -137,7 +139,10 @@ def main() -> int:
             try:
                 page.goto(LOGIN_URL, wait_until="domcontentloaded")
                 if not wait_for_login(page, context, args.timeout):
-                    print("Timed out waiting for Spotify login. No cookies were written.", file=sys.stderr)
+                    print(
+                        "Timed out waiting for Spotify login. No cookies were written.",
+                        file=sys.stderr,
+                    )
                     return 1
 
                 cookies = wait_for_required_cookies(context, COOKIE_GRACE_SECONDS)
