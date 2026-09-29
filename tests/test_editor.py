@@ -285,10 +285,37 @@ def test_budgeted_clipset_upgrades_authentic_null_v1_without_replacing_plan():
     assert storage.blob_exists(clip_manifest_blob_path("job1", 0))
 
 
+def test_budgeted_clipset_upgrades_historical_v1_without_budget_key():
+    storage = FakeStorage()
+    legacy = Clipset.from_segments("job1", _segments(3))
+    legacy_document = legacy.to_dict()
+    legacy_document.pop("video_budget")
+    storage.put_bytes(
+        "video-jobs/job1/clipset.json",
+        json.dumps(legacy_document).encode("utf-8"),
+        _JSON,
+    )
+    _write_manifest(storage, "job1", 0)
+
+    migrated = plan_or_load_clipset(
+        storage,
+        "job1",
+        _segments(2),
+        budget=VideoStageBudget.start(),
+    )
+
+    assert migrated.count == 3
+    assert migrated.clips == legacy.clips
+    assert migrated.budget is not None
+    assert storage.blob_exists(clip_manifest_blob_path("job1", 0))
+    persisted = json.loads(storage.get_bytes("video-jobs/job1/clipset.json"))
+    assert persisted["schema_version"] == CLIPSET_SCHEMA_VERSION
+    assert isinstance(persisted["video_budget"], dict)
+
+
 @pytest.mark.parametrize(
     "bad_budget",
     [
-        pytest.param("missing", id="missing"),
         pytest.param("invalid", id="string"),
         pytest.param([], id="list"),
         pytest.param(42, id="numeric"),

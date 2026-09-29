@@ -102,8 +102,8 @@ class TestContains:
 
     @pytest.mark.parametrize(
         "body",
-        [b'{"items": "not-a-list"}', b'{"items": {}}', b'{"items": null}'],
-        ids=["string", "object", "null"],
+        [b"{}", b'{"items": "not-a-list"}', b'{"items": {}}', b'{"items": null}'],
+        ids=["missing", "string", "object", "null"],
     )
     def test_strict_mode_rejects_items_that_is_not_a_list(self, body):
         t = _FakeTransport([(200, body)])

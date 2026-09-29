@@ -171,6 +171,20 @@ def test_legacy_parser_accepts_authentic_v1_serializer_shapes(budgeted) -> None:
     assert Clipset.from_legacy_v1_dict(data, expected_job_id="job-1") == legacy
 
 
+def test_legacy_parser_accepts_historical_v1_shape_without_budget() -> None:
+    legacy = replace(
+        Clipset.from_segments("job-1", _segments(), budget=None),
+        schema_version=LEGACY_CLIPSET_SCHEMA_VERSION,
+    )
+    data = legacy.to_dict()
+    data.pop("video_budget")
+
+    restored = Clipset.from_dict(data, expected_job_id="job-1")
+
+    assert restored == legacy
+    assert restored.budget is None
+
+
 @pytest.mark.parametrize("bad_budget", ["invalid", [], 42])
 def test_legacy_parser_rejects_non_object_non_null_budget(bad_budget) -> None:
     data = Clipset.from_segments("job-1", _segments()).to_dict()
@@ -180,8 +194,12 @@ def test_legacy_parser_rejects_non_object_non_null_budget(bad_budget) -> None:
         Clipset.from_legacy_v1_dict(data, expected_job_id="job-1")
 
 
-def test_all_schemas_reject_missing_budget() -> None:
-    data = Clipset.from_segments("job-1", _segments()).to_dict()
+def test_current_schema_rejects_missing_budget() -> None:
+    data = Clipset.from_segments(
+        "job-1",
+        _segments(),
+        budget=VideoStageBudget.start().projection,
+    ).to_dict()
     data.pop("video_budget")
 
     with pytest.raises(ClipsetBudgetError, match="missing"):

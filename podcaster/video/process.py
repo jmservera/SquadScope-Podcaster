@@ -12,6 +12,7 @@ import pickle
 import signal
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -184,6 +185,62 @@ def _bounded_text(value: str | bytes | None) -> str:
     return text[-MAX_CAPTURE_CHARS:]
 
 
+class _BoundedPipeCapture:
+    """Drain process pipes while retaining only the bounded output tail."""
+
+    def __init__(self, *pipes: Any) -> None:
+        self._pipes = pipes
+        self._buffers = [bytearray() for _ in pipes]
+        self._lock = threading.Lock()
+        self._threads = [
+            threading.Thread(
+                target=self._drain,
+                args=(index, pipe),
+                name=f"owned-process-pipe-{index}",
+                daemon=True,
+            )
+            for index, pipe in enumerate(pipes)
+            if pipe is not None
+        ]
+
+    def start(self) -> None:
+        for thread in self._threads:
+            thread.start()
+
+    def _drain(self, index: int, pipe: Any) -> None:
+        try:
+            for chunk in iter(lambda: pipe.read(4096), b""):
+                if not chunk:
+                    break
+                with self._lock:
+                    buffer = self._buffers[index]
+                    buffer.extend(chunk)
+                    overflow = len(buffer) - MAX_CAPTURE_CHARS
+                    if overflow > 0:
+                        del buffer[:overflow]
+        except (OSError, ValueError):
+            return
+
+    def close_pipes(self) -> None:
+        for pipe in self._pipes:
+            if pipe is None:
+                continue
+            try:
+                os.close(pipe.fileno())
+            except (OSError, ValueError):
+                pass
+
+    def join(self, timeout_seconds: float) -> None:
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        for thread in self._threads:
+            remaining = deadline - time.monotonic()
+            thread.join(max(0.0, remaining))
+
+    def text(self, index: int) -> str:
+        with self._lock:
+            return _bounded_text(bytes(self._buffers[index]))
+
+
 def _format_aliases(format_name: str) -> frozenset[str]:
     return frozenset(part.strip().lower() for part in format_name.split(",") if part.strip())
 
@@ -294,6 +351,50 @@ def _capture_descendants(
                 descendants[pid] = tracked
 
 
+def _capture_pipe_holders(
+    pipes: Sequence[Any],
+    descendants: dict[int, _TrackedProcess],
+) -> None:
+    if not sys.platform.startswith("linux"):
+        return
+    pipe_inodes: set[str] = set()
+    for pipe in pipes:
+        if pipe is None:
+            continue
+        try:
+            pipe_inodes.add(str(os.fstat(pipe.fileno()).st_ino))
+        except (OSError, ValueError):
+            continue
+    if not pipe_inodes:
+        return
+    own_pid = os.getpid()
+    for fd_dir in Path("/proc").glob("[0-9]*/fd"):
+        try:
+            pid = int(fd_dir.parent.name)
+        except ValueError:
+            continue
+        if pid == own_pid or pid in descendants:
+            continue
+        try:
+            fd_paths = tuple(fd_dir.iterdir())
+        except PermissionError:
+            continue
+        for fd_path in fd_paths:
+            try:
+                target = os.readlink(fd_path)
+            except OSError:
+                continue
+            if not target.startswith("pipe:[") or target[6:-1] not in pipe_inodes:
+                continue
+            process_stat = _process_stat(pid)
+            if process_stat is None:
+                break
+            tracked = _open_tracked_process(pid, process_stat[1])
+            if tracked is not None:
+                descendants[pid] = tracked
+            break
+
+
 def _signal_tracked_process(tracked: _TrackedProcess, sig: signal.Signals) -> None:
     try:
         if tracked.pidfd is not None and hasattr(signal, "pidfd_send_signal"):
@@ -368,6 +469,23 @@ def _close_tracked_processes(descendants: dict[int, _TrackedProcess]) -> None:
     descendants.clear()
 
 
+def _wait_with_descendant_capture(
+    process: subprocess.Popen[Any],
+    timeout: float | None,
+    descendants: dict[int, _TrackedProcess],
+) -> int:
+    if timeout is None:
+        return process.wait()
+    deadline = time.monotonic() + max(0.0, timeout)
+    while process.poll() is None:
+        _capture_descendants((process.pid,), descendants)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout)
+        time.sleep(min(0.05, remaining))
+    return int(process.returncode or 0)
+
+
 def run_owned_process(
     command: Sequence[str],
     *,
@@ -402,33 +520,38 @@ def run_owned_process(
         stdin=subprocess.PIPE if input_text is not None else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
         start_new_session=not nested_in_owned_callable,
     )
+    capture = _BoundedPipeCapture(process.stdout, process.stderr)
+    capture.start()
+    descendants: dict[int, _TrackedProcess] = {}
     try:
-        stdout, stderr = process.communicate(input=input_text, timeout=effective_timeout)
+        if input_text is not None and process.stdin is not None:
+            try:
+                process.stdin.write(input_text.encode("utf-8"))
+                process.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+        _wait_with_descendant_capture(process, effective_timeout, descendants)
     except subprocess.TimeoutExpired as exc:
-        descendants: dict[int, _TrackedProcess] = {}
+        _capture_pipe_holders((process.stdout, process.stderr), descendants)
         _signal_process_tree(process, signal.SIGTERM, descendants)
         if not nested_in_owned_callable:
             _signal_process_group(process, signal.SIGTERM)
         try:
-            stdout, stderr = process.communicate(timeout=max(0.0, terminate_grace_seconds))
+            process.wait(timeout=max(0.0, terminate_grace_seconds))
+            _capture_pipe_holders((process.stdout, process.stderr), descendants)
+            for tracked in reversed(tuple(descendants.values())):
+                _signal_tracked_process(tracked, signal.SIGKILL)
         except subprocess.TimeoutExpired:
+            _capture_pipe_holders((process.stdout, process.stderr), descendants)
             _signal_process_tree(process, signal.SIGKILL, descendants)
             if not nested_in_owned_callable:
                 _signal_process_group(process, signal.SIGKILL)
             try:
-                stdout, stderr = process.communicate(timeout=max(0.0, reap_grace_seconds))
-            except subprocess.TimeoutExpired as reap_exc:
-                stdout = reap_exc.stdout
-                stderr = reap_exc.stderr
-                for pipe in (process.stdout, process.stderr, process.stdin):
-                    if pipe is not None:
-                        try:
-                            pipe.close()
-                        except OSError:
-                            pass
+                process.wait(timeout=max(0.0, reap_grace_seconds))
+            except subprocess.TimeoutExpired:
+                capture.close_pipes()
                 try:
                     process.wait(timeout=max(0.0, reap_grace_seconds))
                 except subprocess.TimeoutExpired:
@@ -436,26 +559,30 @@ def run_owned_process(
         if subreaper_enabled:
             _reap_adopted_processes(process.pid, descendants, reap_grace_seconds)
         _close_tracked_processes(descendants)
+        capture.close_pipes()
+        capture.join(reap_grace_seconds)
         _remove_outputs(output_paths)
-        captured_stdout = _bounded_text(stdout) or _bounded_text(exc.stdout)
-        captured_stderr = _bounded_text(stderr) or _bounded_text(exc.stderr)
         raise OwnedProcessTimeout(
             command,
             float(effective_timeout or 0.0),
-            stdout=captured_stdout,
-            stderr=captured_stderr,
+            stdout=capture.text(0) or _bounded_text(exc.stdout),
+            stderr=capture.text(1) or _bounded_text(exc.stderr),
             reason=(
                 TimeoutReason.STAGE_DEADLINE
                 if budget is not None and budget.remaining_seconds(stage) <= 0
                 else TimeoutReason.OPERATION_DEADLINE
             ),
         ) from exc
+    finally:
+        if process.poll() is not None:
+            capture.close_pipes()
+            capture.join(DEFAULT_REAP_GRACE_SECONDS)
 
     completed = subprocess.CompletedProcess(
         args=list(command),
         returncode=process.returncode,
-        stdout=_bounded_text(stdout),
-        stderr=_bounded_text(stderr),
+        stdout=capture.text(0),
+        stderr=capture.text(1),
     )
     if check and completed.returncode != 0:
         _remove_outputs(output_paths)
@@ -594,7 +721,9 @@ def _stop_owned_callable(
             pass
     elif worker.is_alive():
         worker.kill()
-    worker.join()
+    worker.join(DEFAULT_REAP_GRACE_SECONDS)
+    if worker.is_alive():
+        raise OwnedCallableTimeout("owned callable worker did not exit after SIGKILL")
     if subreaper_enabled and worker_pid is not None:
         _reap_adopted_processes(worker_pid, descendants, DEFAULT_REAP_GRACE_SECONDS)
     _close_tracked_processes(descendants)
@@ -674,7 +803,7 @@ def run_owned_callable(
         receiver.close()
         if worker.is_alive():
             worker.kill()
-            worker.join()
+            worker.join(DEFAULT_REAP_GRACE_SECONDS)
 
 
 def probe_media(

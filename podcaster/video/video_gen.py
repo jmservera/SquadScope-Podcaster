@@ -2796,7 +2796,10 @@ def record_episode(
     concurrency: int | None = None,
     brand_name: str | None = None,
     budget: VideoStageBudget | None = None,
-    owned_record_segment: Callable[["VideoSegment", Path, float], RecordedSegment] | None = None,
+    owned_record_segment: Callable[
+        ["VideoSegment", Path, float, bool, str | None, str | None], RecordedSegment
+    ]
+    | None = None,
 ) -> RecordingResult:
     """Record all video segments for an episode plan.
 
@@ -2882,13 +2885,23 @@ def record_episode(
                 if timeout <= 0:
                     raise TimeoutError("fan-in deadline reached before browser admission")
                 if owned_record_segment is not None:
-                    return owned_record_segment(segment, output_dir, timeout)
+                    return owned_record_segment(
+                        segment,
+                        output_dir,
+                        timeout,
+                        check_accessibility,
+                        source_url,
+                        brand_name,
+                    )
                 from podcaster.video.recorder import _owned_production_record_segment
 
                 recording = _owned_production_record_segment(
                     segment,
                     output_dir,
                     timeout_seconds=timeout,
+                    check_accessibility=check_accessibility,
+                    source_url=source_url,
+                    brand_name=brand_name,
                 )
                 return RecordedSegment(
                     segment=segment,
@@ -2951,12 +2964,6 @@ def record_episode(
             _log_reused(index, recovered)
         return result
 
-    if not _PLAYWRIGHT_AVAILABLE:
-        raise RuntimeError(
-            "Playwright is not installed. Install it with: "
-            "pip install 'podcaster[video]' && playwright install chromium"
-        )
-
     pending = [
         (index, segment) for index, segment in enumerate(plan.segments) if index not in resumed
     ]
@@ -2970,6 +2977,12 @@ def record_episode(
             for index in range(len(plan.segments))
         ]
         return result
+
+    if not _PLAYWRIGHT_AVAILABLE:
+        raise RuntimeError(
+            "Playwright is not installed. Install it with: "
+            "pip install 'podcaster[video]' && playwright install chromium"
+        )
 
     pool_config = (
         load_recording_pool_config()

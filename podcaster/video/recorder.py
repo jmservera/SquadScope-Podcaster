@@ -91,11 +91,11 @@ ENV_FAKE_BROWSER = "PODCASTER_RECORDER_FAKE_BROWSER"
 #: worst-case single-clip record time so a slow clip is not double-delivered
 #: mid-flight (RFC §8).
 ENV_CLIP_VISIBILITY_TIMEOUT = "PODCASTER_CLIP_VISIBILITY_TIMEOUT"
-DEFAULT_CLIP_VISIBILITY_TIMEOUT = 900
+DEFAULT_CLIP_VISIBILITY_TIMEOUT = 840
 ENV_RECORDER_MAX_MESSAGES = "PODCASTER_RECORDER_MAX_MESSAGES"
 DEFAULT_RECORDER_MAX_MESSAGES = 1
 ENV_RECORDER_TIMEOUT = "PODCASTER_RECORDER_TIMEOUT"
-DEFAULT_RECORDER_TIMEOUT = 900
+DEFAULT_RECORDER_TIMEOUT = 840
 DEFAULT_BROWSER_HARD_LIMIT_SECONDS = 600
 RECORDER_FINALIZATION_RESERVE_SECONDS = 60
 FAILED_EXECUTION_LIMIT = 2
@@ -1286,11 +1286,20 @@ def _owned_production_record_segment(
     output_dir: Path,
     *,
     timeout_seconds: float,
+    check_accessibility: bool = True,
+    source_url: str | None = None,
+    brand_name: str | None = None,
 ) -> RecordResult:
     """Run Playwright recording behind an owned killable process boundary."""
     entry = ClipPlanEntry.from_segment(0, segment)
     payload = json.dumps(
-        {"segment": entry.to_dict(), "output_dir": str(Path(output_dir).resolve())},
+        {
+            "segment": entry.to_dict(),
+            "output_dir": str(Path(output_dir).resolve()),
+            "check_accessibility": bool(check_accessibility),
+            "source_url": source_url,
+            "brand_name": brand_name,
+        },
         separators=(",", ":"),
     )
     try:
@@ -1316,7 +1325,14 @@ def _owned_production_record_segment(
     )
 
 
-def _production_record_segment(segment: "VideoSegment", output_dir: Path) -> RecordResult:
+def _production_record_segment(
+    segment: "VideoSegment",
+    output_dir: Path,
+    *,
+    check_accessibility: bool = True,
+    source_url: str | None = None,
+    brand_name: str | None = None,
+) -> RecordResult:
     """Record one segment with a real Chromium browser via the unchanged path."""
     from playwright.sync_api import sync_playwright
 
@@ -1329,8 +1345,9 @@ def _production_record_segment(segment: "VideoSegment", output_dir: Path) -> Rec
                 browser,
                 segment,
                 output_dir,
-                check_accessibility=True,
-                source_url=segment.source_url,
+                check_accessibility=check_accessibility,
+                source_url=source_url if source_url is not None else segment.source_url,
+                brand_name=brand_name,
             )
         finally:
             browser.close()
@@ -1398,7 +1415,13 @@ def drain(
 def _run_record_one_child() -> int:
     payload = json.loads(sys.stdin.read())
     entry = ClipPlanEntry.from_dict(payload["segment"])
-    result = _production_record_segment(entry.to_segment(), Path(payload["output_dir"]))
+    result = _production_record_segment(
+        entry.to_segment(),
+        Path(payload["output_dir"]),
+        check_accessibility=bool(payload.get("check_accessibility", True)),
+        source_url=payload.get("source_url"),
+        brand_name=payload.get("brand_name"),
+    )
     sys.stdout.write(
         json.dumps(
             {

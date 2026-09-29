@@ -169,14 +169,28 @@ def plan_results(plan: list[SampleSpec]) -> list[SampleResult]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--script", default=DEFAULT_SCRIPT, help="Reviewed test script path.")
     parser.add_argument("--week", default="bakeoff", help="Label used in blob paths.")
-    parser.add_argument("--voices", default=None, help="Optional JSON file overriding the candidate voices.")
-    parser.add_argument("--include-disabled", action="store_true", help="Include candidates marked enabled=false.")
-    parser.add_argument("--execute", action="store_true", help="Synthesize and store audio (requires Azure Speech context).")
-    parser.add_argument("--timeout", type=float, default=60.0, help="HTTP timeout per synthesis in seconds.")
-    parser.add_argument("--manifest-out", default=None, help="Write the manifest JSON to this path.")
+    parser.add_argument(
+        "--voices", default=None, help="Optional JSON file overriding the candidate voices."
+    )
+    parser.add_argument(
+        "--include-disabled", action="store_true", help="Include candidates marked enabled=false."
+    )
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Synthesize and store audio (requires Azure Speech context).",
+    )
+    parser.add_argument(
+        "--timeout", type=float, default=60.0, help="HTTP timeout per synthesis in seconds."
+    )
+    parser.add_argument(
+        "--manifest-out", default=None, help="Write the manifest JSON to this path."
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -187,7 +201,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         candidates = load_candidates(args.voices)
-        plan = build_plan(script_text, args.week, candidates, include_disabled=args.include_disabled)
+        plan = build_plan(
+            script_text, args.week, candidates, include_disabled=args.include_disabled
+        )
     except BakeoffError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -196,7 +212,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if not plan:
-        print("no enabled candidate voices to synthesize; use --include-disabled to plan them", file=sys.stderr)
+        print(
+            "no enabled candidate voices to synthesize; use --include-disabled to plan them",
+            file=sys.stderr,
+        )
         return 2
 
     mode = "execute" if args.execute else "dry-run"
@@ -222,7 +241,9 @@ def main(argv: list[str] | None = None) -> int:
     for result in results:
         guest = result.guest_voice or "-"
         location = redact_url(result.url) if result.url else result.blob_path
-        print(f"  [{result.status}] {result.provider} narrator={result.narrator_voice} guest={guest} -> {location}")
+        print(
+            f"  [{result.status}] {result.provider} narrator={result.narrator_voice} guest={guest} -> {location}"
+        )
 
     if args.manifest_out:
         Path(args.manifest_out).parent.mkdir(parents=True, exist_ok=True)

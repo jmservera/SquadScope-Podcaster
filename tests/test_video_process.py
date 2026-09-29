@@ -10,6 +10,7 @@ import pytest
 
 from podcaster.video.budget import VideoStage, VideoStageBudget
 from podcaster.video.process import (
+    MAX_CAPTURE_CHARS,
     MediaEvidence,
     MediaValidationError,
     MediaValidationReason,
@@ -37,6 +38,26 @@ def test_runner_keeps_optional_unbounded_compatibility():
     result = run_owned_process([sys.executable, "-c", "print('ok')"])
     assert result.returncode == 0
     assert result.stdout.strip() == "ok"
+
+
+def test_runner_drains_noisy_output_into_bounded_timeout_tail():
+    code = (
+        "import signal,sys,time;"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+        "sys.stdout.write('x' * 200000);"
+        "sys.stdout.flush();"
+        "time.sleep(60)"
+    )
+
+    with pytest.raises(OwnedProcessTimeout) as exc_info:
+        run_owned_process(
+            [sys.executable, "-c", code],
+            timeout_seconds=0.2,
+            terminate_grace_seconds=0.1,
+            reap_grace_seconds=0.2,
+        )
+
+    assert exc_info.value.stdout == "x" * MAX_CAPTURE_CHARS
 
 
 def test_runner_terminates_child_and_grandchild_tree_and_rejects_partial_output(tmp_path):

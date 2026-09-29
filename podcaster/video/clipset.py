@@ -22,8 +22,9 @@ from typing import Any, Sequence
 from podcaster.video.budget import BudgetProjection
 from podcaster.video.sync_plan import RepoReference, VideoSegment
 
-#: Schema markers for the serialised fan-out plan. V1 always serialized
-#: ``video_budget`` as either an object or null; V2 requires an object.
+#: Schema markers for the serialised fan-out plan. Historical V1 documents
+#: omitted ``video_budget``; later V1 serializers wrote it as object or null.
+#: V2 requires an object.
 LEGACY_CLIPSET_SCHEMA_VERSION = "squadscope-podcaster-clipset-v1"
 CLIPSET_SCHEMA_VERSION = "squadscope-podcaster-clipset-v2"
 
@@ -273,8 +274,11 @@ class Clipset:
                 f"unsupported clipset schema version {schema_version!r}"
             )
         if "video_budget" not in data:
-            raise ClipsetBudgetError("clipset video_budget is missing")
-        raw_budget = data["video_budget"]
+            if schema_version != LEGACY_CLIPSET_SCHEMA_VERSION:
+                raise ClipsetBudgetError("clipset video_budget is missing")
+            raw_budget = None
+        else:
+            raw_budget = data["video_budget"]
         if schema_version == LEGACY_CLIPSET_SCHEMA_VERSION and raw_budget is None:
             budget = None
         elif not isinstance(raw_budget, dict):

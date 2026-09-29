@@ -2746,13 +2746,13 @@ class TestRecordEpisodeCheckpointResume:
         # … and the local copy was deleted (disk holds only the current file).
         assert recorded_paths and not recorded_paths[0].exists()
 
-    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", False)
     @patch("podcaster.video.video_gen.sync_playwright", create=True)
     def test_budgeted_recording_uses_owned_browser_boundary(self, mock_pw, tmp_path):
         calls = []
 
-        def owned(segment, output_dir, timeout):
-            calls.append(timeout)
+        def owned(segment, output_dir, timeout, check_accessibility, source_url, brand_name):
+            calls.append((timeout, check_accessibility, source_url, brand_name))
             path = output_dir / "owned.webm"
             path.write_bytes(b"owned-browser-result")
             return RecordedSegment(segment=segment, video_path=path)
@@ -2762,11 +2762,15 @@ class TestRecordEpisodeCheckpointResume:
             plan,
             output_dir=tmp_path / "out",
             budget=VideoStageBudget.start(),
+            check_accessibility=False,
+            source_url="https://article.example/post",
+            brand_name="Joracle",
             owned_record_segment=owned,
         )
 
         assert len(result.recorded) == 1
-        assert calls and calls[0] > 0
+        assert calls and calls[0][0] > 0
+        assert calls[0][1:] == (False, "https://article.example/post", "Joracle")
         mock_pw.assert_not_called()
 
     @patch("podcaster.video.video_gen._validate_recording")
@@ -2827,6 +2831,12 @@ class TestRecordEpisodeCheckpointResume:
         assert checkpoint["is_removed"] is True
         assert checkpoint["recovery_path"] == "website"
         owned_record.assert_called_once()
+        args, kwargs = owned_record.call_args
+        assert args == (segment, output_path.parent)
+        assert kwargs["timeout_seconds"] > 0
+        assert kwargs["check_accessibility"] is True
+        assert kwargs["source_url"] is None
+        assert kwargs["brand_name"] is None
 
 
 # --- Per-task recording retry (issue #483) ---
@@ -2908,7 +2918,9 @@ class TestRecordEpisodeTaskRetry:
     def test_owned_recording_timeout_is_not_retried_past_fanin_deadline(self, tmp_path):
         calls = 0
 
-        def timed_out_recording(_segment, _output_dir, _timeout):
+        def timed_out_recording(
+            _segment, _output_dir, _timeout, _check_accessibility, _source_url, _brand_name
+        ):
             nonlocal calls
             calls += 1
             raise TimeoutError("owned recording consumed the fan-in budget")

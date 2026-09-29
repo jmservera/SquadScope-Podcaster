@@ -202,7 +202,7 @@ design layers four mechanisms:
 | `pollingInterval` | 30s | 30s |
 | `replicaRetryLimit` | 1 (→ poison/fallback) | 1 |
 | CPU / mem | **2.0 / 4Gi** (one Chromium ≈1.5 GB) | 4.0 / 8Gi (ffmpeg compose, unchanged) |
-| `replicaTimeout` | per-clip budget (e.g. 900s) | covers fan-in wait + compose (e.g. 5400s, unchanged) |
+| `replicaTimeout` | 840s default, matching clip queue visibility | covers fan-in wait + compose (e.g. 5400s, unchanged) |
 
 The recorder is a **smaller** box than today's 4/8 monolith because each replica records a single
 clip. Wall-clock recording time drops from ~`N/3 × per_clip` (single box, 3 threads) to
@@ -210,13 +210,15 @@ clip. Wall-clock recording time drops from ~`N/3 × per_clip` (single box, 3 thr
 
 ## 8. Failure / retry & well-architected trade-offs
 
-- **Reliability:** clip **receive visibility timeout ≥ max per-clip record time** so a slow clip
+- **Reliability:** clip **receive visibility timeout equals the recorder ACA timeout by default
+  (840s)** so a slow clip
   isn't double-delivered mid-flight; `dequeue_count >= MAX_DEQUEUE_COUNT` → recorder writes a
   **terminal fallback manifest** (§4) so the barrier always converges. The **`video-jobs` (editor)
   receive visibility timeout must be ≥ the editor's worst-case runtime** (`fan-in wait + compose +
   publish`) — or the editor must renew visibility while working — otherwise the job is redelivered
-  to a second editor while the first still holds the lease. ACA `replicaTimeout` is set **above** the
-  corresponding queue visibility/processing budget for each role. The editor fan-in wait is bounded
+  to a second editor while the first still holds the lease. Recorder ACA timeout and queue
+  visibility are intentionally aligned at 840s; the editor ACA timeout remains the platform hard
+  guard for its longer queue visibility/processing budget. The editor fan-in wait is bounded
   by `expected_clips × per_clip_budget × MAX_DEQUEUE_COUNT / max_recorders + slack`; on timeout it
   composes with whatever terminal manifests exist (fallbacks fill the gaps) or fails via
   `report_failure`. No bespoke reaper (YAGNI) — KEDA scales recorders to zero when the queue drains;
