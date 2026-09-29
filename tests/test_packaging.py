@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from io import BytesIO
 from urllib.parse import urlparse
 from zipfile import ZipFile
@@ -32,8 +33,11 @@ def test_generate_show_notes_contains_metadata():
     assert "Test Episode" in result
     assert "https://example.com/article" in result
     assert "AI Voice Disclosure" in result
-    parsed_url = urlparse("https://www.claracle.com")
-    assert f"{parsed_url.scheme}://{parsed_url.netloc}" in result
+    podcast_link = re.search(r"\*\*Podcast:\*\* \[Claracle\]\(([^)]+)\)", result)
+    assert podcast_link is not None
+    parsed_url = urlparse(podcast_link.group(1))
+    assert parsed_url.scheme == "https"
+    assert parsed_url.netloc == "www.claracle.com"
 
 
 def test_generate_show_notes_normalizes_uppercase_claracle_weekly_url():
