@@ -15,6 +15,12 @@ var routeActionGroups = {
   'production-owner': productionActionGroupResourceId
 }
 
+var evaluationPeriodsByWindow = {
+  PT5M: 1
+  PT10M: 2
+  PT15M: 3
+}
+
 // The application emits the reviewed warning/critical classification from durable
 // state. These rules preserve the matching evaluation window, explicit route, and
 // missing-data contract in deployable infrastructure.
@@ -285,8 +291,8 @@ resource distributionAlerts 'Microsoft.Insights/scheduledQueryRules@2023-12-01' 
             operator: 'GreaterThan'
             threshold: 0
             failingPeriods: {
-              numberOfEvaluationPeriods: 1
-              minFailingPeriodsToAlert: 1
+              numberOfEvaluationPeriods: evaluationPeriodsByWindow[alert.window]
+              minFailingPeriodsToAlert: evaluationPeriodsByWindow[alert.window]
             }
           }
         ]

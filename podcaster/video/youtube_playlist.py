@@ -29,6 +29,8 @@ from dataclasses import dataclass
 from typing import Callable
 from urllib.parse import urlencode
 
+from podcaster.video.budget import ProviderMutationAdmissionError, VideoStageBudget
+
 logger = logging.getLogger(__name__)
 
 # --- Constants ---------------------------------------------------------------
@@ -147,6 +149,8 @@ def playlist_contains_video(
             method="GET",
             headers={"Authorization": f"Bearer {access_token}"},
         )
+    except ProviderMutationAdmissionError:
+        raise
     except Exception as exc:
         logger.warning("playlistItems.list error for %s: %s", video_id, exc)
         if raise_on_error:
@@ -162,7 +166,20 @@ def playlist_contains_video(
         if raise_on_error:
             raise RuntimeError("playlist membership response was invalid") from None
         return False
-    return bool(data.get("items"))
+    if not isinstance(data, dict):
+        if raise_on_error:
+            raise RuntimeError("playlist membership response was invalid")
+        return False
+    if "items" not in data:
+        if raise_on_error:
+            raise RuntimeError("playlist membership response was invalid")
+        return False
+    items = data["items"]
+    if not isinstance(items, list):
+        if raise_on_error:
+            raise RuntimeError("playlist membership response was invalid")
+        return False
+    return bool(items)
 
 
 def add_video_to_playlist(
@@ -172,6 +189,7 @@ def add_video_to_playlist(
     *,
     position: int | None = None,
     transport: object | None = None,
+    budget: VideoStageBudget | None = None,
 ) -> PlaylistAddResult:
     """Insert ``video_id`` into ``playlist_id`` via ``playlistItems.insert``.
 
@@ -195,6 +213,13 @@ def add_video_to_playlist(
     http = transport if transport is not None else _default_transport()
 
     try:
+        if budget is not None:
+            try:
+                budget.require_provider_mutation()
+            except ProviderMutationAdmissionError as exc:
+                exc.provider = "youtube_playlist"
+                exc.mutation_started = False
+                raise
         status, body = http.request(
             PLAYLIST_ITEMS_INSERT_URL,
             method="POST",
@@ -205,10 +230,17 @@ def add_video_to_playlist(
             },
             data=payload,
         )
+    except ProviderMutationAdmissionError:
+        raise
     except Exception as exc:
         logger.warning("playlistItems.insert error for %s: %s", video_id, exc)
         return PlaylistAddResult(
-            video_id=video_id, playlist_id=playlist_id, succeeded=False, error=str(exc)
+            video_id=video_id,
+            playlist_id=playlist_id,
+            succeeded=False,
+            error=str(exc),
+            outcome="unknown",
+            retry_blocked=True,
         )
 
     if status in (200, 201):
@@ -259,6 +291,7 @@ def add_to_show_playlist(
     transport: object | None = None,
     position: int | None = None,
     before_mutation: Callable[[], None] | None = None,
+    budget: VideoStageBudget | None = None,
 ) -> PlaylistAddResult:
     """Resolve the locale's playlist and add ``video_id`` idempotently.
 
@@ -278,7 +311,26 @@ def add_to_show_playlist(
         )
         return PlaylistAddResult(video_id=video_id, playlist_id="", succeeded=True, skipped=True)
 
-    if playlist_contains_video(playlist_id, video_id, access_token, transport=transport):
+    try:
+        already_present = playlist_contains_video(
+            playlist_id,
+            video_id,
+            access_token,
+            transport=transport,
+            raise_on_error=True,
+        )
+    except RuntimeError as exc:
+        logger.warning("playlist membership outcome ambiguous for %s: %s", video_id, exc)
+        return PlaylistAddResult(
+            video_id=video_id,
+            playlist_id=playlist_id,
+            succeeded=False,
+            error=str(exc),
+            outcome="unknown",
+            retry_blocked=True,
+        )
+
+    if already_present:
         logger.info(
             "Video %s already in playlist %s; skipping (idempotent)",
             video_id,
@@ -299,6 +351,7 @@ def add_to_show_playlist(
         access_token,
         position=position,
         transport=transport,
+        budget=budget,
     )
 
 

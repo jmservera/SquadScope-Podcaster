@@ -155,6 +155,8 @@ class DispatchReceiptRepository:
             current = json.loads(raw.decode("utf-8"))
             if current.get("week") != week:
                 raise DispatchReceiptError("dispatch arrival week conflicts")
+            if current.get("dispatch_result") in {"blocked", "failed"}:
+                raise DispatchReceiptError("dispatch intent is terminal before Azure arrival")
             existing = current.get("accepted_job_id")
             if existing not in (None, accepted_job_id):
                 raise DispatchReceiptError("dispatch arrival job conflicts")
@@ -220,8 +222,10 @@ def validate_dispatch_fields(payload: Mapping[str, Any]) -> list[str]:
     correlation_id = payload.get("dispatch_correlation_id")
     if correlation_id is None:
         return []
+    if not isinstance(correlation_id, str):
+        return ["dispatch_correlation_id must be a string"]
     try:
-        _token("dispatch_correlation_id", str(correlation_id))
+        _token("dispatch_correlation_id", correlation_id)
     except DispatchReceiptError as exc:
         return [str(exc)]
     return []

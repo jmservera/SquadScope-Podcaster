@@ -3463,7 +3463,9 @@ class TestComposeVideoCheckpointResume:
         final_output = tmp_path / "resumed" / "episode.mp4"
 
         def fail_final_probe(path, _timeout):
-            if path == final_output:
+            if path.parent == final_output.parent and path.name.startswith(
+                f".{final_output.stem}."
+            ):
                 raise OSError("final mux is corrupt")
             return vc.ProbeEvidence(format_name="mov,mp4", duration_seconds=10.0)
 
@@ -3489,7 +3491,9 @@ class TestComposeVideoCheckpointResume:
 
         def reject_corrupt_final(path, timeout):
             probe_calls.append((path, timeout))
-            if path == final_output:
+            if path.parent == final_output.parent and path.name.startswith(
+                f".{final_output.stem}."
+            ):
                 raise OSError("final metadata output is corrupt")
             return vc.ProbeEvidence(format_name="mov,mp4", duration_seconds=10.0)
 
@@ -3504,7 +3508,9 @@ class TestComposeVideoCheckpointResume:
             )
 
         assert store.exists("composed_video.mp4") is True
-        assert probe_calls[-1][0] == final_output
+        assert probe_calls[-1][0].parent == final_output.parent
+        assert probe_calls[-1][0].name.startswith(f".{final_output.stem}.")
+        assert not final_output.exists()
         assert 0 < probe_calls[-1][1] <= 0.25
 
     @pytest.mark.parametrize(

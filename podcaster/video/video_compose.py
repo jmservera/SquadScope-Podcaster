@@ -3128,7 +3128,6 @@ def _finalize_output(
             commands.pop()
         if before_final_promotion is not None:
             before_final_promotion()
-        os.replace(staged_output, output_path)
         if media_probe is not None:
             probe_kwargs: dict[str, Any] = {
                 "timeout_seconds": 30.0,
@@ -3136,7 +3135,8 @@ def _finalize_output(
                 "stage": VideoStage.RENDER,
                 "probe": media_probe,
             }
-            collect_media_evidence(output_path, **probe_kwargs)
+            collect_media_evidence(staged_output, **probe_kwargs)
+        os.replace(staged_output, output_path)
     finally:
         try:
             staged_output.unlink(missing_ok=True)

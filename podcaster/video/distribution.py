@@ -2232,7 +2232,7 @@ def distribute_video(
                 if budget is not None:
                     upload_result = operation_runner(
                         _spotify_upload_call,
-                        budget.operation_timeout(VideoStage.EVIDENCE, 30.0),
+                        budget.operation_timeout(VideoStage.EVIDENCE, 300.0),
                     )
                 else:
                     upload_result = _spotify_upload_call()

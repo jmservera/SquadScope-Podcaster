@@ -500,65 +500,6 @@ module acaVideo 'modules/aca-video.bicep' = {
   ]
 }
 
-module acaDistribution 'modules/aca-video.bicep' = {
-  name: 'provider-distribution-job'
-  params: {
-    location: location
-    containerAppsEnvId: aca.outputs.environmentId
-    videoJobName: distributionJobName
-    jobIdentityResourceId: aca.outputs.jobIdentityResourceId
-    jobIdentityClientId: aca.outputs.jobIdentityClientId
-    storageAccountName: storage.name
-    videoQueueName: aca.outputs.distributionQueueName
-    distributionQueueName: aca.outputs.distributionQueueName
-    distributionOutboxEnabled: 'true'
-    videoClipQueueName: aca.outputs.videoClipQueueName
-    storageContainerName: storageContainerName
-    videoScratchContainerName: videoScratchContainerName
-    videoImage: synthesisImage
-    runnerModule: 'podcaster.distribution_worker'
-    containerRegistryServer: acrLoginServer
-    openAiEndpoint: openAiEndpoint
-    chatDeploymentName: chatDeploymentName
-    spotifySessionCookieDc: spotifySessionCookieDc
-    spotifySessionCookieKey: spotifySessionCookieKey
-    spotifyShowId: spotifyShowId
-    spotifyVideoAllowLivePublish: 'false'
-    spotifyVideoPublishMode: 'draft'
-    videoYoutubeEnabled: videoYoutubeEnabled
-    videoYoutubeRequired: videoYoutubeRequired
-    videoYoutubeCategoryId: videoYoutubeCategoryId
-    videoYoutubePrivacy: videoYoutubePrivacy
-    videoYoutubePlaylistId: videoYoutubePlaylistId
-    videoYoutubeClientId: videoYoutubeClientId
-    videoYoutubeClientSecret: videoYoutubeClientSecret
-    videoYoutubeRefreshToken: videoYoutubeRefreshToken
-  }
-  dependsOn: [
-    artifactContainer
-    videoScratchContainer
-  ]
-}
-
-module acaDistributionScheduler 'modules/aca-distribution-scheduler.bicep' = {
-  name: 'provider-distribution-scheduler'
-  params: {
-    location: location
-    containerAppsEnvId: aca.outputs.environmentId
-    schedulerJobName: distributionSchedulerJobName
-    jobIdentityResourceId: aca.outputs.jobIdentityResourceId
-    jobIdentityClientId: aca.outputs.jobIdentityClientId
-    storageAccountName: storage.name
-    distributionQueueName: aca.outputs.distributionQueueName
-    storageContainerName: storageContainerName
-    image: synthesisImage
-    containerRegistryServer: acrLoginServer
-  }
-  dependsOn: [
-    artifactContainer
-  ]
-}
-
 module distributionAlerts 'modules/distribution-alerts.bicep' = {
   name: 'provider-distribution-alerts'
   params: {
