@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -140,7 +141,12 @@ def publish_staged_job(
 
 
 def load_manifest(storage: StorageBackend, job_id: str) -> dict[str, Any]:
-    raw = storage.get_bytes(manifest_path(job_id))
+    safe_job_id = _safe_blob_path(job_id)
+    safe_manifest_path = os.path.normpath(f"jobs/{safe_job_id}/manifest.json").replace("\\", "/")
+    if safe_manifest_path.startswith("jobs/"):
+        raw = storage.get_bytes(safe_manifest_path)
+    else:
+        raise ValueError("manifest path escapes jobs prefix")
     if raw is None:
         raise ValueError(f"no manifest found for job_id={job_id}")
     manifest = json.loads(raw.decode("utf-8"))
@@ -179,32 +185,60 @@ def _prepare_audio_files(
     import tempfile
 
     scratch_root = Path(tempfile.gettempdir()) / "podcaster-publish-work"
-    scratch_dir = _safe_local_blob_path(scratch_root, _safe_blob_path(job_id))
-    scratch_dir.mkdir(parents=True, exist_ok=True)
+    safe_job_id = _safe_blob_path(job_id)
+    scratch_root_path = os.path.realpath(os.fspath(scratch_root))
+    scratch_dir_path = os.path.realpath(os.path.join(scratch_root_path, safe_job_id))
+    scratch_root_prefix = (
+        scratch_root_path if scratch_root_path.endswith(os.sep) else f"{scratch_root_path}{os.sep}"
+    )
+    if not scratch_dir_path.startswith(scratch_root_prefix):
+        raise ValueError("scratch path escapes publish root")
+    if scratch_dir_path.startswith(scratch_root_prefix):
+        scratch_dir = Path(scratch_dir_path)
+        scratch_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        raise ValueError("scratch path escapes publish root")
     safe_mp3_blob_path = _safe_blob_path(mp3_blob_path)
     safe_wav_blob_path = _safe_blob_path(wav_blob_path) if wav_blob_path else None
     mp3_bytes = storage.get_bytes(mp3_blob_path)
     if mp3_bytes is None:
         raise ValueError(f"missing synthesized MP3 for job_id={job_id}")
-    mp3_path = _safe_local_blob_path(scratch_dir, Path(safe_mp3_blob_path).name)
-    mp3_path.write_bytes(mp3_bytes)
+    scratch_dir_path = os.path.realpath(os.fspath(scratch_dir))
+    scratch_dir_prefix = (
+        scratch_dir_path if scratch_dir_path.endswith(os.sep) else f"{scratch_dir_path}{os.sep}"
+    )
+    mp3_path_text = os.path.realpath(os.path.join(scratch_dir_path, Path(safe_mp3_blob_path).name))
+    if mp3_path_text.startswith(scratch_dir_prefix):
+        mp3_path = Path(mp3_path_text)
+        mp3_path.write_bytes(mp3_bytes)
+    else:
+        raise ValueError("scratch path escapes publish root")
 
     wav_path: Path | None = None
     if safe_wav_blob_path:
         wav_bytes = storage.get_bytes(wav_blob_path)
         if wav_bytes is not None:
-            wav_path = _safe_local_blob_path(scratch_dir, Path(safe_wav_blob_path).name)
-            wav_path.write_bytes(wav_bytes)
+            wav_path_text = os.path.realpath(
+                os.path.join(scratch_dir_path, Path(safe_wav_blob_path).name)
+            )
+            if wav_path_text.startswith(scratch_dir_prefix):
+                wav_path = Path(wav_path_text)
+                wav_path.write_bytes(wav_bytes)
+            else:
+                raise ValueError("scratch path escapes publish root")
 
-    safe_job_id = _safe_blob_path(job_id)
     mp4_blob_path = f"jobs/{safe_job_id}/audio/{safe_job_id}.mp4"
     mp4_bytes = storage.get_bytes(mp4_blob_path)
     if mp4_bytes is None:
         mp4_blob_path = f"jobs/{safe_job_id}/video/{safe_job_id}.mp4"
         mp4_bytes = storage.get_bytes(mp4_blob_path)
     if mp4_bytes is not None:
-        mp4_path = _safe_local_blob_path(scratch_dir, f"{mp3_path.stem}.mp4")
-        mp4_path.write_bytes(mp4_bytes)
+        mp4_path_text = os.path.realpath(os.path.join(scratch_dir_path, f"{mp3_path.stem}.mp4"))
+        if mp4_path_text.startswith(scratch_dir_prefix):
+            mp4_path = Path(mp4_path_text)
+            mp4_path.write_bytes(mp4_bytes)
+        else:
+            raise ValueError("scratch path escapes publish root")
     return (mp3_path, wav_path), scratch_dir
 
 

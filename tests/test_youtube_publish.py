@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import pytest
 
@@ -58,8 +59,10 @@ class TestPublishingPacket:
 
     def test_review_url_defaulted(self):
         packet = build_publishing_packet("vid123")
-        assert "vid123" in packet.review_url
-        assert packet.review_url.startswith("https://studio.youtube.com")
+        parsed_review_url = urlparse(packet.review_url)
+        assert parsed_review_url.scheme == "https"
+        assert parsed_review_url.netloc == "studio.youtube.com"
+        assert parsed_review_url.path == "/video/vid123/edit"
 
     def test_approve_sets_gate(self):
         packet = build_publishing_packet("vid123")
