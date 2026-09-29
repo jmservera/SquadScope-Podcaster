@@ -1010,6 +1010,46 @@ class TestPublishEpisode:
         assert result.status == "failed"
         assert "Missing" in result.error
 
+    def test_publish_episode_rejects_media_outside_approved_roots(
+        self, tmp_path, spotify_env, monkeypatch
+    ):
+        cwd = tmp_path / "cwd"
+        temp_root = tmp_path / "tmp"
+        outside = tmp_path / "outside"
+        cwd.mkdir()
+        temp_root.mkdir()
+        outside.mkdir()
+        monkeypatch.chdir(cwd)
+        monkeypatch.setattr("podcaster.publish.tempfile.gettempdir", lambda: str(temp_root))
+        media = outside / "episode.mp3"
+        media.write_bytes(b"mp3")
+
+        result = publish_episode(media, "Test", "<p>desc</p>")
+
+        assert result.status == "failed"
+        assert "approved media root" in result.error
+
+    def test_upload_video_rejects_media_outside_approved_roots(
+        self, tmp_path, spotify_env, monkeypatch
+    ):
+        import podcaster.publish as pub
+
+        cwd = tmp_path / "cwd"
+        temp_root = tmp_path / "tmp"
+        outside = tmp_path / "outside"
+        cwd.mkdir()
+        temp_root.mkdir()
+        outside.mkdir()
+        monkeypatch.chdir(cwd)
+        monkeypatch.setattr(pub.tempfile, "gettempdir", lambda: str(temp_root))
+        video = outside / "episode.mp4"
+        video.write_bytes(b"video")
+
+        result = pub.upload_video_to_episode(video, 1, title="Title")
+
+        assert result.status == "failed"
+        assert "approved media root" in result.error
+
     def test_dry_run_mode(self, mp3_file, wav_file, spotify_env, monkeypatch):
         monkeypatch.setenv("SPOTIFY_PUBLISH_DRY_RUN", "true")
         result = publish_episode(mp3_file, "Test Episode", "<p>desc</p>", wav_path=wav_file)

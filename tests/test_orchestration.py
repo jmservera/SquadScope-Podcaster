@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Callable
 
+import pytest
+
 from podcaster.costs import build_cost_ledger
 from podcaster.generation import manifest_bytes
 from podcaster.orchestration import (
@@ -360,3 +362,23 @@ def test_prepare_audio_files_remote_storage_falls_back_to_video_mp4(
 
     assert cleanup_dir == tmp_path / "podcaster-publish-work" / job_id
     assert mp3_path.with_suffix(".mp4").read_bytes() == b"video-mp4-bytes"
+
+
+def test_prepare_audio_files_rejects_unsafe_local_artifact_path(tmp_path: Path) -> None:
+    storage = LocalStorageBackend(tmp_path / "artifacts", "https://example.invalid/artifacts")
+    manifest = _synthesized_manifest()
+    manifest["generation"]["synthesis_runner"]["audio"]["artifacts"]["mp3"]["path"] = (
+        "../escape.mp3"
+    )
+
+    with pytest.raises(ValueError, match="traversal"):
+        _prepare_audio_files(storage, manifest, _job_id())
+
+
+def test_prepare_audio_files_rejects_unsafe_remote_job_id(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    manifest = _synthesized_manifest()
+    storage = _RemoteStorageStub({"jobs/ok/audio/ok.mp3": b"mp3"})
+
+    with pytest.raises(ValueError, match="traversal"):
+        _prepare_audio_files(storage, manifest, "../escape")

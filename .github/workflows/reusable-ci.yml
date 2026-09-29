@@ -129,7 +129,7 @@ jobs:
     # via `pip install --constraint`. This job fails if the committed lockfile
     # is stale relative to pyproject.toml — regenerate with:
     #   uv pip compile pyproject.toml --extra dev --extra video \
-    #     --python-version 3.11 --no-header -o requirements.lock
+    #     --python-version 3.11 --no-header --no-cache -o requirements.lock
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -150,10 +150,10 @@ jobs:
       - name: Verify requirements.lock is up to date
         run: |
           uv pip compile pyproject.toml --extra dev --extra video \
-            --python-version 3.11 --no-header -o requirements.lock.check
+            --python-version 3.11 --no-header --no-cache -o requirements.lock.check
           if ! diff -u requirements.lock requirements.lock.check; then
             echo "::error::requirements.lock is out of date. Regenerate with:"
-            echo "  uv pip compile pyproject.toml --extra dev --extra video --python-version 3.11 --no-header -o requirements.lock"
+            echo "  uv pip compile pyproject.toml --extra dev --extra video --python-version 3.11 --no-header --no-cache -o requirements.lock"
             exit 1
           fi
 
