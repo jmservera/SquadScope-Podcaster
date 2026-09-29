@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime
 from typing import Any, Callable
@@ -193,7 +194,7 @@ class TestCredentialsApi:
         assert handler.response_code == 501
         assert "UI_AUTH_SECRET" in handler.get_response_json()["error"]
 
-    def test_credentials_reject_invalid_payload(self):
+    def test_credentials_reject_invalid_payload(self, caplog):
         storage = MemoryStorageBackend()
         body = json.dumps({"type": "bad", "label": "", "values": []}).encode()
         with (
@@ -208,10 +209,14 @@ class TestCredentialsApi:
                 clear=True,
             ),
         ):
-            handler = make_handler(
-                "POST", "/api/credentials", body=body, headers=self._headers(body)
-            )
+            with caplog.at_level(logging.WARNING, logger="podcaster.api"):
+                handler = make_handler(
+                    "POST", "/api/credentials", body=body, headers=self._headers(body)
+                )
         assert handler.response_code == 400
-        assert (
-            handler.get_response_json()["error"] == "type must be one of: spotify, youtube, api_key"
+        assert handler.get_response_json()["error"] == "invalid credential request"
+        assert any(
+            "type must be one of: spotify, youtube, api_key" in record.exc_text
+            for record in caplog.records
+            if record.exc_text
         )
