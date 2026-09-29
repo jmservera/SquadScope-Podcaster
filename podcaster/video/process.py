@@ -192,16 +192,19 @@ class _BoundedPipeCapture:
         self._pipes = pipes
         self._buffers = [bytearray() for _ in pipes]
         self._lock = threading.Lock()
-        self._threads = [
-            threading.Thread(
+        self._threads: list[threading.Thread] = []
+        self._thread_pipes: list[tuple[threading.Thread, Any]] = []
+        for index, pipe in enumerate(pipes):
+            if pipe is None:
+                continue
+            thread = threading.Thread(
                 target=self._drain,
                 args=(index, pipe),
                 name=f"owned-process-pipe-{index}",
                 daemon=True,
             )
-            for index, pipe in enumerate(pipes)
-            if pipe is not None
-        ]
+            self._threads.append(thread)
+            self._thread_pipes.append((thread, pipe))
 
     def start(self) -> None:
         for thread in self._threads:
@@ -222,11 +225,11 @@ class _BoundedPipeCapture:
             return
 
     def close_pipes(self) -> None:
-        for pipe in self._pipes:
-            if pipe is None:
+        for thread, pipe in self._thread_pipes:
+            if thread.is_alive():
                 continue
             try:
-                os.close(pipe.fileno())
+                pipe.close()
             except (OSError, ValueError):
                 pass
 
@@ -559,8 +562,8 @@ def run_owned_process(
         if subreaper_enabled:
             _reap_adopted_processes(process.pid, descendants, reap_grace_seconds)
         _close_tracked_processes(descendants)
-        capture.close_pipes()
         capture.join(reap_grace_seconds)
+        capture.close_pipes()
         _remove_outputs(output_paths)
         raise OwnedProcessTimeout(
             command,
@@ -575,8 +578,8 @@ def run_owned_process(
         ) from exc
     finally:
         if process.poll() is not None:
-            capture.close_pipes()
             capture.join(DEFAULT_REAP_GRACE_SECONDS)
+            capture.close_pipes()
 
     completed = subprocess.CompletedProcess(
         args=list(command),
