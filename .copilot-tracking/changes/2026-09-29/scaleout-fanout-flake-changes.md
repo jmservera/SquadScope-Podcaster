@@ -13,7 +13,7 @@
 * Status: Partial until PR is opened and CI/review state is checked; source implementation and validation are complete.
 * Declared invocation scope: full plan.
 * Completed scope markers: P01, P01-T01, P01-T02, P02-T01, P02-T02.
-* Remaining active-plan markers: P02-T03 PR delivery/review check.
+* Remaining active-plan markers: P02-T03 PR delivery/review check; review round 1 fixes implemented and validated locally.
 * Status basis: code fix and required local validation are complete; delivery/review remains.
 
 ## Completed Work
@@ -53,6 +53,7 @@
 | Baseline targeted loop | pre-fix local current state | Failed 20/20 | `/tmp/scaleout-baseline-loop.log` |
 | Targeted test | post-fix single run | Passed | `python3 -m pytest tests/integration/test_scaleout_fanout.py::test_scaleout_fanout_end_to_end -q` |
 | Targeted 20-run loop | post-fix consecutive runs | Passed 20/20 | `/tmp/scaleout-fixed-loop.log` |
+| Targeted 20-run loop after review fixes | post-fix consecutive runs | Passed 20/20 | `/tmp/scaleout-fixed-loop-r2.log` |
 | Full pytest | repository tests | Passed | 3654 passed, 4 skipped, 2 deselected |
 | Ruff lint | `podcaster tests` | Passed | `ruff check podcaster tests` |
 | Ruff format | `podcaster tests` | Passed | `ruff format --check podcaster tests` |
@@ -70,7 +71,7 @@
 
 ## Remaining Work
 
-* P02-T03: commit, push, open PR, inspect CI/Copilot review state.
+* P02-T03: push review-round fixes, inspect CI/Copilot review state, resolve addressed threads.
 
 ## Follow-Up Items
 

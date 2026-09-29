@@ -19,6 +19,7 @@ is never really published (dry-run distribution / mocked compose).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -65,7 +66,8 @@ SCRATCH = "video-scratch"
 ARTIFACTS = "podcaster-artifacts"
 CLIP_QUEUE = "video-clip-jobs"
 VIDEO_QUEUE = "video-jobs"
-FANOUT_IMAGE = f"podcaster-synthesis:fanout-{Path.cwd().name.lower()}"
+_WORKTREE_TAG = hashlib.sha256(str(Path.cwd().resolve()).encode("utf-8")).hexdigest()[:16]
+FANOUT_IMAGE = f"podcaster-synthesis:fanout-{_WORKTREE_TAG}"
 
 # Host-side connection string (127.0.0.1; compose internal one points at azurite).
 HOST_CONN = (
@@ -121,9 +123,9 @@ def azurite_stack():
     try:
         _compose("down", "-v", check=False, timeout=120)
         _compose("up", "-d", "azurite", timeout=180)
-        _compose("build", "recorder", timeout=600)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         pytest.skip(f"docker compose unavailable: {exc}")
+    _compose("build", "recorder", timeout=600)
     # Wait for azurite healthy.
     import time
 
