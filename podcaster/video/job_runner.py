@@ -87,6 +87,7 @@ from podcaster.video.distribution import (
 from podcaster.video.intermediates import create_intermediate_store, run_storage_operation
 from podcaster.video.ownership import BoundaryPermit, OwnershipError, VideoOwnershipGuard
 from podcaster.video.perf import PipelineTimings
+from podcaster.video.process import MediaValidationError, ensure_ffprobe_available
 from podcaster.video.sync_plan import (
     annotate_removed_repos,
     extract_repo_urls,
@@ -2354,6 +2355,12 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
     from podcaster.queue import create_video_queue_backend
+
+    try:
+        ensure_ffprobe_available(context="video job terminal media validation")
+    except MediaValidationError as exc:
+        logger.error("video runtime prerequisite failed: %s", exc)
+        return 2
 
     queue = create_video_queue_backend()
     if queue is None:

@@ -9,6 +9,7 @@ import math
 import multiprocessing
 import os
 import pickle
+import shutil
 import signal
 import subprocess
 import sys
@@ -91,6 +92,30 @@ class ProbeEvidence:
             "format_name": self.format_name,
             "duration_seconds": self.duration_seconds,
         }
+
+
+def ensure_ffprobe_available(*, context: str = "terminal media validation") -> None:
+    """Fail fast when the runtime cannot execute the hard media probe."""
+
+    binary = shutil.which("ffprobe")
+    if binary is None:
+        raise MediaValidationError(
+            MediaValidationReason.PROBE_FAILED,
+            f"{context} requires ffprobe; install the ffmpeg package in this runtime image",
+        )
+    try:
+        subprocess.run(
+            [binary, "-version"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise MediaValidationError(
+            MediaValidationReason.PROBE_FAILED,
+            f"{context} requires an executable ffprobe binary at {binary}",
+        ) from exc
 
 
 @dataclass(frozen=True)

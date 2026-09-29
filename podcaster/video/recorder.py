@@ -68,8 +68,10 @@ from podcaster.video.clipset import (
 from podcaster.video.intermediates import StorageOperationTimeout, run_storage_operation
 from podcaster.video.process import (
     MediaEvidence,
+    MediaValidationError,
     OwnedCallableTimeout,
     collect_media_evidence,
+    ensure_ffprobe_available,
     run_owned_callable,
     run_owned_process,
 )
@@ -1442,6 +1444,11 @@ def _run_record_one_child() -> int:
 def main(argv: list[str] | None = None) -> int:
     """ACA Job entrypoint: drain the ``video-clip-jobs`` queue, then exit."""
     argv = list(sys.argv[1:] if argv is None else argv)
+    try:
+        ensure_ffprobe_available(context="video recorder media validation")
+    except MediaValidationError as exc:
+        logger.error("recorder runtime prerequisite failed: %s", exc)
+        return 2
     if argv == ["--record-one"]:
         return _run_record_one_child()
     logging.basicConfig(level=logging.INFO)

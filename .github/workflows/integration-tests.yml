@@ -26,8 +26,15 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
+      - name: Install ffmpeg
+        # The scale-out fanout integration exercises the same hard ffprobe
+        # terminal-media validation as the production video/recorder image.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffprobe -version | head -n 1
       - name: Install Python deps
-        run: pip install -e ".[dev]" || pip install -e . && pip install pytest
+        run: pip install -e ".[dev,video]"
       - name: Build UI
         run: cd ui && npm ci --ignore-scripts && npm run build
       - name: Run integration tests
