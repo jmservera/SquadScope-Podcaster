@@ -379,6 +379,77 @@ class TestRequestValidation:
         assert "article_url is required" in resp["errors"]
 
 
+class TestAdminValidationSanitization:
+    @pytest.fixture(autouse=True)
+    def _set_api_key(self):
+        with patch.dict(os.environ, {"PODCASTER_API_KEY": "test-key-123"}):
+            yield
+
+    def _headers(self, body: bytes) -> dict[str, str]:
+        return {"x-podcaster-api-key": "test-key-123", "Content-Length": str(len(body))}
+
+    @patch("podcaster.api.CredentialStore")
+    def test_credential_create_sanitizes_validation_error(self, mock_store, caplog):
+        mock_store.return_value.create_credential.side_effect = ValueError(
+            "secret credential validation details"
+        )
+        body = json.dumps({"name": "spotify"}).encode()
+
+        with caplog.at_level(logging.WARNING, logger="podcaster.api"):
+            handler = make_handler(
+                "POST", "/api/credentials", body=body, headers=self._headers(body)
+            )
+
+        assert handler.response_code == HTTPStatus.BAD_REQUEST
+        assert handler.get_response_json() == {"error": "invalid credential request"}
+        assert "secret credential validation details" not in handler._wfile.getvalue().decode()
+        assert any(
+            "secret credential validation details" in record.exc_text
+            for record in caplog.records
+            if record.exc_text
+        )
+
+    @patch("podcaster.api.CredentialStore")
+    def test_credential_update_sanitizes_validation_error(self, mock_store, caplog):
+        mock_store.return_value.update_credential.side_effect = ValueError(
+            "secret credential update details"
+        )
+        body = json.dumps({"value": "redacted"}).encode()
+
+        with caplog.at_level(logging.WARNING, logger="podcaster.api"):
+            handler = make_handler(
+                "PUT", "/api/credentials/spotify", body=body, headers=self._headers(body)
+            )
+
+        assert handler.response_code == HTTPStatus.BAD_REQUEST
+        assert handler.get_response_json() == {"error": "invalid credential request"}
+        assert "secret credential update details" not in handler._wfile.getvalue().decode()
+        assert any(
+            "secret credential update details" in record.exc_text
+            for record in caplog.records
+            if record.exc_text
+        )
+
+    @patch("podcaster.api.PodcastConfigStore")
+    def test_podcast_config_save_sanitizes_validation_error(self, mock_store, caplog):
+        mock_store.return_value.save.side_effect = ValueError("secret config validation details")
+        body = json.dumps({"hosts": []}).encode()
+
+        with caplog.at_level(logging.WARNING, logger="podcaster.api"):
+            handler = make_handler(
+                "POST", "/api/podcast-config", body=body, headers=self._headers(body)
+            )
+
+        assert handler.response_code == HTTPStatus.BAD_REQUEST
+        assert handler.get_response_json() == {"error": "invalid podcast config request"}
+        assert "secret config validation details" not in handler._wfile.getvalue().decode()
+        assert any(
+            "secret config validation details" in record.exc_text
+            for record in caplog.records
+            if record.exc_text
+        )
+
+
 class TestSuccessfulGeneration:
     @pytest.fixture(autouse=True)
     def _set_api_key(self):
