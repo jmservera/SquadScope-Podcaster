@@ -43,7 +43,9 @@
 - `ruff format --check podcaster tests`: passed.
 - Synthesis image `docker build -f Containerfile -t podcaster-synthesis:pr684-ffprobe .`: passed.
 - `docker run --rm --entrypoint ffprobe podcaster-synthesis:pr684-ffprobe -version`: `ffprobe version 7.1.5-0+deb13u1`.
-- `docker image inspect podcaster-synthesis:pr684-ffprobe`: `sha256:0d648846dff4290f1194ea740ec28bcce7fcf2a71e0c9215ef0f6aec6a12db0d`.
+- `docker image inspect podcaster-synthesis:pr684-ffprobe`: `sha256:fceb1c6476b719a566ce01e93cfdfd868b178111acc779337b3989218ee08c6d`.
+- API image `docker build -f Containerfile.api -t podcaster-api:pr684-lock .`: passed; smoke import reported FastAPI `0.142.0`, image id `sha256:ce05f9a0e75853bbd6a03f5e68eb41742563edc2701626428f58404df49a18f1`.
+- Lockfile check command `uv pip compile pyproject.toml --extra dev --extra video --python-version 3.11 --no-header --no-cache -o <temp>` diffed cleanly against `requirements.lock` after refreshing the lock.
 - Focused `zizmor .github/workflows/integration-tests.yml`: no findings.
 - Prior CI after the RPI evidence commit failed one deterministic compose fixture assertion and the separately tracked `tests/integration/test_scaleout_fanout.py` path. The compose fixture was fixed here; scale-out fanout remains tracked separately under jmservera/SquadScope-Podcaster#723 if it recurs.
 
