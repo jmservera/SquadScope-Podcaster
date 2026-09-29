@@ -9,6 +9,7 @@ RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 REUSABLE_WORKFLOW = ROOT / ".github/workflows/reusable-deploy-azure.yml"
 BICEP = ROOT / "infra/main.bicep"
 ALERTS_BICEP = ROOT / "infra/modules/distribution-alerts.bicep"
+ACA_DISTRIBUTION_BICEP = ROOT / "infra/modules/aca-distribution.bicep"
 
 
 def _workflow_text() -> str:
@@ -86,6 +87,41 @@ def test_distribution_alert_contract_has_routes_windows_and_missing_data() -> No
     assert "let activeDepth = toscalar" in alerts
     assert "let stateRows = toscalar" in alerts
     assert "where activeDepth > 0 and stateRows == 0" in alerts
+
+
+def test_distribution_worker_infra_is_wired_but_provider_mutation_defaults_off() -> None:
+    main = BICEP.read_text(encoding="utf-8")
+    worker = ACA_DISTRIBUTION_BICEP.read_text(encoding="utf-8")
+    scheduler = (ROOT / "infra/modules/aca-distribution-scheduler.bicep").read_text(
+        encoding="utf-8"
+    )
+
+    assert "param distributionOutboxEnabled string = 'false'" in main
+    assert "param distributionWorkerProviderMutationEnabled string = 'false'" in main
+    assert "module acaDistribution 'modules/aca-distribution.bicep'" in main
+    assert "module acaDistributionScheduler 'modules/aca-distribution-scheduler.bicep'" in main
+    assert "distributionJobName: distributionJobName" in main
+    assert "providerMutationEnabled: distributionWorkerProviderMutationEnabled" in main
+    assert "schedulerJobName: distributionSchedulerJobName" in main
+    assert "output distributionJobName string = acaDistribution.outputs.jobName" in main
+    assert (
+        "output distributionSchedulerJobName string = acaDistributionScheduler.outputs.jobName"
+        in main
+    )
+
+    assert "triggerType: 'Event'" in worker
+    assert "queueName: distributionQueueName" in worker
+    assert "'podcaster.distribution_worker'" in worker
+    assert "param replicaTimeoutSeconds int = 900" in worker
+    assert "param distributionVisibilityTimeoutSeconds int = 960" in worker
+    assert "'--visibility-timeout'" in worker
+    assert "string(distributionVisibilityTimeoutSeconds)" in worker
+    assert "DISTRIBUTION_WORKER_PROVIDER_MUTATION_ENABLED" in worker
+    assert "param providerMutationEnabled string = 'false'" in worker
+    assert "PODCAST_AUTO_PUBLISH" not in worker
+
+    assert "triggerType: 'Schedule'" in scheduler
+    assert "'podcaster.distribution_scheduler'" in scheduler
 
 
 def test_deploy_workflow_stays_manual_only_for_pr_validation() -> None:
