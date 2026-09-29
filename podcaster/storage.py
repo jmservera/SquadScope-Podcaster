@@ -201,6 +201,7 @@ class LocalStorageBackend:
     def upload_file(self, path: str, source: Path, content_type: str) -> StoredArtifact:
         import os
         import shutil
+        import tempfile
 
         safe_path = _safe_blob_path(path)
         root_path = os.path.realpath(os.fspath(self.root))
@@ -212,9 +213,25 @@ class LocalStorageBackend:
             # Write to a sibling .tmp file then atomically promote it into place so a
             # crash mid-copy never leaves a partial blob that resume would mistake
             # for a complete checkpoint (issue #410 upload safety).
-            tmp_target = target.with_name(target.name + ".tmp")
-            shutil.copyfile(source, tmp_target)
-            os.replace(tmp_target, target)
+            tmp_target: Path | None = None
+            with tempfile.NamedTemporaryFile(
+                prefix=f".{target.name}.",
+                suffix=".tmp",
+                dir=target.parent,
+                delete=False,
+            ) as tmp_file:
+                tmp_target_path = os.path.realpath(tmp_file.name)
+            try:
+                if tmp_target_path.startswith(root_prefix):
+                    tmp_target = Path(tmp_target_path)
+                    shutil.copyfile(source, tmp_target)
+                    os.replace(tmp_target, target)
+                else:
+                    raise ValueError("artifact path escapes storage root")
+            except Exception:
+                if tmp_target is not None:
+                    tmp_target.unlink(missing_ok=True)
+                raise
         else:
             raise ValueError("artifact path escapes storage root")
         return StoredArtifact(
