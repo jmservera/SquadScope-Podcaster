@@ -104,6 +104,10 @@ class TestMatchSectionHeader:
         assert split_speaker(lines[-1], None) is None
         assert time.perf_counter() - started < 0.25
 
+    def test_fallback_speaker_label_requires_ascii_first_letter(self):
+        assert split_speaker("Host: hello", None) == ("Host", "hello")
+        assert split_speaker("é: hello", None) is None
+
 
 class TestParseScriptSections:
     def test_parses_two_sections(self):

@@ -237,7 +237,12 @@ def _split_speaker(line: str, host_labels: tuple[str, str] | None) -> tuple[str,
     raw_label, separator, raw_text = line.partition(":")
     if not separator or not raw_text:
         return None
-    if not raw_label or len(raw_label) > 31 or not raw_label[0].isalpha():
+    if (
+        not raw_label
+        or len(raw_label) > 31
+        or not raw_label[0].isascii()
+        or not raw_label[0].isalpha()
+    ):
         return None
     if any(ch not in _SPEAKER_LABEL_EXTRA_CHARS for ch in raw_label[1:]):
         return None

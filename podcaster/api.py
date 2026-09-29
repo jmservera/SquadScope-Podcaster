@@ -557,8 +557,9 @@ class GenerateHandler(BaseHTTPRequestHandler):
             outcome = record_review_skip_outcome(
                 storage, job_id, outcome, reviewed_at, audio_publish_skipped
             )
-        except ValueError as exc:
-            _json_response(self, HTTPStatus.NOT_FOUND, {"error": str(exc)})
+        except ValueError:
+            logger.warning("review decision was rejected", exc_info=True)
+            _json_response(self, HTTPStatus.NOT_FOUND, {"error": "review request not found"})
             return
         except Exception:
             logger.exception("unhandled error in review orchestration")

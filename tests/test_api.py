@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 from http import HTTPStatus
 from typing import Any
@@ -543,3 +544,19 @@ class TestReviewEndpoint:
         assert response["job_id"] == "podcast-1"
         assert response["publish_status"] == "published"
         assert response["manifest"]["status"] == "published"
+
+    @patch("podcaster.api.process_review_decision", side_effect=ValueError("secret missing job"))
+    def test_review_endpoint_sanitizes_missing_job_error(self, _mock_process, caplog):
+        body = json.dumps(
+            {"job_id": "podcast-1", "reviewer": "leela", "decision": "approved"}
+        ).encode()
+
+        with caplog.at_level(logging.WARNING, logger="podcaster.api"):
+            handler = make_handler("POST", "/api/review", body=body, headers=self._headers(body))
+
+        assert handler.response_code == HTTPStatus.NOT_FOUND
+        assert handler.get_response_json() == {"error": "review request not found"}
+        assert "secret missing job" not in handler._wfile.getvalue().decode()
+        assert any(
+            "secret missing job" in record.exc_text for record in caplog.records if record.exc_text
+        )
