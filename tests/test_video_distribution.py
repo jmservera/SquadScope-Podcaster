@@ -2054,6 +2054,7 @@ class TestSpotifyEpisodeUpload:
             content_type="video/mp4",
             season_number=None,
             episode_number=None,
+            **_kwargs,
         ):
             return PublishResult(
                 anchor_episode_id=999,
@@ -2083,6 +2084,7 @@ class TestSpotifyEpisodeUpload:
             content_type="video/mp4",
             season_number=None,
             episode_number=None,
+            **kwargs,
         ):
             captured["path"] = path
             captured["anchor_id"] = anchor_id
@@ -2091,6 +2093,7 @@ class TestSpotifyEpisodeUpload:
             captured["description"] = description
             captured["season_number"] = season_number
             captured["episode_number"] = episode_number
+            captured["before_mutation"] = kwargs.get("before_mutation")
             from podcaster.publish import PublishResult
 
             return PublishResult(anchor_episode_id=12345, status="draft")
@@ -2131,6 +2134,7 @@ class TestSpotifyEpisodeUpload:
         assert captured["title"] == "My Show"
         assert captured["season_number"] == 2026
         assert captured["episode_number"] == 24
+        assert "before_mutation" in captured
         assert promote_calls["video_anchor_id"] == 12345
         assert promote_calls["audio_anchor_id"] == 99
         assert promote_calls["spotify_video_publish_mode"] == "live"
@@ -2145,6 +2149,7 @@ class TestSpotifyEpisodeUpload:
             content_type="video/mp4",
             season_number=None,
             episode_number=None,
+            **_kwargs,
         ):
             from podcaster.publish import PublishResult
 

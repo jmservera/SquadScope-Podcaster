@@ -212,29 +212,35 @@ episode (`anchor_id`) is always excluded from the match.
 > invariant holds against listing schemas this code understands; anything it
 > cannot read fails the publish closed instead of guessing.
 
-The listing endpoint **requires `userId` as a query parameter**:
+The listing readback uses Spotify's persisted GraphQL episode-list operation:
 
 ```text
-GET /v3/stations/{stationId}/episodes?userId={userId}&isMumsCompatible=true
+POST https://creators-graph.spotify.com/v2/graph-pq
+operationName=WebGetIndexedEpisodeList
+variables.showUri=spotify:show:{showId}
+variables.currentPage=1..N
+variables.pageSize=50
+variables.filter=DRAFT_EPISODES
 ```
 
-Omitting it returns `HTTP 400 {"property":"query.userId","message":"is required"}`.
-`userId` comes from `_resolve_legacy_ids` together with `stationId`.
+`userId` and `stationId` still come from `_resolve_legacy_ids` for legacy
+mutation calls and diagnostics, but they are not substituted for the GraphQL
+`showUri`.
 
 A lookup that fails (HTTP error, transport error, malformed JSON, missing
 identity) raises `SpotifyDraftReconcileError` and fails the publish. So does a
 listing whose *schema* this code cannot read — an unknown container, an error
 body, a non-array episode field, a renamed title/id/state field, or a non-object
 entry. `None` ("no draft exists") is only sound when every entry of a recognised
-container was understood **and** the listing carried no pagination hint (see
-[Pagination](#pagination-unimplemented-unverified) — by default a hint only
-warns, so `None` then means "no match on the page that was read"); a recognised
+container was understood **and** every declared GraphQL page was read; a recognised
 **empty** array is still a legitimate no-match. An entry whose title is present
 but null is understood as an untitled draft (no match). Entries whose id is the
 excluded audio anchor are skipped *before* any state or title classification, so
 a scheduled or processing audio episode can never fail the video lookup.
-Reconciliation is mandatory. `PODCASTER_SPOTIFY_RECONCILE=0` is intentionally
-ignored and cannot restore blind create.
+Video reconciliation is mandatory by default. Setting
+`PODCASTER_SPOTIFY_RECONCILE=0` disables the listing shortcut but still permits
+only the separately authorized durable-evidence override; it does not silently
+restore blind repeat creates.
 
 Episode ids are read from `episodeId`, `id` and `anchorId`. Every key is
 inspected — a malformed `episodeId` never hides a usable `id` — but the entry
@@ -367,19 +373,21 @@ titled before the upload starts and reconcile finds it on the next run.
 #### Pagination (unimplemented, unverified)
 
 The listing is fetched with a single unpaginated GET. Whether the endpoint pages
-at all — and under which key — is unknown. When the response carries a truthy
-`hasMore`/`hasNextPage`/`nextPageToken`/`nextPage` key **and** no match was
-found, a warning is logged naming the key; the publish is *not* blocked, because
-hard-failing on a guessed key name could block every new video publish. Operators
-who have confirmed the contract for their show can opt into fail-closed
-behaviour with `PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING=1`.
+at all — and under which key — is unknown. The restored implementation uses the
+persisted `WebGetIndexedEpisodeList` GraphQL operation at
+`https://creators-graph.spotify.com/v2/graph-pq` with `showUri`,
+numbered `currentPage`, and `pageSize=50`; every declared page must validate
+before absence is trusted.
 
 #### Credential expiry
 
-A 401/403 anywhere in the video path raises `SpotifyCredentialExpiredError`,
-which `upload_video_to_episode` converts into an operator credential-expiry
+HTTP 401 in the video path raises `SpotifyCredentialExpiredError`, which
+`upload_video_to_episode` converts into an operator credential-expiry
 notification (`notify_credential_expiry`, #364) and a result carrying
 `details.credentials_expired` — the same handling the audio publish path has.
+HTTP 403 during publication readback is treated as unknown publication state
+because Spotify can use it for permission/readback denial rather than expired
+credentials.
 
 ### Upload API reference (detailed)
 

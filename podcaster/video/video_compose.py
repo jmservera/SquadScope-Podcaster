@@ -3126,8 +3126,6 @@ def _finalize_output(
             and commands[-1][0] == "ffprobe"
         ):
             commands.pop()
-        if before_final_promotion is not None:
-            before_final_promotion()
         if media_probe is not None:
             probe_kwargs: dict[str, Any] = {
                 "timeout_seconds": 30.0,
@@ -3136,6 +3134,8 @@ def _finalize_output(
                 "probe": media_probe,
             }
             collect_media_evidence(staged_output, **probe_kwargs)
+        if before_final_promotion is not None:
+            before_final_promotion()
         os.replace(staged_output, output_path)
     finally:
         try:

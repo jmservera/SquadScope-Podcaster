@@ -198,8 +198,8 @@ def test_small_upload_put_retry_reuses_same_session(small_video, config):
 @pytest.mark.parametrize(
     ("init_response", "code", "retryable"),
     [
-        (URLError("dns"), "youtube_upload_init_network_error", True),
-        ((503, {}, b""), "youtube_upload_init_http_503", True),
+        (URLError("dns"), "youtube_upload_init_ambiguous", False),
+        ((503, {}, b""), "youtube_upload_init_ambiguous_http_503", False),
         ((200, {}, b""), "youtube_upload_init_missing_session", False),
     ],
     ids=["network-error", "http-503", "missing-location"],

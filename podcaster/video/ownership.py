@@ -118,15 +118,11 @@ class VideoOwnershipGuard:
             document = _load(raw)
             current = document.get("claim")
             if isinstance(current, Mapping):
-                expiry_values = [
-                    value
-                    for value in (
-                        _parse_time(current.get("visibility_expires_at")),
-                        _parse_time(current.get("lease_expires_at")),
-                    )
-                    if value is not None
-                ]
-                current_expiry = min(expiry_values) if len(expiry_values) == 2 else None
+                visibility_expiry = _parse_time(current.get("visibility_expires_at"))
+                lease_expiry = _parse_time(current.get("lease_expires_at"))
+                if visibility_expiry is None or lease_expiry is None:
+                    raise OwnershipError("ownership expiry is malformed")
+                current_expiry = min(visibility_expiry, lease_expiry)
                 if current_expiry is not None and current_expiry > claimed_at + _EXPIRY_RESERVE:
                     if current.get("owner") != owner or current.get("execution_id") != execution_id:
                         raise OwnershipError("video job already has an active downstream owner")

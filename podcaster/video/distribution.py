@@ -868,27 +868,19 @@ def upload_to_youtube(
     except ProviderMutationAdmissionError:
         raise
     except _TRANSIENT_TRANSPORT_ERRORS as exc:
-        if not raise_on_failure:
-            raise YouTubeDeliveryError(
-                "YouTube resumable upload initiation is ambiguous after network failure",
-                code="youtube_upload_init_ambiguous",
-                stage="upload_init",
-                retryable=False,
-                mutation_ambiguous=True,
-            ) from exc
-        if raise_on_failure:
-            raise YouTubeDeliveryError(
-                "YouTube resumable upload init failed: network error",
-                code="youtube_upload_init_network_error",
-                stage="upload_init",
-                retryable=True,
-            ) from exc
+        raise YouTubeDeliveryError(
+            "YouTube resumable upload initiation is ambiguous after network failure",
+            code="youtube_upload_init_ambiguous",
+            stage="upload_init",
+            retryable=False,
+            mutation_ambiguous=True,
+        ) from exc
         logger.error("YouTube resumable upload init failed: network error")
         return None, None
 
     if status not in (200, 308):
         logger.error("YouTube resumable upload init failed: HTTP %s", status)
-        if not raise_on_failure and _is_transient_http_status(status):
+        if _is_transient_http_status(status):
             raise YouTubeDeliveryError(
                 f"YouTube resumable upload initiation is ambiguous: HTTP {status}",
                 code=f"youtube_upload_init_ambiguous_http_{status}",
@@ -1349,6 +1341,9 @@ def upload_to_spotify_episode(
     return_episode_id: bool = False,
     job_id: str | None = None,
     publish_run_id: str | None = None,
+    before_mutation: Callable[[], object] | None = None,
+    publication_storage: Any | None = None,
+    publication_identity_context: Any | None = None,
 ) -> bool | tuple[bool, int | None, str | None] | tuple[bool, int | None, str | None, str]:
     """Publish the MP4 as a NEW separate Spotify episode draft (#340).
 
@@ -1376,6 +1371,9 @@ def upload_to_spotify_episode(
             content_type="video/mp4",
             season_number=season_number,
             episode_number=episode_number,
+            before_mutation=before_mutation,
+            publication_storage=publication_storage,
+            publication_identity_context=publication_identity_context,
         )
         if result.status == "failed":
             logger.error("Spotify video upload failed: %s", result.error)
@@ -1394,6 +1392,7 @@ def upload_to_spotify_episode(
                     ),
                     job_id=job_id,
                     run_id=publish_run_id,
+                    before_mutation=before_mutation,
                 )
                 promote_terminal_state = promote_result.terminal_state
                 logger.info(
@@ -1418,6 +1417,8 @@ def upload_to_spotify_episode(
         if return_episode_id:
             return True, result.anchor_episode_id, promote_terminal_state
         return True
+    except (OwnershipError, ProviderMutationAdmissionError):
+        raise
     except Exception as exc:
         logger.error("Spotify video upload error: %s", exc)
         return (False, None, None, PUBLICATION_UNKNOWN) if return_episode_id else False
@@ -2211,8 +2212,6 @@ def distribute_video(
                 provider_id_field="episode_id",
             )
         else:
-            if before_mutation is not None:
-                before_mutation("spotify", "episode_upload")
 
             def _spotify_upload_call():
                 return upload_to_spotify_episode(
@@ -2226,6 +2225,13 @@ def distribute_video(
                     return_episode_id=True,
                     job_id=job_id,
                     publish_run_id=publish_run_id,
+                    before_mutation=lambda: (
+                        before_mutation("spotify", "episode_upload")
+                        if before_mutation is not None
+                        else None
+                    ),
+                    publication_storage=publication_storage,
+                    publication_identity_context=publication_identity_context,
                 )
 
             try:

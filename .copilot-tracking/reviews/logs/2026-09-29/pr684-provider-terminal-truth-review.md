@@ -20,6 +20,7 @@
 - Latest additional conflict in `podcaster/publish.py` preserved main's bounded local Spotify upload path guards and #684's terminal-truth/reconciliation flow.
 - CI exposed that the readable-metadata corruption fixture in `tests/test_video_compose.py` was not deterministic under the hosted runner ffmpeg; the fixture now truncates inside `mdat` while preserving faststart metadata, matching the existing decode-failure contract without weakening validation.
 - Copilot review round 1 was addressed by restoring current-main Spotify draft GraphQL pagination and publish tests, preserving staged media probing before final promotion, adding dispatch receipt CAS/type guards, preserving playlist ambiguous outcomes and budget admission, restoring a 300-second bounded Spotify upload window, removing deployed/triggered #681 distribution-worker infrastructure and worker module/tests from this PR, and enforcing consecutive alert evaluation periods for 10/15-minute windows.
+- Copilot review round 2 was addressed by threading Spotify publish storage/identity/mutation callbacks, classifying YouTube upload-init transport/5xx outcomes as retry-blocked ambiguity even when required, failing ownership takeover closed on malformed expiry, validating dispatch ISO weeks with the calendar, paging dispatch receipt scans, moving final promotion fencing to immediately before replace, and refreshing Spotify operator docs.
 - Production behavior changes intentionally present in #684:
   - Provider ambiguity and accepted-but-unreadable provider responses fail closed as `publication_unknown`/retry-blocked instead of being treated as success.
   - Final media is validated before promotion so invalid output cannot replace an existing destination.
@@ -28,7 +29,7 @@
 
 ## Validation
 
-- `python3 -m pytest -q`: `4199 passed, 4 skipped, 2 deselected, 1 warning` after the Copilot review round fixes.
+- `python3 -m pytest -q`: `4199 passed, 4 skipped, 2 deselected, 1 warning` after the second Copilot review round fixes.
 - `ruff check podcaster tests`: passed.
 - `ruff format --check podcaster tests`: passed.
 - Prior CI after the RPI evidence commit failed one deterministic compose fixture assertion and the separately tracked `tests/integration/test_scaleout_fanout.py` path. The compose fixture was fixed here; scale-out fanout remains tracked separately under jmservera/SquadScope-Podcaster#723 if it recurs.

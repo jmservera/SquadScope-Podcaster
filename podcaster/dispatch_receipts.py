@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 
 from podcaster.storage import StorageBackend
@@ -13,7 +13,7 @@ from podcaster.storage import StorageBackend
 DISPATCH_SCHEMA_VERSION = "squadscope-podcaster-dispatch-receipt-v1"
 DISPATCH_PREFIX = "dispatch-receipts"
 _TOKEN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
-_WEEK = re.compile(r"^\d{4}-W\d{2}$")
+_WEEK = re.compile(r"^(\d{4})-W(\d{2})$")
 _DISPATCH_RESULTS = frozenset({"pending", "accepted", "blocked", "failed"})
 
 
@@ -48,6 +48,17 @@ def _token(name: str, value: str) -> str:
     if not _TOKEN.fullmatch(normalized):
         raise DispatchReceiptError(f"{name} is malformed")
     return normalized
+
+
+def _validate_week(week: str) -> str:
+    match = _WEEK.fullmatch(week)
+    if not match:
+        raise DispatchReceiptError("week is malformed")
+    try:
+        date.fromisocalendar(int(match.group(1)), int(match.group(2)), 1)
+    except ValueError as exc:
+        raise DispatchReceiptError("week is malformed") from exc
+    return week
 
 
 def dispatch_receipt_path(correlation_id: str) -> str:
@@ -92,8 +103,7 @@ class DispatchReceiptRepository:
         source: str,
     ) -> tuple[dict[str, Any], bool]:
         correlation_id = _token("dispatch_correlation_id", correlation_id)
-        if not _WEEK.fullmatch(week):
-            raise DispatchReceiptError("week is malformed")
+        week = _validate_week(week)
         if dispatch_result not in _DISPATCH_RESULTS:
             raise DispatchReceiptError("dispatch_result is unsupported")
         source = _token("dispatch_source", source)
@@ -187,34 +197,43 @@ class DispatchReceiptRepository:
     ) -> list[DispatchSignal]:
         current = self.now()
         signals: list[DispatchSignal] = []
-        for path in self.storage.list_blobs(f"{DISPATCH_PREFIX}/", limit=limit):
-            raw = self.storage.get_bytes(path)
-            if raw is None:
-                continue
-            document = json.loads(raw.decode("utf-8"))
-            if document.get("first_durable_arrival_at"):
-                continue
-            accepted = _parse(str(document.get("intent_received_at") or ""))
-            if accepted is None:
-                signals.append(
-                    DispatchSignal("dispatch_telemetry_missing", 1, "warning", "invalid_intent")
-                )
-                continue
-            age = current - accepted
-            if age >= critical_after:
-                severity = "critical"
-            elif age >= warning_after:
-                severity = "warning"
-            else:
-                severity = "info"
-            signals.append(
-                DispatchSignal(
-                    "dispatch_missing_azure_arrival_seconds",
-                    max(0.0, age.total_seconds()),
-                    severity,
-                    str(document.get("dispatch_result") or "pending")[:32],
-                )
+        continuation: str | None = None
+        while True:
+            paths, continuation = self.storage.list_blobs_page(
+                f"{DISPATCH_PREFIX}/",
+                limit=limit,
+                continuation=continuation,
             )
+            for path in paths:
+                raw = self.storage.get_bytes(path)
+                if raw is None:
+                    continue
+                document = json.loads(raw.decode("utf-8"))
+                if document.get("first_durable_arrival_at"):
+                    continue
+                accepted = _parse(str(document.get("intent_received_at") or ""))
+                if accepted is None:
+                    signals.append(
+                        DispatchSignal("dispatch_telemetry_missing", 1, "warning", "invalid_intent")
+                    )
+                    continue
+                age = current - accepted
+                if age >= critical_after:
+                    severity = "critical"
+                elif age >= warning_after:
+                    severity = "warning"
+                else:
+                    severity = "info"
+                signals.append(
+                    DispatchSignal(
+                        "dispatch_missing_azure_arrival_seconds",
+                        max(0.0, age.total_seconds()),
+                        severity,
+                        str(document.get("dispatch_result") or "pending")[:32],
+                    )
+                )
+            if continuation is None:
+                break
         return signals
 
 
