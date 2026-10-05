@@ -14,11 +14,11 @@ azure-core==1.41.0
     #   azure-identity
     #   azure-storage-blob
     #   azure-storage-queue
-azure-identity==1.25.3
+azure-identity==1.26.0
     # via squadscope-podcaster (pyproject.toml)
-azure-storage-blob==12.30.3
+azure-storage-blob==12.31.0
     # via squadscope-podcaster (pyproject.toml)
-azure-storage-queue==12.17.0
+azure-storage-queue==12.18.0
     # via squadscope-podcaster (pyproject.toml)
 babel==2.18.0
     # via sphinx
@@ -26,11 +26,11 @@ certifi==2026.7.22
     # via requests
 cffi==2.1.1
     # via cryptography
-charset-normalizer==3.5.1
+charset-normalizer==3.5.2
     # via requests
 click==8.5.0
     # via uvicorn
-cryptography==50.0.1
+cryptography==50.0.2
     # via
     #   squadscope-podcaster (pyproject.toml)
     #   azure-identity
@@ -42,7 +42,7 @@ docutils==0.22.4
     # via
     #   myst-parser
     #   sphinx
-fastapi==0.142.0
+fastapi==0.142.2
     # via squadscope-podcaster (pyproject.toml)
 greenlet==3.5.6
     # via playwright
@@ -79,7 +79,7 @@ markdown-it-py==4.2.0
     # via
     #   mdit-py-plugins
     #   myst-parser
-markupsafe==3.0.3
+markupsafe==3.0.4
     # via
     #   jinja2
     #   werkzeug
@@ -125,7 +125,7 @@ pyjwt==2.15.1
     #   msal
 pytest==8.4.2
     # via squadscope-podcaster (pyproject.toml)
-python-dotenv==1.2.3
+python-dotenv==1.2.4
     # via uvicorn
 pyyaml==6.0.3
     # via
@@ -193,11 +193,11 @@ urllib3==2.8.0
     # via requests
 uvicorn==0.54.0
     # via squadscope-podcaster (pyproject.toml)
-uvloop==0.22.1
+uvloop==0.23.0
     # via uvicorn
 watchfiles==1.3.0
     # via uvicorn
-websockets==17.1
+websockets==17.2
     # via uvicorn
 werkzeug==3.1.9
     # via squadscope-podcaster (pyproject.toml)
