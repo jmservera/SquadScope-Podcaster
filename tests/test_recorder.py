@@ -1341,6 +1341,40 @@ def test_browser_deadline_uses_earliest_hard_visibility_replica_clip_and_parent(
     assert deadline == started + timedelta(seconds=440)
 
 
+def test_browser_deadline_leaves_encode_headroom_after_site_capture_deadline() -> None:
+    """W41 regression: the browser kill window must not be ``site deadline + 15s``.
+
+    Image ``5a7589a`` killed the recorder child at
+    ``SITE_CAPTURE_DEADLINE_SECONDS + 15`` even though a capture that reaches its
+    site deadline still has to encode the captured hyperframe PNGs. Every W41
+    clip was killed mid-encode, retried, and never reached the fan-in barrier.
+    With the infra defaults (``infra/modules/aca-recorder.bicep``) the first
+    attempt must leave minutes, not seconds, for post-capture encoding.
+    """
+    from podcaster.video.video_gen import DEFAULT_SITE_CAPTURE_DEADLINE_SECONDS
+
+    started = datetime(2026, 10, 5, 15, 0, tzinfo=timezone.utc)
+    clipset = Clipset.from_segments(
+        JOB_ID,
+        [VideoSegment(start_seconds=0.0, duration_seconds=90.0)],
+        budget=VideoStageBudget.start(now_utc=started, utcnow=lambda: started).projection,
+    )
+    admission = recorder.ClipAdmission.first_or_existing("clip-000", now_utc=started)
+
+    deadline = recorder._browser_deadline(
+        admission,
+        clipset,
+        {
+            "VIDEO_MAX_CLIP_RECORD_SECONDS": "600",
+            "PODCASTER_CLIP_VISIBILITY_TIMEOUT": "840",
+            "PODCASTER_RECORDER_TIMEOUT": "840",
+        },
+    )
+
+    browser_window = (deadline - admission.first_admitted_at_utc).total_seconds()
+    assert browser_window - DEFAULT_SITE_CAPTURE_DEADLINE_SECONDS >= 300
+
+
 def test_late_recorder_cannot_replace_terminal_manifest_or_hash_bound_blob(tmp_path) -> None:
     winner = b"winner-static-bytes"
     winner_evidence = MediaEvidence(
