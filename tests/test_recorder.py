@@ -1341,6 +1341,57 @@ def test_browser_deadline_uses_earliest_hard_visibility_replica_clip_and_parent(
     assert deadline == started + timedelta(seconds=440)
 
 
+def test_owned_browser_timeout_leaves_encode_headroom_after_site_capture_deadline(
+    tmp_path, monkeypatch
+) -> None:
+    """W41 regression: the browser kill window must not be ``site deadline + 15s``.
+
+    Image ``5a7589a`` killed the recorder child at
+    ``SITE_CAPTURE_DEADLINE_SECONDS + 15`` even though a capture that reaches its
+    site deadline still has to encode the captured hyperframe PNGs. Every W41
+    clip was killed mid-encode, retried, and never reached the fan-in barrier.
+    Drive the production selector (no injected ``record_segment``) with the
+    infra defaults (``infra/modules/aca-recorder.bicep``) and assert the timeout
+    actually handed to the owned browser process leaves minutes, not seconds,
+    for post-capture encoding.
+    """
+    from podcaster.video.video_gen import SITE_CAPTURE_DEADLINE_SECONDS
+
+    scratch = _scratch(tmp_path)
+    started = datetime(2026, 10, 5, 15, 0, tzinfo=timezone.utc)
+    clipset = Clipset.from_segments(
+        JOB_ID,
+        [VideoSegment(start_seconds=0.0, duration_seconds=90.0)],
+        budget=VideoStageBudget.start(now_utc=started, utcnow=lambda: started).projection,
+    )
+    scratch.put_bytes(clipset_blob_path(JOB_ID), clipset.to_json_bytes(), "application/json")
+    supplied: list[float] = []
+
+    def _owned_process(_argv, *, timeout_seconds, **_kwargs):
+        supplied.append(timeout_seconds)
+        raise TimeoutError("stub browser stopped after recording the timeout")
+
+    monkeypatch.setattr(recorder, "run_owned_process", _owned_process)
+
+    outcome = process_clip_message(
+        _message(0, dequeue_count=1),
+        scratch=scratch,
+        queue=FakeQueue(),
+        env={
+            "VIDEO_MAX_CLIP_RECORD_SECONDS": "600",
+            "PODCASTER_CLIP_VISIBILITY_TIMEOUT": "840",
+            "PODCASTER_RECORDER_TIMEOUT": "840",
+        },
+        utcnow=lambda: started,
+        monotonic=lambda: 0.0,
+        fallback_renderer=_fallback,
+    )
+
+    assert outcome.status == OUTCOME_RETRY
+    assert len(supplied) == 1
+    assert supplied[0] - SITE_CAPTURE_DEADLINE_SECONDS >= 300
+
+
 def test_late_recorder_cannot_replace_terminal_manifest_or_hash_bound_blob(tmp_path) -> None:
     winner = b"winner-static-bytes"
     winner_evidence = MediaEvidence(
