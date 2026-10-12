@@ -50,6 +50,7 @@ from podcaster.publication_state import (
     PublicationStateError,
     append_evidence,
     canonical_identity_requested,
+    claim_evidence,
     emit_publication_signal,
     latest_outcomes,
     new_publish_run_id,
@@ -813,7 +814,7 @@ def _record_video_publication(
             operation="distribution",
             outcome=outcome,
             provider_artifact_id=provider_artifact_id,
-            mutation_attempted=True,
+            mutation_attempted=record.get("mutation_attempted", True) is not False,
             confirmation_source=(
                 str(record.get("evidence_source"))
                 if record.get("verification") == "provider_readback"
@@ -1610,16 +1611,31 @@ def run_video_generation(
                         }
                     elif enabled and not dist_config.dry_run and not outbox_routing_enabled():
                         try:
-                            claim = append_evidence(
+                            if platform == "youtube":
+                                published_for_attempt.pop(record_key, None)
+                            claim_writer = (
+                                claim_evidence if platform == "youtube" else append_evidence
+                            )
+                            claim = claim_writer(
                                 storage,
                                 publication_context,
                                 platform=platform,
                                 media_kind="video",
                                 operation="upload_intent",
-                                outcome="publication_unknown",
-                                mutation_attempted=False,
+                                **(
+                                    {
+                                        "details": _upload_intent_details(
+                                            platform, publication_context
+                                        )
+                                    }
+                                    if platform == "youtube"
+                                    else {
+                                        "outcome": "publication_unknown",
+                                        "mutation_attempted": False,
+                                        "code": "mutation_intent",
+                                    }
+                                ),
                                 retry_blocked=True,
-                                code="mutation_intent",
                             )
                             if claim is None:
                                 published_for_attempt[record_key] = {

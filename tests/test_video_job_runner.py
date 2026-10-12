@@ -1005,6 +1005,7 @@ class TestRunVideoGeneration:
         )[1]
         append_evidence = MagicMock(return_value=None)
         monkeypatch.setattr(job_runner, "append_evidence", append_evidence)
+        monkeypatch.setattr(job_runner, "claim_evidence", append_evidence)
         mock_distribute.return_value = DistributionResult(status="failed")
 
         run_video_generation(

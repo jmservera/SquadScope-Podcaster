@@ -100,8 +100,10 @@ def build_snippet(
 ) -> dict[str, object]:
     """Build the ``snippet`` part (title/description/tags/categoryId)."""
 
+    from podcaster.video.youtube_title import clamp_youtube_title
+
     return {
-        "title": (title or "")[:MAX_TITLE_CHARS],
+        "title": clamp_youtube_title(title),
         "description": (description or "")[:MAX_DESCRIPTION_CHARS],
         "tags": tags if tags is not None else list(_DEFAULT_TAGS),
         "categoryId": category_id,
