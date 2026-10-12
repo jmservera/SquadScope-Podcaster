@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlencode
 
+from podcaster.video.youtube_title import clamp_youtube_title
+
 logger = logging.getLogger(__name__)
 
 # --- Constants ---------------------------------------------------------------
@@ -106,7 +108,7 @@ class YouTubeMetadata:
     def to_snippet(self) -> dict[str, object]:
         """Render the ``snippet`` part of the ``videos.insert`` body."""
         return {
-            "title": self.title[:MAX_TITLE_CHARS],
+            "title": clamp_youtube_title(self.title),
             "description": self.description[:MAX_DESCRIPTION_CHARS],
             "tags": list(self.tags),
             "categoryId": self.category_id,
@@ -152,12 +154,12 @@ def _format_title(raw_title: str, *, show_label: str, week: int | None) -> str:
     """
     topic = (raw_title or "").strip()
     if topic.startswith(show_label):
-        return topic[:MAX_TITLE_CHARS]
+        return clamp_youtube_title(topic)
     if week is not None:
         prefix = f"{show_label} — W{week:02d}: "
     else:
         prefix = f"{show_label} — "
-    return (prefix + topic)[:MAX_TITLE_CHARS]
+    return clamp_youtube_title(prefix + topic)
 
 
 def build_youtube_metadata(

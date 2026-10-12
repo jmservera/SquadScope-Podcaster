@@ -361,6 +361,7 @@ def get_video_snippet(
     access_token: str,
     *,
     transport: object | None = None,
+    require_exact_id: bool = False,
 ) -> dict[str, object] | None:
     """Return authoritative metadata, status, and processing fields for a video."""
     from urllib.parse import urlencode
@@ -386,10 +387,25 @@ def get_video_snippet(
         data = json.loads(body.decode("utf-8") if isinstance(body, bytes) else body)
     except (ValueError, AttributeError):
         return None
+    if not isinstance(data, dict):
+        return None
     items = data.get("items") or []
+    if not isinstance(items, list):
+        return None
     if not items:
         return None
+    if require_exact_id and (
+        len(items) != 1 or not isinstance(items[0], dict) or items[0].get("id") != video_id
+    ):
+        return None
     item = items[0]
+    if not isinstance(item, dict):
+        return None
+    if any(
+        not isinstance(item.get(field, {}), dict)
+        for field in ("snippet", "status", "processingDetails")
+    ):
+        return None
     return {
         **item.get("snippet", {}),
         **item.get("status", {}),

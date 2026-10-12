@@ -61,6 +61,7 @@ from podcaster.video.youtube_reconcile import (
     tags_with_identity,
     youtube_identity_tag,
 )
+from podcaster.video.youtube_title import clamp_youtube_title
 
 logger = logging.getLogger(__name__)
 
@@ -422,6 +423,9 @@ def _read_http_error_body(exc: HTTPError) -> bytes:
 class _DefaultTransport:
     """Default HTTP transport using urllib."""
 
+    def __init__(self, *, timeout: float = 300) -> None:
+        self.timeout = timeout
+
     def request(
         self,
         url: str,
@@ -432,7 +436,7 @@ class _DefaultTransport:
     ) -> tuple[int, bytes]:
         req = Request(url, data=data, method=method, headers=headers or {})
         try:
-            with urlopen(req, timeout=300) as resp:
+            with urlopen(req, timeout=self.timeout) as resp:
                 return resp.status, resp.read()
         except HTTPError as exc:
             # Non-2xx responses (e.g. 308 "Resume Incomplete" during a resumable
@@ -450,7 +454,7 @@ class _DefaultTransport:
     ) -> tuple[int, dict[str, str], bytes]:
         req = Request(url, data=data, method=method, headers=headers or {})
         try:
-            with urlopen(req, timeout=300) as resp:
+            with urlopen(req, timeout=self.timeout) as resp:
                 resp_headers = {k.lower(): v for k, v in resp.getheaders()}
                 return resp.status, resp_headers, resp.read()
         except HTTPError as exc:
@@ -535,7 +539,12 @@ class StorageUploader(Protocol):
 # --- YouTube Upload ---
 
 
-def _get_youtube_access_token(config: VideoDistributionConfig, transport: HttpTransport) -> str:
+def _get_youtube_access_token(
+    config: VideoDistributionConfig,
+    transport: HttpTransport,
+    *,
+    notify_reauthorization: bool = True,
+) -> str:
     """Exchange refresh token for a short-lived access token."""
     data = urlencode(
         {
@@ -562,7 +571,7 @@ def _get_youtube_access_token(config: VideoDistributionConfig, transport: HttpTr
         ) from exc
     if status != 200:
         oauth_error, oauth_subtype = _extract_oauth_error_fields(body)
-        if oauth_error == "invalid_grant":
+        if oauth_error == "invalid_grant" and notify_reauthorization:
             _notify_youtube_reauthorization()
         code = f"youtube_oauth_{oauth_error}" if oauth_error else f"youtube_oauth_http_{status}"
         raise YouTubeDeliveryError(
@@ -584,8 +593,12 @@ def _get_youtube_access_token(config: VideoDistributionConfig, transport: HttpTr
             stage="oauth_token",
             retryable=False,
         ) from exc
-    access_token = token_data.get("access_token")
-    if not access_token:
+    access_token = token_data.get("access_token") if isinstance(token_data, dict) else None
+    if (
+        not isinstance(access_token, str)
+        or not access_token
+        or any(ch.isspace() or not ch.isprintable() for ch in access_token)
+    ):
         raise YouTubeDeliveryError(
             "YouTube token response missing access_token",
             code="youtube_oauth_missing_access_token",
@@ -812,7 +825,7 @@ def upload_to_youtube(
 
     metadata = {
         "snippet": {
-            "title": title[:100],
+            "title": clamp_youtube_title(title),
             "description": description[:5000],
             "tags": tags_with_identity(tags or ["podcast", "tech", "open-source"], identity_tag),
             "categoryId": config.youtube_category_id,
@@ -1719,6 +1732,16 @@ def distribute_video(
             language,
         )
     youtube_record = prior_published.get("youtube")
+    if (
+        isinstance(youtube_record, Mapping)
+        and youtube_record.get("outcome") == MANUAL_HANDOFF_REQUIRED
+        and youtube_record.get("retry_blocked") is False
+        and youtube_record.get("mutation_attempted") is False
+        and youtube_record.get("transport_status") == "not_attempted"
+        and youtube_record.get("evidence_source") == "youtube_oauth_before_upload"
+        and str(youtube_record.get("last_error_code") or "").startswith("youtube_oauth_")
+    ):
+        youtube_record = None
     youtube_reconciled = False
     if youtube_active and isinstance(youtube_record, Mapping):
         youtube_reconciled, reconcile_error = _reconcile_unknown_youtube_upload(
@@ -1898,6 +1921,26 @@ def distribute_video(
                     )
             if config.youtube_required and not exc.mutation_ambiguous:
                 youtube_required_failure = exc
+                # OAuth failure precedes videos.insert: only this proven no-create
+                # boundary may re-arm a canonical upload claim automatically.
+                if exc.retryable and exc.stage == "oauth_token" and on_published is not None:
+                    on_published(
+                        "youtube",
+                        {
+                            "status": "failed",
+                            "provider_status": "failed",
+                            "outcome": MANUAL_HANDOFF_REQUIRED,
+                            "provider": "youtube",
+                            "transport_status": "not_attempted",
+                            "verification": "none",
+                            "evidence_source": "youtube_oauth_before_upload",
+                            "mutation_attempted": False,
+                            "retry_blocked": False,
+                            "last_error_code": exc.code,
+                            "publish_run_id": publish_run_id,
+                            "at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
             logger.error(
                 "YouTube distribution failed stage=%s code=%s retryable=%s",
                 exc.stage,

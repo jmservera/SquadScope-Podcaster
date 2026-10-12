@@ -17,6 +17,48 @@ x-podcaster-api-key: <PODCASTER_API_KEY>
 
 `PODCASTER_API_KEY` must be stored as a GitHub Actions repository secret in `jmservera/SquadScope` and, for handoff workflows, as the same secret on environment `podcaster-real-generation`; the Podcaster deployment workflow syncs both without printing it. Do not log, echo, or include it in workflow summaries. Future OIDC caller auth may be added, but this header remains the compatibility contract until both repositories migrate.
 
+## Read-only terminal status
+
+`GET /api/publication-status` uses the same API-key header and returns
+`schema_version: "podcast_publication_status_v1"`. Set the SquadScope repository **and**
+`podcaster-real-generation` environment variable `PODCASTER_STATUS_ENDPOINT` to
+`https://<aca-app-fqdn>/api/publication-status` after deploying the reviewed API image.
+Do not append a job path or put credentials in the URL.
+
+Required query parameters are `week`, `publish_run_id`, `article_sha256`,
+`manifest_sha256`, `job_id`, and `correlation_id`. They must exactly match the accepted
+canonical job; the response correlation ID is the accepted job ID. `language` is optional
+(defaults to `en`), accepts `en`/`es`/`fr`, and must match that job's stored language.
+Duplicate, unknown, unsafe, or blank parameters are rejected.
+
+The response includes the exact four-field `identity`, `job_id`, `correlation_id`,
+`synthesis.state` (`pending`, `started`, `succeeded`, `failed`, `unknown`),
+`video.state` (`pending`, `succeeded`, `failed`, `unknown`), and
+`provider.state` (`pending`, `published`, `failed`, `unknown`) plus boolean
+`provider.external_verified`. Supplemental per-provider codes, check timestamps,
+language, and `observed_at` describe missing, incomplete, or stale evidence without
+returning logs, artifact paths, signed URLs, bodies, or secrets.
+
+This endpoint projects the existing manifest/progress/publication-evidence documents.
+It never generates, enqueues, mutates receipts, uploads, changes visibility, or promotes.
+Both provider legs are required for terminal success: an identity-tagged YouTube video
+must be read back as **processed**, processing **succeeded**, and **unlisted or public**;
+Spotify must have an identity-bound **video** publication receipt backed by authoritative
+provider readback. Audio-only, draft, private, ambiguous, or unverified delivery is not green.
+Readback receipts older than 24 hours or over five minutes in the future are not reusable.
+Polling does not refresh a persisted receipt's age.
+
+The API identity needs read access to job/progress/publication-evidence blobs and only the
+YouTube client ID, client-secret reference, and refresh-token reference used by the existing
+OAuth reader. No Spotify credentials are needed by this route. If Key Vault is used, grant
+only secret-read access to the YouTube reference, not vault write access. OAuth exchange and
+exact-video `videos.list` reads use three-second HTTP timeouts; no provider mutation is allowed.
+
+Errors are sanitized: `401` unauthenticated/unconfigured key, `400` invalid query,
+`404` missing job, `409` missing/malformed/mismatched canonical identity or evidence,
+and `503` storage unavailable. Valid accepted jobs can report pending stages or explicit
+unknown provider evidence without inventing success.
+
 ## Request body
 
 ```json

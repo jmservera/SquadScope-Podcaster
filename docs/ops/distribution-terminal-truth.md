@@ -71,6 +71,37 @@ reconciliation-only.
 
 ## Rollout and rollback
 
+### Direct weekly two-provider delivery and status adapter
+
+For the current direct weekly caller, enable the existing
+`VIDEO_YOUTUBE_REQUIRED=true` **and** `VIDEO_YOUTUBE_ENABLED=true` on the deployed
+video job, retain `VIDEO_YOUTUBE_PRIVACY=unlisted`, and verify
+`VIDEO_YOUTUBE_LANGUAGES` includes the caller's language. Keep Spotify's approved VIDEO
+publish mode and all review/protected-episode gates unchanged. Do not change unrelated
+callers' defaults. Required YouTube OAuth failures retain the queue for a bounded retry;
+their proven pre-upload/no-create evidence alone can atomically re-arm an upload claim.
+Spotify's durable receipt is reused rather than creating another Spotify episode.
+Ambiguous YouTube creation remains retry-blocked and requires read-only reconciliation.
+Other uncertain failures are never automatically re-authorized by this change.
+
+Deploy the reviewed API and video images before setting `PODCASTER_STATUS_ENDPOINT`
+in SquadScope's repository variables and `podcaster-real-generation` environment variables
+to the API's `/api/publication-status` URL. See the
+[terminal status contract](../integration-contract.md#read-only-terminal-status) for
+authentication, exact query identity, YouTube secret-read configuration, and receipt freshness.
+Smoke-test with the **existing** accepted W42 identity/job/correlation only. Do not submit W42
+again, mint a receipt, or repeat an upload to make the smoke green. A missing or stale receipt
+must remain explicit and be investigated.
+
+This adapter's `published` means both requested **delivery objectives** are verified:
+processed unlisted YouTube upload plus published Spotify VIDEO. It does not claim that
+YouTube is publicly listed, grant a promotion approval, or relax the outbox's separate
+public-verification objectives described above. Existing W42 title correction, if needed,
+is a separately reviewed metadata-only operation with exact provider identity readback.
+
+Rollback removes the new caller endpoint configuration and restores the previous images;
+it must not delete provider receipts/claims or relax either review or visibility gates.
+
 `DISTRIBUTION_OUTBOX_ENABLED` is disabled by default. Enable it only after the dedicated
 distribution queue and worker use the same release image and the alert queries below are active.
 Rollback disables new outbox routing and claims; it must not delete outbox records, consumed

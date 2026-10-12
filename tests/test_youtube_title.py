@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from podcaster.video.distribution import VideoDistributionConfig, upload_to_youtube
+from podcaster.video.youtube import build_snippet
+from podcaster.video.youtube_metadata import build_youtube_metadata
+from podcaster.video.youtube_title import clamp_youtube_title
+from tests.test_video_distribution import FakeTransport
+from tests.test_youtube_single_session import FakeResumableYouTube
+
+
+@pytest.mark.parametrize("week", ["W42", "2026-W43"])
+@pytest.mark.parametrize("locale", ["", " [ES]", " [FR]"])
+@pytest.mark.parametrize("topic", ["Agents and Rust " * 30, "é宇宙🤖" * 100])
+def test_direct_and_chunked_titles_reserve_full_week_and_locale(tmp_path, week, locale, topic):
+    title = f"{topic} | {week}{locale}"
+    expected = clamp_youtube_title(title)
+    assert len(expected) <= 100
+    assert expected.endswith(f" | {week}{locale}")
+    assert build_snippet(title, "description")["title"] == expected
+    assert (
+        build_youtube_metadata(title, "description", show_label="", locale="en")
+        .to_snippet()["title"]
+        .endswith(f" | {week}{locale}")
+    )
+    video = tmp_path / "episode.mp4"
+    video.write_bytes(b"x" * 2048)
+    transport = FakeTransport()
+    config = VideoDistributionConfig(
+        youtube_enabled=True,
+        youtube_client_id="test",
+        youtube_client_secret="test",
+        youtube_refresh_token="test",
+    )
+    upload_to_youtube(video, title, "description", config, transport=transport)
+    request = next(
+        item
+        for item in transport.requests
+        if item["url"].endswith("uploadType=resumable&part=snippet,status")
+        or b'"snippet"' in (item["data"] or b"")
+    )
+    metadata = json.loads(request["data"])
+    assert metadata["snippet"]["title"] == expected
+
+
+def test_title_removes_only_invalid_provider_characters():
+    assert clamp_youtube_title("Café <Rust>\n | W43 [ES]") == "Café Rust | W43 [ES]"
+
+
+def test_short_title_and_complete_identity_unchanged():
+    title = "Devices and Rust | W43 [FR]"
+    assert clamp_youtube_title(title) == title
+
+
+def test_unbounded_identity_suffix_is_rejected():
+    with pytest.raises(ValueError):
+        clamp_youtube_title("topic | W43 " + "x" * 100)
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+@pytest.mark.parametrize("suffix", [" | W42", " | 2026-W43 [ES]", " | W43 [FR]"])
+def test_actual_resumable_paths_keep_week_locale_and_identity_tag(
+    tmp_path, monkeypatch, chunked, suffix
+):
+    metadata = []
+
+    class CaptureTransport(FakeResumableYouTube):
+        def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+            if method == "POST" and "uploadType=resumable" in url:
+                metadata.append(json.loads(data))
+            return super().request_with_headers(url, method=method, headers=headers, data=data)
+
+    monkeypatch.setattr(
+        "podcaster.video.distribution._MAX_SINGLE_UPLOAD_BYTES", 0 if chunked else 10000
+    )
+    video = tmp_path / "episode.mp4"
+    video.write_bytes(b"x" * 4096)
+    title = "é宇宙🤖" * 100 + suffix
+    identity_tag = "sqpub-" + "a" * 32
+    config = VideoDistributionConfig(
+        youtube_enabled=True,
+        youtube_client_id="test",
+        youtube_client_secret="test",
+        youtube_refresh_token="test",
+    )
+    upload_to_youtube(
+        video,
+        title,
+        "description",
+        config,
+        transport=CaptureTransport(),
+        identity_tag=identity_tag,
+        raise_on_failure=True,
+    )
+    assert len(metadata) == 1
+    assert metadata[0]["snippet"]["title"] == clamp_youtube_title(title)
+    assert metadata[0]["snippet"]["title"].endswith(suffix)
+    assert identity_tag in metadata[0]["snippet"]["tags"]
+    assert metadata[0]["status"]["privacyStatus"] == "unlisted"

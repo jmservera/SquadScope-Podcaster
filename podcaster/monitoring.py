@@ -8,6 +8,7 @@ storage credentials.
 Endpoints:
   POST /api/generate              — validate payload and enqueue generation
   POST /api/review                — process review decisions
+  GET /api/publication-status     — authenticated exact-identity terminal delivery status
   GET /api/jobs                   — list recent jobs (paginated)
   GET /api/jobs/{id}              — job detail (manifest + derived status)
   GET /api/jobs/{id}/logs         — job logs (structured + runner state), level/search filter
@@ -37,6 +38,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
+from azure.core.exceptions import AzureError
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -63,6 +65,7 @@ from podcaster.progress import (
     read_progress,
 )
 from podcaster.publication_state import latest_outcomes, read_evidence
+from podcaster.publication_status import PublicationStatusError, publication_status
 from podcaster.queue import enqueue_video_job
 from podcaster.spotify_mode import (
     record_review_skip_outcome,
@@ -71,7 +74,7 @@ from podcaster.spotify_mode import (
 )
 from podcaster.stage_progress import summarize as summarize_stage_progress
 from podcaster.storage import StorageBackend, create_storage_backend
-from podcaster.validation import validate_payload_details
+from podcaster.validation import is_authorized, validate_payload_details
 
 logger = logging.getLogger(__name__)
 
@@ -670,6 +673,25 @@ async def api_review(request: Request):
             "manifest": outcome.manifest,
         },
     )
+
+
+@app.get("/api/publication-status")
+def api_publication_status(request: Request):
+    # Machine-to-machine status never honors the monitoring UI's local auth bypass.
+    if not is_authorized(dict(request.headers)):
+        return JSONResponse(status_code=401, content={"error": "unauthorized"})
+    try:
+        values = request.query_params
+        if len(values.multi_items()) > 7 or any(len(values.getlist(key)) != 1 for key in values):
+            raise PublicationStatusError("invalid_query", 400)
+        response = publication_status(get_storage(), dict(values))
+    except PublicationStatusError as exc:
+        return JSONResponse(status_code=exc.status, content={"error": exc.code})
+    except (ValueError, UnicodeDecodeError):
+        return JSONResponse(status_code=400, content={"error": "invalid_evidence_or_query"})
+    except (OSError, AzureError):
+        return JSONResponse(status_code=503, content={"error": "status_unavailable"})
+    return JSONResponse(content=response, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/jobs", response_model=JobListResponse, dependencies=[Depends(verify_auth)])
