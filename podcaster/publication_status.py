@@ -15,6 +15,7 @@ from podcaster.publication_state import (
     VERIFICATION_STATES,
     PublicationIdentity,
     PublicationStateError,
+    _provider_status,
     latest_outcomes,
     publication_identity,
     read_evidence,
@@ -148,7 +149,12 @@ def publication_status(
     if request.get("language", "en") != language:
         raise PublicationStatusError("language_mismatch", 409)
     # Generation's response correlation is the accepted job, not a caller-selected path.
-    if correlation_id != job_id:
+    observability = manifest.get("observability")
+    if (
+        not isinstance(observability, dict)
+        or observability.get("correlation_id") != job_id
+        or correlation_id != observability["correlation_id"]
+    ):
         raise PublicationStatusError("correlation_mismatch", 409)
     generation = manifest.get("generation")
     if not isinstance(generation, dict):
@@ -175,6 +181,7 @@ def publication_status(
     if evidence is not None and evidence.get("corrupt"):
         raise PublicationStatusError("invalid_provider_evidence", 409)
     if evidence is not None:
+        previous_seq = 0
         for record in evidence["records"]:
             if not isinstance(record, dict) or any(
                 record.get(field) != value
@@ -186,10 +193,21 @@ def publication_status(
                 or record.get("status") not in PROVIDER_STATUSES
                 or record.get("verification") not in VERIFICATION_STATES
                 or type(record.get("seq")) is not int
-                or record["seq"] < 1
+                or record["seq"] <= previous_seq
                 or _timestamp(record.get("at")) is None
+                or (
+                    record.get("native_state") is not None
+                    and not isinstance(record["native_state"], str)
+                )
             ):
                 raise PublicationStatusError("invalid_provider_evidence", 409)
+            if record["status"] != _provider_status(
+                record["outcome"],
+                verification=record["verification"],
+                native_state=record.get("native_state"),
+            ):
+                raise PublicationStatusError("invalid_provider_evidence", 409)
+            previous_seq = record["seq"]
     latest = latest_outcomes(evidence)
     providers: dict[str, dict[str, Any]] = {}
     for provider in ("youtube", "spotify"):

@@ -199,7 +199,9 @@ def test_incomplete_stale_mismatched_receipts_never_green(accepted, fault):
     elif fault == "audio_only":
         document["records"][-1]["media_kind"] = "audio"
     elif fault == "spotify_draft":
-        document["records"][-1].update(outcome="draft_created", native_state="draft")
+        document["records"][-1].update(
+            outcome="draft_created", native_state="draft", status="draft"
+        )
     elif fault == "spotify_no_readback":
         document["records"][-1]["verification"] = "none"
     elif fault in {"stale", "future"}:
@@ -211,7 +213,7 @@ def test_incomplete_stale_mismatched_receipts_never_green(accepted, fault):
     elif fault == "missing_id":
         document["records"][-1].update(provider_id=None, provider_artifact_id=None)
     elif fault == "youtube_unknown":
-        document["records"][0]["outcome"] = "publication_unknown"
+        document["records"][0].update(outcome="publication_unknown", status="unknown")
     storage.data[path] = b"bad JSON" if fault == "corrupt" else json.dumps(document).encode()
     if fault in {"corrupt", "identity"}:
         with pytest.raises(PublicationStatusError):
@@ -585,10 +587,12 @@ def test_in_flight_upload_intent_is_pending_not_terminal_unknown(accepted):
     "field,value",
     [
         ("status", "invented"),
+        ("status", "gated"),
         ("outcome", "completed"),
         ("verification", "yes"),
         ("seq", True),
         ("at", "yesterday"),
+        ("native_state", {"state": "published"}),
     ],
 )
 def test_malformed_provider_receipts_are_explicit(accepted, field, value):
@@ -597,6 +601,29 @@ def test_malformed_provider_receipts_are_explicit(accepted, field, value):
     path = evidence_path(JOB)
     document = json.loads(storage.data[path])
     document["records"][-1][field] = value
+    storage.data[path] = json.dumps(document).encode()
+    with pytest.raises(PublicationStatusError) as error:
+        publication_status(storage, query, now=NOW, youtube_readback=ready)
+    assert error.value.code == "invalid_provider_evidence"
+
+
+@pytest.mark.parametrize("observability", [None, {}, {"correlation_id": "other"}, "malformed"])
+def test_persisted_correlation_is_required_and_exact(accepted, observability):
+    storage, manifest, query = accepted
+    manifest["observability"] = observability
+    save(storage, manifest)
+    receipts(storage, manifest)
+    with pytest.raises(PublicationStatusError) as error:
+        publication_status(storage, query, now=NOW, youtube_readback=ready)
+    assert error.value.code == "correlation_mismatch"
+
+
+def test_out_of_order_provider_receipts_fail_closed(accepted):
+    storage, manifest, query = accepted
+    receipts(storage, manifest)
+    path = evidence_path(JOB)
+    document = json.loads(storage.data[path])
+    document["records"].reverse()
     storage.data[path] = json.dumps(document).encode()
     with pytest.raises(PublicationStatusError) as error:
         publication_status(storage, query, now=NOW, youtube_readback=ready)
