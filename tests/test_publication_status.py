@@ -593,6 +593,7 @@ def test_in_flight_upload_intent_is_pending_not_terminal_unknown(accepted):
         ("seq", True),
         ("at", "yesterday"),
         ("native_state", {"state": "published"}),
+        ("provider_id", "999999999"),
     ],
 )
 def test_malformed_provider_receipts_are_explicit(accepted, field, value):
@@ -624,6 +625,30 @@ def test_out_of_order_provider_receipts_fail_closed(accepted):
     path = evidence_path(JOB)
     document = json.loads(storage.data[path])
     document["records"].reverse()
+    storage.data[path] = json.dumps(document).encode()
+    with pytest.raises(PublicationStatusError) as error:
+        publication_status(storage, query, now=NOW, youtube_readback=ready)
+    assert error.value.code == "invalid_provider_evidence"
+
+
+@pytest.mark.parametrize("field", ["platform", "media_kind", "operation"])
+@pytest.mark.parametrize("value", [None, "", 42, [], "bad\nfield"])
+def test_malformed_newer_receipt_cannot_hide_behind_older_success(accepted, field, value):
+    storage, manifest, query = accepted
+    identity = receipts(storage, manifest)
+    append_evidence(
+        storage,
+        identity,
+        platform="youtube",
+        media_kind="video",
+        operation="distribution",
+        outcome="publication_unknown",
+        native_state="unlisted",
+        at=NOW,
+    )
+    path = evidence_path(JOB)
+    document = json.loads(storage.data[path])
+    document["records"][-1][field] = value
     storage.data[path] = json.dumps(document).encode()
     with pytest.raises(PublicationStatusError) as error:
         publication_status(storage, query, now=NOW, youtube_readback=ready)

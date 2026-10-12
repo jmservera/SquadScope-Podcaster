@@ -27,6 +27,7 @@ STATUS_SCHEMA_VERSION = "podcast_publication_status_v1"
 MAX_RECEIPT_AGE = timedelta(hours=24)
 _JOB = re.compile(r"^podcast-\d{4}-W\d{2}-[0-9a-f]{12}(?:-(?:en|es|fr))?$")
 _CORRELATION = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+_ROUTING = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
 _IDENTITY_FIELDS = ("week", "publish_run_id", "article_sha256", "manifest_sha256")
 
 
@@ -195,6 +196,16 @@ def publication_status(
                 or type(record.get("seq")) is not int
                 or record["seq"] <= previous_seq
                 or _timestamp(record.get("at")) is None
+                or any(
+                    not isinstance(record.get(field), str) or not _ROUTING.fullmatch(record[field])
+                    for field in ("platform", "media_kind", "operation")
+                )
+                or record.get("media_kind") not in {"audio", "video"}
+                or (
+                    record.get("provider_id") is not None
+                    and record.get("provider_artifact_id") is not None
+                    and record["provider_id"] != record["provider_artifact_id"]
+                )
                 or (
                     record.get("native_state") is not None
                     and not isinstance(record["native_state"], str)
