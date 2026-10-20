@@ -88,9 +88,14 @@ def _release_failed_reservation(
             ]
         return manifest_bytes(ledger)
 
+    # Drop the ledger slot while the replay guard is still held, then delete only
+    # the exact reserved input keys (never a raw prefix, which on blob backends
+    # would also match the sibling ``-dry-run`` job), with replay.json last.
+    input_prefix = f"jobs/{job_id}/inputs"
     try:
-        storage.delete_prefix(f"jobs/{job_id}")
         storage.update_bytes(monthly_path, "application/json; charset=utf-8", drop_entry)
+        for name in ("article.txt", "summary.txt", "replay.json"):
+            storage.delete_blob(f"{input_prefix}/{name}")
     except Exception:
         logging.exception("failed to release reservation for failed job job_id=%s", job_id)
 

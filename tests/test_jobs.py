@@ -1323,14 +1323,17 @@ def test_configured_llm_failure_fails_closed_and_releases_reservation(
     }
     now = datetime(2026, 6, 12, 10, 0, 0, tzinfo=timezone.utc)
 
+    job_id = build_job_id(payload)
+    storage.put_bytes(f"jobs/{job_id}-dry-run/inputs/replay.json", b"preview", "text/plain")
     with pytest.raises(ScriptGenerationFailed):
         run_generation_job(payload, storage=storage, now=now)
 
-    job_id = build_job_id(payload)
     assert storage.get_bytes(f"jobs/{job_id}/manifest.json") is None
     assert storage.get_bytes(f"jobs/{job_id}/inputs/replay.json") is None
     ledger = json.loads(storage.get_bytes(monthly_ledger_path("2026-06")) or b"{}")
     assert all(e.get("job_id") != job_id for e in ledger.get("episodes", []))
+
+    assert storage.get_bytes(f"jobs/{job_id}-dry-run/inputs/replay.json") == b"preview"
 
     # An identical re-run is not blocked by a replay collision.
     with pytest.raises(ScriptGenerationFailed):

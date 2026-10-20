@@ -1219,9 +1219,7 @@ def generate_script(
         dialogue = _ensure_repo_feature_header(dialogue, required_repo_checklist)
         dialogue = infer_repo_visual_markers(dialogue, podcast_config)
 
-    def _apply_dialogue_guards(draft: str) -> str:
-        """Re-run the post-processing guards on a repaired draft."""
-
+    def _scrub(draft: str) -> str:
         draft = _enforce_ownership_tone(
             draft, messages=messages, url=url, token=token, transport=transport
         )
@@ -1237,7 +1235,24 @@ def generate_script(
                 ],
             )
         draft = _ensure_repo_feature_header(draft, required_repo_checklist)
-        draft = infer_repo_visual_markers(draft, podcast_config)
+        return infer_repo_visual_markers(draft, podcast_config)
+
+    def _apply_dialogue_guards(draft: str) -> str:
+        """Re-run the post-processing guards on a repaired draft."""
+
+        draft = _scrub(draft)
+        before_coverage = draft
+        draft = _enforce_required_repo_coverage(
+            draft,
+            checklist=required_repo_checklist,
+            messages=messages,
+            url=url,
+            token=token,
+            transport=transport,
+            podcast_config=podcast_config,
+        )
+        if draft != before_coverage:
+            draft = _scrub(draft)
         names = build_spoken_name_map(_spoken_name_map_source(draft), fetch=readme_fetcher)
         draft = rewrite_spoken_repo_names(draft, names)
         if len(draft) > MAX_SCRIPT_CHARS:
