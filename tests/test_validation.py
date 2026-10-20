@@ -259,3 +259,19 @@ def test_api_key_auth_uses_header_without_exposing_secret(monkeypatch) -> None:
     monkeypatch.setenv("PODCASTER_API_KEY", "expected")
     assert is_authorized({"x-podcaster-api-key": "expected"}) is True
     assert is_authorized({"x-podcaster-api-key": "wrong"}) is False
+
+
+def test_regeneration_field_is_validated() -> None:
+    base = {"week": "2026-W43", "article_url": "https://example.com/article"}
+    ok = {"supersedes_job_id": "podcast-2026-W43-9d737c6d013c", "reason": "bad script"}
+    assert validate_payload({**base, "regeneration": ok}) == []
+    for bad in (
+        "x",
+        {**ok, "supersedes_job_id": "job-1"},
+        {**ok, "supersedes_job_id": "podcast-" + "a" * 130},
+        {**ok, "supersedes_job_id": "podcast-../x/y"},
+        {**ok, "reason": "  "},
+        {**ok, "reason": "r" * 501},
+        {**ok, "extra": 1},
+    ):
+        assert validate_payload({**base, "regeneration": bad}), bad
