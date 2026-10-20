@@ -44,6 +44,7 @@ _REPLAY_IDENTITY_FIELDS = (
     "language",
     "music_mix",
     "podcast_config",
+    "regeneration",
     "script_directions",
     "source_artifacts",
     "spotify_publish",
@@ -62,8 +63,42 @@ class MonthlyBudgetExceeded(RuntimeError):
         self.budget = budget
 
 
+class ScriptGenerationFailed(RuntimeError):
+    """Raised when a configured LLM script generation fails for a publishable job."""
+
+
 class ReplayCollisionError(RuntimeError):
     """Raised when immutable generation inputs already own a job namespace."""
+
+
+def _release_failed_reservation(
+    storage: StorageBackend, job_id: str, monthly_path: str, month: str
+) -> None:
+    """Release replay inputs and the reserved ledger slot of a failed job.
+
+    Without this the create-only replay reservation would return 409 for every
+    identical re-run of a job that never produced an episode.
+    """
+
+    def drop_entry(content: bytes | None) -> bytes:
+        ledger = load_monthly_ledger(content, month=month)
+        episodes = ledger.get("episodes")
+        if isinstance(episodes, list):
+            episodes[:] = [
+                e for e in episodes if not (isinstance(e, dict) and e.get("job_id") == job_id)
+            ]
+        return manifest_bytes(ledger)
+
+    # Drop the ledger slot while the replay guard is still held, then delete only
+    # the exact reserved input keys (never a raw prefix, which on blob backends
+    # would also match the sibling ``-dry-run`` job), with replay.json last.
+    input_prefix = f"jobs/{job_id}/inputs"
+    try:
+        storage.update_bytes(monthly_path, "application/json; charset=utf-8", drop_entry)
+        for name in ("article.txt", "summary.txt", "replay.json"):
+            storage.delete_blob(f"{input_prefix}/{name}")
+    except Exception:
+        logging.exception("failed to release reservation for failed job job_id=%s", job_id)
 
 
 def _canonical_replay_inputs(payload: dict[str, Any]) -> dict[str, Any]:
@@ -340,6 +375,12 @@ def run_generation_job(
                     )
                 logging.info("podcaster job using LLM-generated script job_id=%s", job_id)
             except Exception:
+                if not payload.get("dry_run"):
+                    logging.exception(
+                        "LLM script generation failed job_id=%s; failing closed", job_id
+                    )
+                    _release_failed_reservation(storage, job_id, monthly_path, month)
+                    raise ScriptGenerationFailed("LLM script generation failed") from None
                 logging.exception(
                     "LLM script generation failed job_id=%s; falling back to placeholder",
                     job_id,
@@ -646,7 +687,7 @@ def _request_metadata(
         "replay": replay_metadata,
         "publication_identity_mode": "canonical" if canonical_identity else "legacy",
     }
-    for field in ("publish_run_id", "manifest_sha256"):
+    for field in ("publish_run_id", "manifest_sha256", "regeneration"):
         if field in payload:
             request[field] = payload[field]
     for field in (

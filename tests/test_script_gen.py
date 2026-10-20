@@ -329,6 +329,51 @@ class TestGenerateScript:
         assert "org/tool-3 — https://github.com/org/tool-3" in repair_prompt
         assert script.count("## Visual: repo https://github.com/org/tool-") >= 6
 
+    def test_section_repair_that_drops_repo_coverage_triggers_coverage_repair(self):
+        def block(title: str, indexes: range, extra_turns: int = 0) -> str:
+            lines = [f"## Section: {title}"]
+            for i in indexes:
+                lines += [
+                    f"## Visual: repo https://github.com/org/tool-{i}",
+                    f"Theo: org/tool-{i} is important for this week's trend.",
+                    f"Vera: The implementation choices in org/tool-{i} make the pattern clear.",
+                ]
+            lines += ["Theo: One more thought here."] * extra_turns
+            return "\n".join(lines)
+
+        invalid = (
+            block("Alpha", range(1, 6))
+            + "\n## Section: Beta\n"
+            + "\n".join(
+                ["## Visual: repo https://github.com/org/tool-6"]
+                + ["Theo: org/tool-6 matters.", "Vera: Agreed.", "Theo: Indeed."]
+            )
+        )
+        dropped = block("Alpha", range(1, 2), 1) + "\n" + block("Beta", range(2, 3), 1)
+        full = block("Alpha", range(1, 4)) + "\n" + block("Beta", range(4, 7))
+        responses = [invalid, dropped, full]
+        requests: list[Request] = []
+
+        def queue_transport(request: Request) -> bytes:
+            requests.append(request)
+            content = responses.pop(0)
+            return json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+
+        script = generate_script(
+            week="2026-W30",
+            article_title="Repo roundup",
+            article_url="https://example.com/article",
+            article_content=_article_with_repos(8),
+            config=_mock_config(),
+            token_provider=_fake_token_provider,
+            transport=queue_transport,
+        )
+
+        assert len(requests) == 3
+        coverage_prompt = json.loads(requests[2].data)["messages"][-1]["content"]
+        assert "under-covers the required GitHub repository checklist" in coverage_prompt
+        assert script.count("## Visual: repo https://github.com/org/tool-") >= 6
+
     def test_repo_feature_header_is_normalized_to_required_checklist(self):
         checklist = script_gen._build_required_repo_checklist(_article_with_repos(3))
         dialogue = (

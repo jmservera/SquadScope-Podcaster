@@ -17,6 +17,7 @@ from podcaster.costs import monthly_ledger_path
 from podcaster.generation import generate_artifacts, manifest_bytes
 from podcaster.jobs import (
     ReplayCollisionError,
+    ScriptGenerationFailed,
     build_job_id,
     replay_identity_sha256,
     run_generation_job,
@@ -1249,7 +1250,7 @@ def test_llm_script_generation_replaces_placeholder_when_article_content_provide
 
 
 def test_llm_script_generation_falls_back_on_failure(monkeypatch) -> None:
-    """When LLM call fails, falls back to deterministic placeholder."""
+    """Dry runs keep the deterministic placeholder when the LLM call fails."""
     from urllib.request import Request
 
     artifact_root = Path(".test-artifacts-llm-fallback")
@@ -1279,15 +1280,104 @@ def test_llm_script_generation_falls_back_on_failure(monkeypatch) -> None:
             "article_url": "https://example.com/ai-article",
             "article_title": "AI Revolution",
             "article_content": VALID_ARTICLE_CONTENT,
+            "dry_run": True,
         },
         storage=storage,
         now=datetime(2026, 6, 12, 10, 0, 0, tzinfo=timezone.utc),
     )
 
     # Falls back to placeholder
-    assert result.response["status"] == "accepted"
+    assert result.response["status"] == "dry_run"
     assert result.manifest["generation"]["engine"] == "local-deterministic-placeholder"
     assert result.manifest["generation"]["deterministic"] is True
     assert any("LLM script generation failed" in w for w in result.response["warnings"])
 
     shutil.rmtree(artifact_root, ignore_errors=True)
+
+
+def _configure_failing_llm(monkeypatch) -> None:
+    from urllib.request import Request
+
+    from podcaster import script_gen
+
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://test.openai.azure.com/")
+    monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o-mini")
+    monkeypatch.setenv("AZURE_OPENAI_AUTH_MODE", "managed_identity")
+
+    def failing_transport(request: Request) -> bytes:
+        raise RuntimeError("LLM endpoint unavailable")
+
+    monkeypatch.setattr(script_gen, "_default_transport", failing_transport)
+    monkeypatch.setattr(
+        script_gen.ManagedIdentityTokenCredential, "get_token", staticmethod(lambda scope: "t")
+    )
+
+
+def test_configured_llm_failure_fails_closed_and_releases_reservation(
+    monkeypatch, tmp_path: Path
+) -> None:
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    _configure_failing_llm(monkeypatch)
+    payload = {
+        "week": "2026-W24",
+        "article_url": "https://example.com/ai-article",
+        "article_title": "AI Revolution",
+        "article_content": VALID_ARTICLE_CONTENT,
+    }
+    now = datetime(2026, 6, 12, 10, 0, 0, tzinfo=timezone.utc)
+
+    job_id = build_job_id(payload)
+    storage.put_bytes(f"jobs/{job_id}-dry-run/inputs/replay.json", b"preview", "text/plain")
+    with pytest.raises(ScriptGenerationFailed):
+        run_generation_job(payload, storage=storage, now=now)
+
+    assert storage.get_bytes(f"jobs/{job_id}/manifest.json") is None
+    assert storage.get_bytes(f"jobs/{job_id}/inputs/replay.json") is None
+    ledger = json.loads(storage.get_bytes(monthly_ledger_path("2026-06")) or b"{}")
+    assert all(e.get("job_id") != job_id for e in ledger.get("episodes", []))
+
+    assert storage.get_bytes(f"jobs/{job_id}-dry-run/inputs/replay.json") == b"preview"
+
+    # An identical re-run is not blocked by a replay collision.
+    with pytest.raises(ScriptGenerationFailed):
+        run_generation_job(payload, storage=storage, now=now)
+
+
+def test_unconfigured_endpoint_keeps_placeholder_for_non_dry_run(monkeypatch, tmp_path) -> None:
+    for name in ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_DEPLOYMENT"):
+        monkeypatch.delenv(name, raising=False)
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    result = run_generation_job(
+        {
+            "week": "2026-W24",
+            "article_url": "https://example.com/ai-article",
+            "article_title": "AI Revolution",
+            "article_content": VALID_ARTICLE_CONTENT,
+        },
+        storage=storage,
+        now=datetime(2026, 6, 12, 10, 0, 0, tzinfo=timezone.utc),
+    )
+    assert result.response["status"] == "accepted"
+    assert result.manifest["generation"]["engine"] == "local-deterministic-placeholder"
+
+
+def test_regeneration_gets_distinct_job_id_and_is_recorded(tmp_path: Path) -> None:
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    base = {"week": "2026-W43", "article_url": "https://example.com/a"}
+    regen = {
+        **base,
+        "regeneration": {
+            "supersedes_job_id": "podcast-2026-W43-9d737c6d013c",
+            "reason": "placeholder script was published",
+        },
+    }
+    assert build_job_id(base) != build_job_id(regen)
+
+    now = datetime(2026, 10, 20, 10, 0, 0, tzinfo=timezone.utc)
+    first = run_generation_job(base, storage=storage, now=now)
+    with pytest.raises(ReplayCollisionError):
+        run_generation_job(base, storage=storage, now=now)
+    second = run_generation_job(regen, storage=storage, now=now)
+
+    assert second.response["job_id"] != first.response["job_id"]
+    assert second.manifest["request"]["regeneration"] == regen["regeneration"]

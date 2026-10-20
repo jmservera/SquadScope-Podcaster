@@ -195,6 +195,28 @@ def validate_payload_details(payload: Any) -> PayloadValidationResult:
             if payload.get("force") is not True:
                 errors.append("cost_override requires force=true")
 
+    regeneration = payload.get("regeneration")
+    if regeneration is not None:
+        if not isinstance(regeneration, dict):
+            errors.append("regeneration must be an object")
+        else:
+            supersedes = regeneration.get("supersedes_job_id")
+            if (
+                not isinstance(supersedes, str)
+                or len(supersedes) > 128
+                or not re.fullmatch(r"podcast-[A-Za-z0-9_.-]+", supersedes)
+            ):
+                errors.append(
+                    "regeneration.supersedes_job_id must match ^podcast-[A-Za-z0-9_.-]+$ "
+                    "and be at most 128 characters"
+                )
+            reason = regeneration.get("reason")
+            if not isinstance(reason, str) or not reason.strip() or len(reason) > 500:
+                errors.append("regeneration.reason must be 1-500 characters")
+            unknown = sorted(set(regeneration) - {"supersedes_job_id", "reason"})
+            if unknown:
+                errors.append(f"regeneration has unknown fields: {', '.join(unknown)}")
+
     callback = payload.get("callback")
     if callback is not None and not isinstance(callback, dict):
         errors.append("callback must be an object")

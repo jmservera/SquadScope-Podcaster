@@ -686,6 +686,27 @@ class TestGenerateEndpoint:
 
     @patch("podcaster.monitoring.report_failure")
     @patch("podcaster.monitoring.run_generation_job")
+    def test_script_generation_failure_returns_502(
+        self, mock_run_generation_job, mock_report_failure, client, storage
+    ):
+        from podcaster.jobs import ScriptGenerationFailed
+
+        mock_run_generation_job.side_effect = ScriptGenerationFailed("secret detail")
+
+        resp = client.post(
+            "/api/generate",
+            json={"week": "2026-W24", "article_url": "https://example.com/article"},
+        )
+
+        assert resp.status_code == 502
+        body = resp.json()
+        assert body["status"] == "failed"
+        assert body["errors"] == ["script generation failed; no episode was produced"]
+        assert "secret detail" not in resp.text
+        assert mock_report_failure.call_args.kwargs["error_type"] == "ScriptGenerationFailed"
+
+    @patch("podcaster.monitoring.report_failure")
+    @patch("podcaster.monitoring.run_generation_job")
     def test_unrelated_generation_failure_remains_500(
         self, mock_run_generation_job, mock_report_failure, client, storage
     ):
