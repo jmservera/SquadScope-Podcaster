@@ -237,3 +237,45 @@ class TestGenerateScriptRepairFlow:
         assert any(
             "ownership soft-flag" in r.message and r.levelname == "WARNING" for r in caplog.records
         )
+
+
+def _section(title: str, turns: int) -> str:
+    hosts = ("Theo", "Vera")
+    lines = [f"{hosts[i % 2]}: Point {i} about {title} that we found useful." for i in range(turns)]
+    return f"## Section: {title}\n" + "\n".join(lines)
+
+
+SHORT_DRAFT = _section("First Topic", 4) + "\n" + _section("Signal Versus Noise", 3)
+FIXED_DRAFT = _section("First Topic", 4) + "\n" + _section("Signal Versus Noise", 4)
+
+
+class TestSectionValidationRepair:
+    def _gen(self, transport):
+        return generate_script(
+            week="2026-W43",
+            article_title="Test",
+            article_url="https://example.com/a",
+            article_content=VALID_ARTICLE_CONTENT,
+            config=_mock_config(),
+            token_provider=_fake_token_provider,
+            transport=transport,
+        )
+
+    def test_repair_succeeds_after_first_invalid_draft(self):
+        transport = _sequenced_transport([SHORT_DRAFT, FIXED_DRAFT])
+        script = self._gen(transport)
+        assert len(transport.calls) == 2
+        assert script.count("about Signal Versus Noise") == 4
+        repair = transport.calls[1]["messages"]
+        assert repair[-2]["role"] == "assistant"
+        assert "only the failing sections" in repair[-1]["content"].lower()
+        assert "only 3 host turn" in repair[-1]["content"]
+
+    def test_repair_exhaustion_still_raises(self):
+        from podcaster.script_gen import MAX_SECTION_REPAIRS
+        from podcaster.sections import SectionValidationError
+
+        transport = _sequenced_transport([SHORT_DRAFT])
+        with pytest.raises(SectionValidationError, match="at least 4"):
+            self._gen(transport)
+        assert len(transport.calls) == 1 + MAX_SECTION_REPAIRS
