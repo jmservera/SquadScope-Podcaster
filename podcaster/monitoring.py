@@ -54,7 +54,12 @@ from podcaster.auth import (
 from podcaster.credentials import CredentialStore
 from podcaster.failure_reporting import report_failure
 from podcaster.job_logs import LogLevel, read_logs
-from podcaster.jobs import ReplayCollisionError, failed_response, run_generation_job
+from podcaster.jobs import (
+    ReplayCollisionError,
+    ScriptGenerationFailed,
+    failed_response,
+    run_generation_job,
+)
 from podcaster.orchestration import process_review_decision
 from podcaster.podcast_config import PodcastConfigStore
 from podcaster.progress import (
@@ -563,6 +568,14 @@ async def api_generate(request: Request):
     except ReplayCollisionError:
         response = failed_response(["replay output already exists"])
         return JSONResponse(status_code=409, content=response)
+    except ScriptGenerationFailed:
+        report_failure(
+            container="podcaster-api",
+            error_type="ScriptGenerationFailed",
+            error_message="LLM script generation failed in /api/generate",
+        )
+        response = failed_response(["script generation failed; no episode was produced"])
+        return JSONResponse(status_code=502, content=response)
     except Exception:
         logger.exception("unhandled error in generation job")
         report_failure(
