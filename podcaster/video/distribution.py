@@ -780,6 +780,16 @@ def _reconcile_unknown_youtube_upload(
     return True, None
 
 
+def youtube_publication_metadata(
+    title: str, description: str, *, publication_marker: str = ""
+) -> dict[str, str]:
+    """Apply adapter limits while retaining an optional identity marker intact."""
+    suffix = f"\n\n{publication_marker}" if publication_marker else ""
+    if len(suffix) > 5000:
+        raise ValueError("YouTube publication marker exceeds the description limit")
+    return {"title": title[:100], "description": description[: 5000 - len(suffix)] + suffix}
+
+
 def upload_to_youtube(
     video_path: Path,
     title: str,
@@ -857,8 +867,7 @@ def upload_to_youtube(
 
     metadata = {
         "snippet": {
-            "title": title[:100],
-            "description": description[:5000],
+            **youtube_publication_metadata(title, description),
             "tags": tags_with_identity(tags or ["podcast", "tech", "open-source"], identity_tag),
             "categoryId": config.youtube_category_id,
         },

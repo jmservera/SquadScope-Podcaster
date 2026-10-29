@@ -311,7 +311,12 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
         raise DistributionOutboxError("YouTube owner identity readback is incomplete")
     channel_id = channels[0]["id"]
     tag = youtube_identity_tag(identity)
-    description = f"{metadata['description']}\n\nPublication {document['publication_digest']}"
+    provider_metadata = distribution.youtube_publication_metadata(
+        metadata["title"],
+        metadata["description"],
+        publication_marker=f"Publication {document['publication_digest']}",
+    )
+    title, description = provider_metadata["title"], provider_metadata["description"]
     tags = [
         tag,
         f"sqmedia-{document['artifact']['sha256']}",
@@ -345,7 +350,7 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
             def upload(authorize):
                 video, _url = distribution.upload_to_youtube(
                     path,
-                    metadata["title"],
+                    title,
                     description,
                     config,
                     tags=tags,
@@ -373,7 +378,7 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
             item.get("id") != video_id
             or not set(tags).issubset(item.get("snippet", {}).get("tags", []))
             or item.get("snippet", {}).get("channelId") != channel_id
-            or item.get("snippet", {}).get("title") != metadata["title"]
+            or item.get("snippet", {}).get("title") != title
             or item.get("snippet", {}).get("description") != description
         ):
             raise DistributionOutboxError("YouTube media identity mismatch")
@@ -387,15 +392,6 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
         )
 
     privacy, readiness_problems = readback()
-    # The observed ID is persisted before promotion and reused on redelivery.
-    repository.record_verification(
-        claim,
-        provider="youtube",
-        result="pending_provider",
-        source="youtube_media_readback",
-        provider_item_id=video_id,
-        native_state=privacy,
-    )
     if privacy not in {"public", "private", "unlisted"}:
         raise DistributionOutboxError("YouTube privacy readback is unknown")
     if readiness_problems:
@@ -406,6 +402,23 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
             _pending(repository, claim, "youtube", video_id, privacy, "youtube_media_readback")
             return
     else:
+        if privacy != "public":
+            # Persist the observed ID before promotion, counting this readback
+            # once. A final permitted private poll cannot admit more provider I/O.
+            repository.record_verification(
+                claim,
+                provider="youtube",
+                result="pending_provider",
+                source="youtube_media_readback",
+                provider_item_id=video_id,
+                native_state=privacy,
+            )
+            latest_leg = repository.read(claim.outbox_id)["providers"]["youtube"]
+            if latest_leg["verification_attempt"] >= latest_leg["verification_budget"]:
+                repository.schedule_reconciliation(
+                    claim, provider="youtube", due_at=repository.now() + timedelta(minutes=5)
+                )
+                return
         playlist = youtube_playlist.resolve_playlist_id(config, leg["context"].get("locale"))
         if playlist and not youtube_playlist.playlist_contains_video(
             playlist, video_id, token, transport=http, raise_on_error=True
@@ -427,7 +440,7 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
                 return (video_id if result.succeeded else None), result.privacy_status
 
             mutate("youtube", "public_promotion", promote, provider_id=video_id)
-        privacy, readiness_problems = readback()
+            privacy, readiness_problems = readback()
     if readiness_problems:
         _pending(repository, claim, "youtube", video_id, privacy, "youtube_processing_not_ready")
         return

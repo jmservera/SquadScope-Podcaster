@@ -2496,29 +2496,46 @@ class DistributionOutboxRepository:
         *,
         provider: str,
         due_at: datetime,
-    ) -> str:
+    ) -> str | None:
         captured: dict[str, str] = {}
 
         def _schedule(document: dict[str, Any]) -> None:
             self._require_claim(document, claim)
             leg = self._provider(document, provider)
+            horizon = _parse_time(str(leg.get("verification_horizon_at") or ""))
+            exhaustion_reason = None
+            if int(leg.get("verification_attempt") or 0) >= int(
+                leg.get("verification_budget") or 0
+            ):
+                exhaustion_reason = "provider verification budget is exhausted"
+            elif horizon is not None and due_at > horizon:
+                exhaustion_reason = "provider verification horizon is exhausted"
+            if exhaustion_reason:
+                captured.pop("token", None)
+                leg["result"] = "manual_handoff_required"
+                leg["next_reconcile_at"] = None
+                leg["active_schedule_token"] = None
+                leg["active_schedule_source"] = None
+                leg["schedule_notification_token"] = None
+                leg["schedule_notification_sent_at"] = None
+                leg["notification_reservation"] = None
+                if leg.get("verification"):
+                    leg["verification"]["result"] = "manual_handoff_required"
+                    leg["verification"]["exhaustion_reason"] = exhaustion_reason
+                self._refresh_aggregate(document)
+                _attempt_event(
+                    _active_attempt(document),
+                    "verifying",
+                    _iso(self.now()),
+                    provider=provider,
+                    result="manual_handoff_required",
+                    exhaustion_reason=exhaustion_reason,
+                )
+                return
             existing = leg.get("active_schedule_token")
             if existing and leg.get("active_schedule_source") != "initial_notification":
                 captured["token"] = str(existing)
                 return
-            if int(leg.get("verification_attempt") or 0) >= int(
-                leg.get("verification_budget") or 0
-            ):
-                leg["result"] = "manual_handoff_required"
-                leg["next_reconcile_at"] = None
-                self._refresh_aggregate(document)
-                raise DistributionOutboxError("provider verification budget is exhausted")
-            horizon = _parse_time(str(leg.get("verification_horizon_at") or ""))
-            if horizon is not None and due_at > horizon:
-                leg["result"] = "manual_handoff_required"
-                leg["next_reconcile_at"] = None
-                self._refresh_aggregate(document)
-                raise DistributionOutboxError("provider verification horizon is exhausted")
             token = hashlib.sha256(
                 f"{claim.outbox_id}|{provider}|{_iso(due_at)}".encode("utf-8")
             ).hexdigest()
@@ -2532,7 +2549,7 @@ class DistributionOutboxRepository:
             captured["token"] = token
 
         self._update(claim.outbox_id, _schedule)
-        return captured["token"]
+        return captured.get("token")
 
     def consume_schedule_token(
         self,

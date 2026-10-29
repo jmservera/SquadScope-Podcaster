@@ -94,7 +94,8 @@ def prepared_exact_video(reviewed_stage, monkeypatch, tmp_path, request):
     from podcaster.video.job_runner import run_video_generation
 
     storage, result, *_ = reviewed_stage
-    target = getattr(request, "param", "youtube")
+    parameters = getattr(request, "param", "youtube")
+    target = parameters["target"] if isinstance(parameters, dict) else parameters
     video_bytes = b"V" * (2 * 1024 * 1024 if target == "youtube_chunked" else 2048)
     job_id = result.response["job_id"]
     manifest = result.manifest
@@ -107,6 +108,8 @@ def prepared_exact_video(reviewed_stage, monkeypatch, tmp_path, request):
         article_summary="A reviewed technical summary.",
         description_template="Music: Licensed offline theme — https://credits.example/theme",
     )
+    if isinstance(parameters, dict):
+        manifest["request"].update(parameters.get("metadata", {}))
     manifest["review"]["snapshot"]["manifest_sha256"] = content_snapshot_sha256(manifest)
     storage.put_bytes(f"jobs/{job_id}/manifest.json", manifest_bytes(manifest), "application/json")
     _approve(storage, result)
@@ -400,6 +403,93 @@ def test_real_dispatcher_rechecks_youtube_processing_after_promotion(
     state = repository.read(document["outbox_id"])
     assert state["aggregate"]["externally_verified_public"] is False
     assert state["providers"]["youtube"]["verification"]["source"] == "youtube_processing_not_ready"
+
+
+@pytest.mark.parametrize("final_state", ["processing", "public", "private"])
+def test_real_dispatcher_final_permitted_youtube_poll_is_durable(
+    prepared_exact_video, monkeypatch, final_state
+):
+    from podcaster.video import distribution
+
+    storage, job_id, repository, document, config, _ = prepared_exact_video
+    _video_decision(storage, job_id, document)
+    http = _ReviewedYouTubeTransport(processing_status="processing")
+    monkeypatch.setattr(distribution.VideoDistributionConfig, "from_env", lambda: config)
+    monkeypatch.setattr(distribution, "_DefaultTransport", lambda: http)
+    monkeypatch.setattr(distribution, "_get_youtube_access_token", lambda *_: "offline")
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.DistributionOutboxRepository", lambda _: repository
+    )
+    for attempt in range(1, 9):
+        if attempt == 8 and final_state != "processing":
+            http.video["processingDetails"]["processingStatus"] = "succeeded"
+            http.video["status"]["privacyStatus"] = final_state
+        assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+        state = repository.read(document["outbox_id"])
+        leg = state["providers"]["youtube"]
+        assert leg["verification_attempt"] == attempt
+        assert len(http.readback_parts) == attempt
+        assert http.mutations == ["upload"]
+        if attempt < 8:
+            assert leg["result"] == "pending_provider"
+            assert state["attempts"][-1]["terminal_outcome"] is None
+            due = datetime.fromisoformat(leg["next_reconcile_at"].replace("Z", "+00:00"))
+            repository.now = lambda: due
+    assert state["claim"] is None
+    assert leg["next_reconcile_at"] is None
+    assert leg["active_schedule_token"] is None
+    assert repository.due_reconciliations() == []
+    if final_state == "public":
+        assert leg["result"] == "externally_verified_public"
+        assert state["attempts"][-1]["terminal_outcome"] == "published_verified"
+    else:
+        assert leg["result"] == leg["verification"]["result"] == "manual_handoff_required"
+        assert leg["verification"]["exhaustion_reason"] == (
+            "provider verification budget is exhausted"
+        )
+        assert state["attempts"][-1]["terminal_outcome"] == "manual_action_required"
+
+
+@pytest.mark.parametrize(
+    "prepared_exact_video",
+    [
+        {"target": "youtube", "metadata": {"article_title": "T" * 101}},
+        {"target": "youtube", "metadata": {"article_summary": "S" * 4920}},
+        {"target": "youtube", "metadata": {"article_summary": "S" * 5100}},
+    ],
+    indirect=True,
+)
+def test_real_dispatcher_binds_adapter_bounded_metadata_and_retains_marker(
+    prepared_exact_video, monkeypatch
+):
+    from podcaster.video import distribution
+
+    storage, job_id, repository, document, config, _ = prepared_exact_video
+    _video_decision(storage, job_id, document)
+    http = _ReviewedYouTubeTransport(processing_status="processing")
+    monkeypatch.setattr(distribution.VideoDistributionConfig, "from_env", lambda: config)
+    monkeypatch.setattr(distribution, "_DefaultTransport", lambda: http)
+    monkeypatch.setattr(distribution, "_get_youtube_access_token", lambda *_: "offline")
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.DistributionOutboxRepository", lambda _: repository
+    )
+    assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+    metadata = load_manifest(storage, job_id)["generation"]["video_runner"]["publication_metadata"]
+    snippet = http.video["snippet"]
+    marker = f"Publication {document['publication_digest']}"
+    assert snippet["title"] == metadata["title"][:100]
+    assert snippet["description"] == metadata["description"][: 5000 - len(marker) - 2] + (
+        "\n\n" + marker
+    )
+    assert len(snippet["title"]) <= 100 and len(snippet["description"]) <= 5000
+    assert snippet["description"].endswith(marker)
+    leg = repository.read(document["outbox_id"])["providers"]["youtube"]
+    due = datetime.fromisoformat(leg["next_reconcile_at"].replace("Z", "+00:00"))
+    repository.now = lambda: due
+    http.video["processingDetails"]["processingStatus"] = "succeeded"
+    assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+    assert repository.read(document["outbox_id"])["aggregate"]["externally_verified_public"]
+    assert http.mutations == ["upload", "promote"]
 
 
 @pytest.mark.parametrize(

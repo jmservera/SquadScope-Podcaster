@@ -88,6 +88,10 @@ Config-driven podcast generation engine. Receives article content and editorial 
     flags; audio publishing is not called. Provider public readback must prove
     exact identity/media before terminal success. Mutation stays disabled by
     default and legacy outboxes are not blanket enabled.
+    YouTube upload and identity readback share bounded metadata (100-character
+    title, 5,000-character description with the publication marker retained).
+    Each readback consumes one verification attempt; exhausted polling persists
+    a manual handoff and clears scheduling before the worker releases its claim.
 
 ## API Contract
 ### Config Contract (received via API payload)

@@ -376,6 +376,38 @@ def test_reconciliation_token_is_deduplicated_due_and_consumed_once(setup):
         repository.consume_schedule_token(claim, provider="youtube", token=token)
 
 
+@pytest.mark.parametrize("exhausted", ["budget", "horizon"])
+def test_exhausted_reconciliation_persists_handoff_and_clears_existing_token(setup, exhausted):
+    _storage, repository, clock, document, _created = setup
+    claim = repository.claim(
+        document["outbox_id"], owner="worker", execution_id="exec-1", lease_seconds=300
+    )
+    budget = document["providers"]["youtube"]["verification_budget"]
+    for _ in range(budget if exhausted == "budget" else 1):
+        repository.record_verification(
+            claim,
+            provider="youtube",
+            result="pending_provider",
+            source="provider_readback",
+            provider_item_id="pending-video",
+            native_state="private",
+        )
+    due = clock() + timedelta(days=2) if exhausted == "horizon" else clock()
+    assert repository.schedule_reconciliation(claim, provider="youtube", due_at=due) is None
+    state = repository.release(claim)
+    leg = state["providers"]["youtube"]
+    assert leg["result"] == leg["verification"]["result"] == "manual_handoff_required"
+    assert leg["verification"]["exhaustion_reason"] == (
+        f"provider verification {exhausted} is exhausted"
+    )
+    assert leg["verification"]["provider_item_id"] == "pending-video"
+    assert leg["verification_attempt"] == (budget if exhausted == "budget" else 1)
+    assert leg["next_reconcile_at"] is None
+    assert leg["active_schedule_token"] is None
+    assert leg["active_schedule_source"] is None
+    assert all(provider != "youtube" for _, provider, _ in repository.due_reconciliations())
+
+
 def test_lost_notification_is_repaired_idempotently(setup):
     _storage, repository, _clock, document, _created = setup
     sent = []
