@@ -34,6 +34,25 @@ until its separate MP4/job/destination-bound human outbox review. The production
 dispatcher only admits these reviewed-video records; enabling the mutation flag
 does not opt legacy records into a new route.
 
+Resolved episode title, summary, branding and music credits are retained in the
+video-runner manifest and SHA-256-bound into every reviewed destination context.
+Provider reconciliation markers are appended, not substituted for that metadata.
+An identical media-review HTTP retry preserves the original review timestamp,
+audit event and verification horizon, even when the server assigns a later
+request timestamp.
+
+Pending reviewed legs retain their authorization when another leg is already
+public or requires a manual handoff; finished mutations are not replayed.
+A due reconciliation token is consumed under the live claim before readback,
+then a still-pending leg receives a fresh bounded schedule. Early duplicates do
+not consume its token or poll the provider.
+
+Full stored MP4/audio proof and local MP4 hashing run at operation boundaries,
+including the adapter's first request and its return. Each upload chunk and
+retry still checks live fencing, review/runtime bindings, the unchanged manifest
+and the verified local file's inode/size/modification version. Chunk count does
+not multiply full media downloads; a changed local file stops subsequent I/O.
+
 Reviewed outbox Spotify video draft creation always performs strict, complete
 reconcile-before-create through the actual upload adapter. Disabling
 `PODCASTER_SPOTIFY_RECONCILE` blocks outbox admission, and

@@ -94,6 +94,8 @@ def prepared_exact_video(reviewed_stage, monkeypatch, tmp_path, request):
     from podcaster.video.job_runner import run_video_generation
 
     storage, result, *_ = reviewed_stage
+    target = getattr(request, "param", "youtube")
+    video_bytes = b"V" * (2 * 1024 * 1024 if target == "youtube_chunked" else 2048)
     job_id = result.response["job_id"]
     manifest = result.manifest
     manifest["request"].update(
@@ -101,6 +103,9 @@ def prepared_exact_video(reviewed_stage, monkeypatch, tmp_path, request):
         publish_run_id="40269058395",
         article_sha256="a" * 64,
         manifest_sha256="b" * 64,
+        article_title="Editorial episode title",
+        article_summary="A reviewed technical summary.",
+        description_template="Music: Licensed offline theme — https://credits.example/theme",
     )
     manifest["review"]["snapshot"]["manifest_sha256"] = content_snapshot_sha256(manifest)
     storage.put_bytes(f"jobs/{job_id}/manifest.json", manifest_bytes(manifest), "application/json")
@@ -128,7 +133,7 @@ def prepared_exact_video(reviewed_stage, monkeypatch, tmp_path, request):
     def compose(*args, output_path, **kwargs):
         proof = load_manifest(storage, job_id)["generation"]["synthesis_runner"]["audio"]
         assert kwargs["audio_path"].read_bytes() == storage.get_bytes(proof["path"])
-        output_path.write_bytes(b"V" * 2048)
+        output_path.write_bytes(video_bytes)
         return Mock(duration_seconds=60.0, segment_count=1)
 
     composer = Mock(side_effect=compose)
@@ -140,15 +145,14 @@ def prepared_exact_video(reviewed_stage, monkeypatch, tmp_path, request):
     monkeypatch.setattr("podcaster.video.job_runner.distribute_video", provider)
     monkeypatch.setattr("podcaster.video.job_runner.enqueue_distribution_job", notification)
     monkeypatch.delenv("DISTRIBUTION_OUTBOX_ENABLED", raising=False)
-    target = getattr(request, "param", "youtube")
-    if target == "spotify_live":
+    if target in {"spotify_live", "both_live"}:
         monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
     if target == "spotify_override":
         monkeypatch.setenv("PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE", "true")
     config = VideoDistributionConfig(
-        youtube_enabled=target == "youtube",
-        spotify_upload_enabled=target.startswith("spotify"),
-        spotify_video_publish_mode="live" if target == "spotify_live" else "draft",
+        youtube_enabled=target.startswith("youtube") or target.startswith("both"),
+        spotify_upload_enabled=target.startswith("spotify") or target.startswith("both"),
+        spotify_video_publish_mode="live" if target in {"spotify_live", "both_live"} else "draft",
         dry_run=False,
     )
     outcome = run_video_generation(job_id, storage, config=config, fanout=False)
@@ -160,7 +164,7 @@ def prepared_exact_video(reviewed_stage, monkeypatch, tmp_path, request):
     assert not provider_approval_is_valid(document, "youtube")
     provider.assert_not_called()
     notification.assert_not_called()
-    assert storage.get_bytes(document["artifact"]["path"]) == b"V" * 2048
+    assert storage.get_bytes(document["artifact"]["path"]) == video_bytes
     assert _distribution_human_approval(load_manifest(storage, job_id)) == {"approved": False}
     return storage, job_id, repository, document, config, composer
 
@@ -311,6 +315,12 @@ def test_real_dispatcher_uploads_exact_reviewed_mp4_then_promotes_once(
     assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
     assert http.bytes_uploaded == storage.get_bytes(document["artifact"]["path"])
     assert http.mutations == ["upload", "promote"]
+    metadata = load_manifest(storage, job_id)["generation"]["video_runner"]["publication_metadata"]
+    assert http.video["snippet"]["title"] == metadata["title"] == "Editorial episode title"
+    assert http.video["snippet"]["description"].startswith(metadata["description"] + "\n\n")
+    assert "A reviewed technical summary." in metadata["description"]
+    assert "Credits:" in metadata["description"]
+    assert "https://credits.example/theme" in metadata["description"]
     completed = repository.read(document["outbox_id"])
     assert completed["aggregate"]["externally_verified_public"] is True
     assert [r["operation"] for r in completed["providers"]["youtube"]["receipts"]] == [
@@ -386,7 +396,18 @@ def test_real_dispatcher_rechecks_youtube_processing_after_promotion(
 
 
 @pytest.mark.parametrize(
-    "drift", ["mp4", "provider", "job", "digest", "identity", "context", "window", "audio_replaced"]
+    "drift",
+    [
+        "mp4",
+        "provider",
+        "job",
+        "digest",
+        "identity",
+        "context",
+        "window",
+        "audio_replaced",
+        "metadata",
+    ],
 )
 def test_real_dispatcher_rejects_changed_bindings_before_provider_io(
     prepared_exact_video, monkeypatch, drift
@@ -418,6 +439,14 @@ def test_real_dispatcher_rejects_changed_bindings_before_provider_io(
     elif drift == "job":
         manifest = load_manifest(storage, job_id)
         manifest["generation"]["video_runner"]["distribution"]["outbox_id"] = "c" * 64
+        storage.put_bytes(
+            f"jobs/{job_id}/manifest.json", manifest_bytes(manifest), "application/json"
+        )
+    elif drift == "metadata":
+        manifest = load_manifest(storage, job_id)
+        manifest["generation"]["video_runner"]["publication_metadata"]["description"] = (
+            "Changed copy"
+        )
         storage.put_bytes(
             f"jobs/{job_id}/manifest.json", manifest_bytes(manifest), "application/json"
         )
@@ -521,7 +550,9 @@ def test_real_spotify_dispatcher_preserves_live_gate_and_exact_video_identity(
     storage, job_id, repository, document, config, _ = prepared_exact_video
     _video_decision(storage, job_id, document)
     marker = f"Publication {document['publication_digest']}; MP4 {document['artifact']['sha256']}"
-    title = f"Podcast {document['publication_identity']['week']} [{document['publication_digest']}]"
+    metadata = load_manifest(storage, job_id)["generation"]["video_runner"]["publication_metadata"]
+    title = f"{metadata['title']} [{document['publication_digest']}]"
+    description = f"{metadata['description']}\n\n{marker}"
     monkeypatch.setattr(VideoDistributionConfig, "from_env", lambda: config)
     monkeypatch.setattr(
         publish, "_get_credentials", lambda _: ("offline-show", "offline", "offline")
@@ -537,7 +568,7 @@ def test_real_spotify_dispatcher_preserves_live_gate_and_exact_video_identity(
         kwargs["before_mutation"]()
         assert kwargs["require_reconciliation"] is True
         assert path.read_bytes() == storage.get_bytes(document["artifact"]["path"])
-        assert kwargs["title"] == title and kwargs["description"] == marker
+        assert kwargs["title"] == title and kwargs["description"] == description
         return publish.PublishResult(status="draft", anchor_episode_id=123456)
 
     uploader = Mock(side_effect=upload)
@@ -557,7 +588,7 @@ def test_real_spotify_dispatcher_preserves_live_gate_and_exact_video_identity(
     def readback(_session, anchor_id, user_id):
         assert anchor_id == 123456
         assert user_id == "offline-user"
-        return published, {"id": anchor_id, "title": title, "description": marker}
+        return published, {"id": anchor_id, "title": title, "description": description}
 
     monkeypatch.setattr(publish, "_read_episode_overview", readback)
     assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
@@ -573,6 +604,287 @@ def test_real_spotify_dispatcher_preserves_live_gate_and_exact_video_identity(
         promote.assert_not_called()
         assert state["providers"]["spotify"]["result"] == "manual_handoff_required"
         assert state["aggregate"]["externally_verified_public"] is False
+
+
+@pytest.mark.parametrize("prepared_exact_video", ["both", "both_live"], indirect=True)
+def test_real_adapters_continue_pending_leg_without_replaying_finished_mutations(
+    prepared_exact_video, monkeypatch
+):
+    from podcaster import publish
+    from podcaster.video import distribution
+    from tests.test_publish import _mock_graphql_listing_resp, _mock_json_resp
+
+    storage, job_id, repository, document, config, _ = prepared_exact_video
+    _video_decision(storage, job_id, document)
+    clock = datetime.now(timezone.utc)
+    repository.now = lambda: clock
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.DistributionOutboxRepository", lambda _: repository
+    )
+    http = _ReviewedYouTubeTransport(processing_status="processing")
+    monkeypatch.setattr(distribution.VideoDistributionConfig, "from_env", lambda: config)
+    monkeypatch.setattr(distribution, "_DefaultTransport", lambda: http)
+    monkeypatch.setattr(distribution, "_get_youtube_access_token", lambda *_: "offline")
+    monkeypatch.setattr(
+        publish, "_get_credentials", lambda _: ("offline-show", "offline", "offline")
+    )
+    monkeypatch.setattr(publish.time, "sleep", lambda _: None)
+
+    class SpotifyNetwork:
+        def __init__(self):
+            self.episode = {"id": 123456, "isPublished": False, "isDraft": True}
+            self.creates = self.uploads = 0
+
+        def request(self, method, url, **kwargs):
+            if url == publish._SPOTIFY_CREATORS_GRAPHQL_URL:
+                return _mock_graphql_listing_resp([])
+            if url.endswith("/legacyIds"):
+                payload = {"stationId": "99", "userId": "7"}
+            elif url.endswith("/stations/99/episodes"):
+                self.creates += 1
+                payload = {"id": self.episode["id"]}
+            elif url.endswith("/update"):
+                self.episode.update(kwargs["json"])
+                self.episode["isDraft"] = not self.episode["isPublished"]
+                for source, target in (
+                    ("episodeType", "podcastEpisodeType"),
+                    ("seasonNumber", "podcastSeasonNumber"),
+                    ("episodeNumber", "podcastEpisodeNumber"),
+                ):
+                    self.episode[target] = kwargs["json"].get(source)
+                payload = {}
+            elif url.endswith("/signedUrl"):
+                payload = {
+                    "uploadId": "offline-upload",
+                    "signedUrlParts": [{"partNumber": 1, "url": "https://storage.example/part"}],
+                }
+            elif url == "https://storage.example/part":
+                assert kwargs["data"] == storage.get_bytes(document["artifact"]["path"])
+                self.uploads += 1
+                payload = {}
+            elif url.endswith("/process_upload"):
+                payload = {}
+            elif "/upload/media/" in url:
+                payload = {"request": {"state": "processed"}}
+            elif "/overview" in url:
+                payload = self.episode.copy()
+            else:
+                raise AssertionError(f"unexpected offline Spotify request: {method} {url}")
+            response = _mock_json_resp(payload)
+            response.status_code = 200
+            response.headers = {"ETag": "offline-part"}
+            return response
+
+    session = SpotifyNetwork()
+    monkeypatch.setattr(publish, "_build_session", lambda *_: session)
+    assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+    state = repository.read(document["outbox_id"])
+    assert state["providers"]["youtube"]["result"] == "pending_provider"
+    assert state["attempts"][-1]["terminal_outcome"] is None
+    assert session.creates == session.uploads == 1
+    assert http.mutations == ["upload"]
+    token = state["providers"]["youtube"]["active_schedule_token"]
+    due = state["providers"]["youtube"]["next_reconcile_at"]
+
+    # An early duplicate preserves the token and does not poll the pending leg.
+    readbacks = len(http.readback_parts)
+    assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+    assert len(http.readback_parts) == readbacks
+    assert (
+        repository.read(document["outbox_id"])["providers"]["youtube"]["active_schedule_token"]
+        == token
+    )
+
+    clock = datetime.fromisoformat(due.replace("Z", "+00:00"))
+    assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+    state = repository.read(document["outbox_id"])
+    leg = state["providers"]["youtube"]
+    assert leg["active_schedule_token"] != token
+    assert datetime.fromisoformat(leg["next_reconcile_at"].replace("Z", "+00:00")) > clock
+    assert state["attempts"][-1]["terminal_outcome"] is None
+    assert session.creates == session.uploads == 1
+
+    clock = datetime.fromisoformat(leg["next_reconcile_at"].replace("Z", "+00:00"))
+    http.video["processingDetails"]["processingStatus"] = "succeeded"
+    assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+    state = repository.read(document["outbox_id"])
+    assert state["providers"]["youtube"]["result"] == "externally_verified_public"
+    assert state["aggregate"]["externally_verified_public"] is (
+        config.spotify_video_publish_mode == "live"
+    )
+    assert state["attempts"][-1]["terminal_outcome"] == (
+        "published_verified"
+        if config.spotify_video_publish_mode == "live"
+        else "manual_action_required"
+    )
+    assert http.mutations == ["upload", "promote"]
+    assert session.creates == session.uploads == 1
+    metadata = load_manifest(storage, job_id)["generation"]["video_runner"]["publication_metadata"]
+    assert session.episode["title"].startswith(metadata["title"])
+    assert session.episode["description"].startswith(metadata["description"] + "\n\n")
+
+
+@pytest.mark.parametrize("prepared_exact_video", ["youtube_chunked"], indirect=True)
+@pytest.mark.parametrize("drift", [None, "local", "stored", "audio", "claim"])
+def test_real_chunked_adapter_has_constant_media_reads_and_fenced_local_copy(
+    prepared_exact_video, monkeypatch, drift
+):
+    from functools import partial
+
+    from podcaster.distribution_outbox import DistributionOutboxError, outbox_path
+    from podcaster.video import distribution, youtube
+
+    storage, job_id, repository, document, config, _ = prepared_exact_video
+    _video_decision(storage, job_id, document)
+    audio = load_manifest(storage, job_id)["generation"]["synthesis_runner"]["audio"]
+
+    class ChunkedNetwork(_ReviewedYouTubeTransport):
+        def __init__(self):
+            super().__init__()
+            self.chunks = []
+
+        def request_with_headers(self, url, **kwargs):
+            if kwargs.get("method") != "PUT":
+                return super().request_with_headers(url, **kwargs)
+            self.chunks.append(kwargs["data"])
+            if len(self.chunks) == 1:
+                if drift == "local":
+                    local_path.write_bytes(b"X" * document["artifact"]["size_bytes"])
+                elif drift == "stored":
+                    storage.put_bytes(
+                        document["artifact"]["path"],
+                        b"X" * document["artifact"]["size_bytes"],
+                        "video/mp4",
+                    )
+                elif drift == "audio":
+                    storage.put_bytes(audio["path"], b"changed-audio", "audio/mpeg")
+                elif drift == "claim":
+                    current = repository.read(document["outbox_id"])
+                    current["fencing_token"] += 1
+                    current["claim"]["fencing_token"] += 1
+                    storage.put_bytes(
+                        outbox_path(document["outbox_id"]),
+                        json.dumps(current).encode(),
+                        "application/json",
+                    )
+            size = sum(map(len, self.chunks))
+            if size < document["artifact"]["size_bytes"]:
+                return 308, {"range": f"bytes=0-{size - 1}"}, b""
+            self.bytes_uploaded = b"".join(self.chunks)
+            return 200, {}, b'{"id":"reviewed-video"}'
+
+    http = ChunkedNetwork()
+    monkeypatch.setattr(distribution.VideoDistributionConfig, "from_env", lambda: config)
+    monkeypatch.setattr(distribution, "_DefaultTransport", lambda: http)
+    monkeypatch.setattr(distribution, "_get_youtube_access_token", lambda *_: "offline")
+    monkeypatch.setattr(distribution, "_MAX_SINGLE_UPLOAD_BYTES", 1)
+    monkeypatch.setattr(
+        distribution,
+        "_load_chunked_uploader",
+        lambda: partial(youtube.upload_chunked, chunk_size=256 * 1024),
+    )
+    monkeypatch.setattr(youtube.time, "sleep", lambda _: None)
+    get_bytes = storage.get_bytes
+    reads = []
+
+    def tracked_read(path):
+        reads.append(path)
+        return get_bytes(path)
+
+    monkeypatch.setattr(storage, "get_bytes", tracked_read)
+    download = storage.download_file
+
+    def tracked_download(path, destination):
+        reads.append(path)
+        return download(path, destination)
+
+    monkeypatch.setattr(storage, "download_file", tracked_download)
+    upload = distribution.upload_to_youtube
+    local_path = None
+    adapter_reads = []
+
+    def tracked_upload(path, *args, **kwargs):
+        nonlocal local_path
+        local_path = path
+        reads.clear()
+        try:
+            return upload(path, *args, **kwargs)
+        finally:
+            adapter_reads.extend(reads)
+
+    monkeypatch.setattr(distribution, "upload_to_youtube", tracked_upload)
+    if drift is not None:
+        expected_error = (
+            ReviewBindingError
+            if drift == "audio"
+            else (DistributionOutboxError, distribution.YouTubeDeliveryError)
+        )
+        with pytest.raises(expected_error):
+            _run_reviewed_worker(storage, document)
+        assert http.mutations == ["upload"]
+        assert len(http.chunks) == (1 if drift in {"local", "claim"} else 8)
+        assert (
+            repository.read(document["outbox_id"])["aggregate"]["externally_verified_public"]
+            is False
+        )
+    else:
+        assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+        assert len(http.chunks) == 8
+        assert http.bytes_uploaded == b"V" * document["artifact"]["size_bytes"]
+        assert http.mutations == ["upload", "promote"]
+        assert adapter_reads.count(document["artifact"]["path"]) == 1
+        assert 1 <= adapter_reads.count(audio["path"]) <= 2
+
+
+@pytest.mark.parametrize("endpoint", ["api", "monitoring"])
+def test_actual_media_review_http_retry_retains_original_binding_and_window(
+    prepared_exact_video, monkeypatch, endpoint
+):
+    from fastapi.testclient import TestClient
+
+    from podcaster.monitoring import app
+    from tests.test_api import make_handler
+
+    storage, job_id, repository, document, *_ = prepared_exact_video
+    monkeypatch.setenv("PODCASTER_API_KEY", "offline-review-key")
+    monkeypatch.setattr("podcaster.api.create_storage_backend", lambda: storage)
+    monkeypatch.setattr("podcaster.monitoring.get_storage", lambda: storage)
+    clock = Mock(wraps=datetime)
+    clock.now.return_value = datetime.fromisoformat(
+        document["created_at"].replace("Z", "+00:00")
+    ) + timedelta(seconds=2)
+    monkeypatch.setattr(f"podcaster.{endpoint}.datetime", clock)
+    payload = {
+        "job_id": job_id,
+        "reviewer": "actual-offline-media-reviewer",
+        "decision": "approved",
+        "review_checks_confirmed": True,
+        "media_review": {
+            "outbox_id": document["outbox_id"],
+            "publication_digest": document["publication_digest"],
+            "artifact_sha256": document["artifact"]["sha256"],
+        },
+    }
+
+    def submit():
+        body = json.dumps(payload).encode()
+        headers = {"x-podcaster-api-key": "offline-review-key", "Content-Length": str(len(body))}
+        if endpoint == "api":
+            return make_handler("POST", "/api/review", body, headers).response_code
+        with TestClient(app) as client:
+            return client.post("/api/review", json=payload, headers=headers).status_code
+
+    assert submit() == 200
+    original = repository.read(document["outbox_id"])
+    clock.now.return_value += timedelta(minutes=1)
+    assert submit() == 200
+    repeated = repository.read(document["outbox_id"])
+    assert repeated["media_review"] == original["media_review"]
+    assert repeated["providers"] == original["providers"]
+    assert len(repeated["media_review"]["audit_trail"]) == 1
+    payload["decision"] = "rejected"
+    assert submit() == 409
+    assert repository.read(document["outbox_id"])["media_review"] == original["media_review"]
 
 
 @pytest.mark.parametrize("prepared_exact_video", ["spotify_override"], indirect=True)

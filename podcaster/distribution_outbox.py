@@ -1769,7 +1769,11 @@ class DistributionOutboxRepository:
                 raise OutboxConflictError("media decision is not bound to this prepared video")
             previous = review.get("binding")
             if previous is not None:
-                if previous != binding:
+                # HTTP retries can receive a new server-generated timestamp.
+                # Keep the original decision, audit event and admission window.
+                if {key: value for key, value in previous.items() if key != "reviewed_at"} != {
+                    key: value for key, value in binding.items() if key != "reviewed_at"
+                }:
                     raise OutboxConflictError("media review already consumed; reconcile explicitly")
                 return
             if current.get("claim") is not None or any(
@@ -2568,6 +2572,18 @@ class DistributionOutboxRepository:
                 "failed_terminal": "failed_terminal",
             }
             outcome = terminal_map.get(weekly_state)
+            if (
+                outcome in {"partial", "manual_action_required"}
+                and "media_review" in document
+                and media_review_allows_distribution(document)
+                and any(
+                    leg.get("result") == "pending_provider"
+                    for leg in document["providers"].values()
+                )
+            ):
+                # A completed/manual leg must not revoke the already-reviewed
+                # pending leg. Ambiguous consumed intents still fence takeover.
+                outcome = None
             if outcome and not attempt.get("terminal_outcome"):
                 attempt["terminal_outcome"] = outcome
                 attempt["provider_evidence"] = {

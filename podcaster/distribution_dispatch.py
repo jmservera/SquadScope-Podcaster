@@ -37,6 +37,11 @@ def _file_digest(path):
     return digest.hexdigest()
 
 
+def _file_version(path):
+    stat = path.stat()
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
 def dispatch_reviewed_video(repository, claim, document, *, config=None, transport=None):
     """Use existing provider adapters; never admit legacy or unreviewed outboxes."""
     if "media_review" not in document:
@@ -53,16 +58,40 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
         manifest, job_id, document["publication_identity"]["publish_run_id"]
     )
     artifact = ArtifactReference(**document["artifact"])
+    metadata = manifest["generation"]["video_runner"].get("publication_metadata")
+    if (
+        not isinstance(metadata, dict)
+        or set(metadata) != {"title", "description"}
+        or not all(isinstance(value, str) and value.strip() for value in metadata.values())
+    ):
+        raise DistributionOutboxError("reviewed publication metadata is missing")
+    metadata_sha256 = hashlib.sha256(
+        json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     path = None
+    local_version = None
+    admitted_audio = None
+    admitted_audio_sha256 = None
 
-    def validate(provider, operation=None):
+    def validate(provider, operation=None, *, verify_media=True):
+        nonlocal admitted_audio, admitted_audio_sha256
         if provider == "spotify" and not publish._spotify_reconcile_enabled():
             raise DistributionOutboxError("Spotify outbox requires strict reconcile-before-create")
         current = repository.authorize_dispatch(claim, provider=provider, operation=operation)
         latest = load_manifest(repository.storage, job_id)
         if not is_exact_script_job(latest):
             raise DistributionOutboxError("canonical synthesis proof is required")
-        audio = validate_private_media_inputs(latest, repository.storage, job_id)
+        if verify_media:
+            audio = validate_private_media_inputs(latest, repository.storage, job_id)
+            admitted_audio = audio
+            admitted_audio_sha256 = hashlib.sha256(audio.content).hexdigest()
+        else:
+            # The upload reads the verified local copy, not the blob again.
+            # Retain live fencing, authorization, manifest and local-version
+            # checks on every chunk/retry; rehash media at operation boundaries.
+            if latest != manifest or admitted_audio is None:
+                raise DistributionOutboxError("reviewed manifest changed during provider operation")
+            audio = admitted_audio
         if (
             asdict(identity) != current["publication_identity"]
             or publication_identity(latest, job_id, identity.publish_run_id) != identity
@@ -79,14 +108,20 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
             != distribution.provider_runtime_sha256(provider, config, language)
             or current["providers"][provider]["context"].get("synthesis_audio_path") != audio.path
             or current["providers"][provider]["context"].get("synthesis_audio_sha256")
-            != hashlib.sha256(audio.content).hexdigest()
+            != admitted_audio_sha256
+            or current["providers"][provider]["context"].get("publication_metadata_sha256")
+            != metadata_sha256
+            or latest["generation"]["video_runner"].get("publication_metadata") != metadata
             or datetime.fromisoformat(latest["expires_at"].replace("Z", "+00:00"))
             <= repository.now()
         ):
             raise DistributionOutboxError("reviewed video or provider binding changed")
-        verify_artifact(repository.storage, artifact)
-        if path is not None and _file_digest(path) != artifact.sha256:
-            raise DistributionOutboxError("local reviewed MP4 changed")
+        if verify_media:
+            verify_artifact(repository.storage, artifact)
+            if path is not None and _file_digest(path) != artifact.sha256:
+                raise DistributionOutboxError("local reviewed MP4 changed")
+        if path is not None and local_version is not None and _file_version(path) != local_version:
+            raise DistributionOutboxError("local reviewed MP4 version changed")
         return current
 
     # Validate *all* destinations before the first provider call, not midway
@@ -104,6 +139,7 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
             or _file_digest(path) != artifact.sha256
         ):
             raise DistributionOutboxError("reviewed MP4 integrity verification failed")
+        local_version = _file_version(path)
 
         def mutate(provider, operation, call, *, provider_id=None):
             state = validate(provider)
@@ -130,14 +166,19 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
                 claim, provider=provider, provider_timeout_seconds=120, receipt_margin_seconds=30
             )
 
-            def authorize():
-                validate(provider, operation)
+            first_request = True
 
-            authorize()
+            def authorize():
+                nonlocal first_request
+                validate(provider, operation, verify_media=first_request)
+                first_request = False
+
+            validate(provider, operation)
             try:
                 item_id, native_state = call(authorize)
                 if not item_id:
                     raise DistributionOutboxError("provider did not return a confirmed identity")
+                validate(provider, operation)
             except Exception:
                 repository.record_receipt(
                     claim,
@@ -168,6 +209,16 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
             state = validate(provider)
             if state["providers"][provider]["result"] == "externally_verified_public":
                 continue
+            leg = state["providers"][provider]
+            token = leg.get("active_schedule_token")
+            if token and leg.get("active_schedule_source") == "worker":
+                due = leg.get("next_reconcile_at")
+                if (
+                    due is None
+                    or datetime.fromisoformat(due.replace("Z", "+00:00")) > repository.now()
+                ):
+                    continue
+                repository.consume_schedule_token(claim, provider=provider, token=token)
             if provider == "youtube" and config.youtube_enabled:
                 _youtube(
                     repository,
@@ -179,10 +230,20 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
                     validate,
                     mutate,
                     transport or distribution._DefaultTransport(),
+                    metadata,
                 )
             elif provider == "spotify" and config.spotify_upload_enabled:
                 _spotify(
-                    repository, claim, state, identity, config, path, language, validate, mutate
+                    repository,
+                    claim,
+                    state,
+                    identity,
+                    config,
+                    path,
+                    language,
+                    validate,
+                    mutate,
+                    metadata,
                 )
             else:
                 repository.record_verification(
@@ -238,7 +299,7 @@ class _GuardedTransport:
         return self.transport.request_with_headers(*args, **kwargs)
 
 
-def _youtube(repository, claim, document, identity, config, path, validate, mutate, http):
+def _youtube(repository, claim, document, identity, config, path, validate, mutate, http, metadata):
     validate("youtube")
     token = distribution._get_youtube_access_token(config, http)
     status, body = http.request(
@@ -250,6 +311,7 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
         raise DistributionOutboxError("YouTube owner identity readback is incomplete")
     channel_id = channels[0]["id"]
     tag = youtube_identity_tag(identity)
+    description = f"{metadata['description']}\n\nPublication {document['publication_digest']}"
     tags = [
         tag,
         f"sqmedia-{document['artifact']['sha256']}",
@@ -283,8 +345,8 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
             def upload(authorize):
                 video, _url = distribution.upload_to_youtube(
                     path,
-                    f"Podcast {identity.week}",
-                    f"Publication {document['publication_digest']}",
+                    metadata["title"],
+                    description,
                     config,
                     tags=tags,
                     identity_tag=tag,
@@ -311,15 +373,17 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
             item.get("id") != video_id
             or not set(tags).issubset(item.get("snippet", {}).get("tags", []))
             or item.get("snippet", {}).get("channelId") != channel_id
+            or item.get("snippet", {}).get("title") != metadata["title"]
+            or item.get("snippet", {}).get("description") != description
         ):
             raise DistributionOutboxError("YouTube media identity mismatch")
-        metadata = {
+        provider_metadata = {
             **item.get("snippet", {}),
             **item.get("status", {}),
             **item.get("processingDetails", {}),
         }
-        return metadata.get("privacyStatus"), youtube_publish.video_readiness_problems(
-            metadata, allow_public=True
+        return provider_metadata.get("privacyStatus"), youtube_publish.video_readiness_problems(
+            provider_metadata, allow_public=True
         )
 
     privacy, readiness_problems = readback()
@@ -383,13 +447,16 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
         _pending(repository, claim, "youtube", video_id, privacy, "youtube_media_readback")
 
 
-def _spotify(repository, claim, document, identity, config, path, language, validate, mutate):
+def _spotify(
+    repository, claim, document, identity, config, path, language, validate, mutate, metadata
+):
     validate("spotify")
     show_id, sp_dc, sp_key = publish._get_credentials(language)
     leg = document["providers"]["spotify"]
     episode_id = _provider_id(leg)
     marker = f"Publication {document['publication_digest']}; MP4 {document['artifact']['sha256']}"
-    title = f"Podcast {identity.week} [{document['publication_digest']}]"
+    title = f"{metadata['title']} [{document['publication_digest']}]"
+    description = f"{metadata['description']}\n\n{marker}"
     if not episode_id:
         if claim.read_only:
             repository.record_verification(
@@ -404,7 +471,7 @@ def _spotify(repository, claim, document, identity, config, path, language, vali
             result = publish.upload_video_to_episode(
                 path,
                 title=title,
-                description=marker,
+                description=description,
                 show_id=show_id,
                 sp_dc=sp_dc,
                 sp_key=sp_key,
@@ -434,7 +501,7 @@ def _spotify(repository, claim, document, identity, config, path, language, vali
             or not isinstance(episode, dict)
             or publish._episode_anchor_id(episode) != int(episode_id)
             or episode.get("title") != title
-            or marker not in str(episode.get("description") or "")
+            or episode.get("description") != description
         ):
             raise DistributionOutboxError("Spotify media identity readback is incomplete")
         return published

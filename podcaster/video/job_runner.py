@@ -1750,6 +1750,13 @@ def run_video_generation(
                     from podcaster.video.distribution import provider_runtime_sha256
 
                     for provider in objectives:
+                        provider_context[provider]["publication_metadata_sha256"] = hashlib.sha256(
+                            json.dumps(
+                                {"title": title, "description": description},
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ).encode("utf-8")
+                        ).hexdigest()
                         provider_context[provider]["runtime_sha256"] = provider_runtime_sha256(
                             provider, dist_config, job_language
                         )
@@ -2011,6 +2018,7 @@ def run_video_generation(
                     "segment_count": compose_result.segment_count,
                     "duration_seconds": compose_result.duration_seconds,
                     "performance": timings.to_dict(),
+                    "publication_metadata": {"title": title, "description": description},
                     "distribution": {
                         "status": dist_result.status,
                         "outbox_id": result_outbox_id,
