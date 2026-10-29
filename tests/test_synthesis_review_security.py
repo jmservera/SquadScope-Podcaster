@@ -86,7 +86,7 @@ def test_canonical_post_audio_review_never_authorizes_unseen_video(
 
 
 @pytest.fixture
-def prepared_exact_video(reviewed_stage, monkeypatch, tmp_path):
+def prepared_exact_video(reviewed_stage, monkeypatch, tmp_path, request):
     """Run real approval/synthesis/preparation against private local contracts."""
     from podcaster.generation import manifest_bytes
     from podcaster.review import content_snapshot_sha256
@@ -126,6 +126,8 @@ def prepared_exact_video(reviewed_stage, monkeypatch, tmp_path):
     )
 
     def compose(*args, output_path, **kwargs):
+        proof = load_manifest(storage, job_id)["generation"]["synthesis_runner"]["audio"]
+        assert kwargs["audio_path"].read_bytes() == storage.get_bytes(proof["path"])
         output_path.write_bytes(b"V" * 2048)
         return Mock(duration_seconds=60.0, segment_count=1)
 
@@ -138,7 +140,15 @@ def prepared_exact_video(reviewed_stage, monkeypatch, tmp_path):
     monkeypatch.setattr("podcaster.video.job_runner.distribute_video", provider)
     monkeypatch.setattr("podcaster.video.job_runner.enqueue_distribution_job", notification)
     monkeypatch.delenv("DISTRIBUTION_OUTBOX_ENABLED", raising=False)
-    config = VideoDistributionConfig(youtube_enabled=True, dry_run=False)
+    target = getattr(request, "param", "youtube")
+    if target == "spotify_live":
+        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
+    config = VideoDistributionConfig(
+        youtube_enabled=target == "youtube",
+        spotify_upload_enabled=target.startswith("spotify"),
+        spotify_video_publish_mode="live" if target == "spotify_live" else "draft",
+        dry_run=False,
+    )
     outcome = run_video_generation(job_id, storage, config=config, fanout=False)
     assert outcome.status == STATUS_COMPLETED
     assert outcome.distribution.public_delivery_status == "awaiting_review"
@@ -218,6 +228,243 @@ def test_exact_review_private_video_separate_media_decision_and_existing_outbox_
     )
     # Ordinary audio review/publication remains closed even after video approval.
     assert _distribution_human_approval(load_manifest(storage, job_id)) == {"approved": False}
+
+
+class _ReviewedYouTubeTransport:
+    def __init__(self):
+        self.video = None
+        self.mutations = []
+        self.bytes_uploaded = None
+
+    def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+        assert method == "POST"
+        self.mutations.append("upload")
+        self.video = {"id": "reviewed-video", **json.loads(data)}
+        self.video["snippet"]["channelId"] = "owned-channel"
+        self.video["status"]["uploadStatus"] = "processed"
+        return 200, {"location": "https://www.googleapis.com/upload-session"}, b""
+
+    def request(self, url, *, method="GET", headers=None, data=None):
+        if method == "PUT" and "upload-session" in url:
+            self.bytes_uploaded = data
+            return 200, b'{"id":"reviewed-video"}'
+        if method == "PUT":
+            self.mutations.append("promote")
+            self.video["status"]["privacyStatus"] = json.loads(data)["status"]["privacyStatus"]
+            return 200, b"{}"
+        if "/channels?" in url:
+            return 200, json.dumps(
+                {
+                    "items": [
+                        {
+                            "id": "owned-channel",
+                            "contentDetails": {"relatedPlaylists": {"uploads": "owned-uploads"}},
+                        }
+                    ]
+                }
+            ).encode()
+        if "/playlistItems?" in url:
+            return 200, b'{"items":[]}'
+        assert "/videos?" in url
+        return 200, json.dumps({"items": [self.video] if self.video else []}).encode()
+
+
+def _run_reviewed_worker(storage, document):
+    from podcaster.distribution_worker import process_message
+    from podcaster.queue import encode_distribution_message
+    from tests.test_distribution_worker import MemoryQueue, _message
+
+    return process_message(
+        _message(encode_distribution_message(document["outbox_id"])),
+        storage=storage,
+        queue=MemoryQueue(),
+        mutation_enabled=True,
+    )
+
+
+def test_real_dispatcher_uploads_exact_reviewed_mp4_then_promotes_once(
+    prepared_exact_video, monkeypatch
+):
+    from podcaster.video.distribution import VideoDistributionConfig
+
+    storage, job_id, repository, document, config, _composer = prepared_exact_video
+    http = _ReviewedYouTubeTransport()
+    monkeypatch.setattr(VideoDistributionConfig, "from_env", lambda: config)
+    monkeypatch.setattr("podcaster.video.distribution._DefaultTransport", lambda: http)
+    monkeypatch.setattr(
+        "podcaster.video.distribution._get_youtube_access_token", lambda *_: "offline"
+    )
+    # Even explicitly enabling the real worker cannot consume pending media.
+    assert _run_reviewed_worker(storage, document).reason == "media_review_required"
+    assert http.mutations == []
+    _video_decision(storage, job_id, document)
+    assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+    assert http.bytes_uploaded == storage.get_bytes(document["artifact"]["path"])
+    assert http.mutations == ["upload", "promote"]
+    completed = repository.read(document["outbox_id"])
+    assert completed["aggregate"]["externally_verified_public"] is True
+    assert [r["operation"] for r in completed["providers"]["youtube"]["receipts"]] == [
+        "draft_upload",
+        "public_promotion",
+    ]
+    assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+    assert http.mutations == ["upload", "promote"]
+
+
+@pytest.mark.parametrize(
+    "drift", ["mp4", "provider", "job", "digest", "identity", "context", "window", "audio_replaced"]
+)
+def test_real_dispatcher_rejects_changed_bindings_before_provider_io(
+    prepared_exact_video, monkeypatch, drift
+):
+    from dataclasses import replace
+
+    from podcaster.distribution_outbox import DistributionOutboxError, outbox_path
+    from podcaster.generation import manifest_bytes
+    from podcaster.video.distribution import VideoDistributionConfig
+
+    storage, job_id, repository, document, config, _composer = prepared_exact_video
+    _video_decision(storage, job_id, document)
+    document = repository.read(document["outbox_id"])
+    if drift == "mp4":
+        storage.put_bytes(document["artifact"]["path"], b"wrong" * 410, "video/mp4")
+    elif drift == "audio_replaced":
+        manifest = load_manifest(storage, job_id)
+        audio = manifest["generation"]["synthesis_runner"]["audio"]
+        replacement = b"other-complete-audio"
+        storage.put_bytes(audio["path"], replacement, "audio/mpeg")
+        for proof in (audio, audio["artifacts"]["mp3"], manifest["artifacts"][audio["path"]]):
+            proof["sha256"] = sha256(replacement).hexdigest()
+            proof["size_bytes"] = len(replacement)
+        storage.put_bytes(
+            f"jobs/{job_id}/manifest.json", manifest_bytes(manifest), "application/json"
+        )
+    elif drift == "provider":
+        config = replace(config, youtube_client_id="different-account")
+    elif drift == "job":
+        manifest = load_manifest(storage, job_id)
+        manifest["generation"]["video_runner"]["distribution"]["outbox_id"] = "c" * 64
+        storage.put_bytes(
+            f"jobs/{job_id}/manifest.json", manifest_bytes(manifest), "application/json"
+        )
+    elif drift == "identity":
+        document["publication_identity"]["article_sha256"] = "c" * 64
+    elif drift == "digest":
+        document["publication_digest"] = "c" * 64
+    elif drift == "context":
+        document["providers"]["youtube"]["context"]["playlist_id"] = "wrong-playlist"
+    elif drift == "window":
+        document["providers"]["youtube"]["verification_horizon_at"] = "2026-01-01T00:00:00Z"
+    if drift in {"identity", "digest", "context", "window"}:
+        storage.put_bytes(
+            outbox_path(document["outbox_id"]), manifest_bytes(document), "application/json"
+        )
+    external = Mock(side_effect=AssertionError("provider I/O before binding validation"))
+    monkeypatch.setattr(VideoDistributionConfig, "from_env", lambda: config)
+    monkeypatch.setattr("podcaster.video.distribution._get_youtube_access_token", external)
+    try:
+        outcome = _run_reviewed_worker(storage, document)
+        assert outcome.reason == "media_review_required"
+    except (DistributionOutboxError, ReviewBindingError):
+        pass
+    external.assert_not_called()
+
+
+def test_real_dispatcher_ambiguous_upload_is_never_repeated(prepared_exact_video, monkeypatch):
+    from podcaster.video.distribution import VideoDistributionConfig
+
+    storage, job_id, repository, document, config, _ = prepared_exact_video
+    _video_decision(storage, job_id, document)
+    http = _ReviewedYouTubeTransport()
+    monkeypatch.setattr(VideoDistributionConfig, "from_env", lambda: config)
+    monkeypatch.setattr("podcaster.video.distribution._DefaultTransport", lambda: http)
+    monkeypatch.setattr(
+        "podcaster.video.distribution._get_youtube_access_token", lambda *_: "offline"
+    )
+    upload = Mock(side_effect=RuntimeError("ambiguous create"))
+    monkeypatch.setattr("podcaster.video.distribution.upload_to_youtube", upload)
+    with pytest.raises(RuntimeError, match="ambiguous"):
+        _run_reviewed_worker(storage, document)
+    # Release the crashed claim as an expired worker would, without rearming.
+    state = repository.read(document["outbox_id"])
+    from podcaster.distribution_outbox import Claim
+
+    live = state["claim"]
+    repository.release(
+        Claim(
+            **{key: live[key] for key in Claim.__dataclass_fields__ if key != "outbox_id"},
+            outbox_id=document["outbox_id"],
+        )
+    )
+    assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+    assert upload.call_count == 1
+    assert (
+        repository.read(document["outbox_id"])["providers"]["youtube"]["result"]
+        == "publication_unknown"
+    )
+
+
+@pytest.mark.parametrize("prepared_exact_video", ["spotify", "spotify_live"], indirect=True)
+def test_real_spotify_dispatcher_preserves_live_gate_and_exact_video_identity(
+    prepared_exact_video, monkeypatch
+):
+    from podcaster import publish
+    from podcaster.video.distribution import VideoDistributionConfig
+
+    storage, job_id, repository, document, config, _ = prepared_exact_video
+    _video_decision(storage, job_id, document)
+    marker = f"Publication {document['publication_digest']}; MP4 {document['artifact']['sha256']}"
+    title = f"Podcast {document['publication_identity']['week']} [{document['publication_digest']}]"
+    monkeypatch.setattr(VideoDistributionConfig, "from_env", lambda: config)
+    monkeypatch.setattr(
+        publish, "_get_credentials", lambda _: ("offline-show", "offline", "offline")
+    )
+    monkeypatch.setattr(publish, "_build_session", lambda *_: Mock())
+    monkeypatch.setattr(
+        publish, "_resolve_legacy_ids", lambda _session, _show: ("offline-station", "offline-user")
+    )
+
+    published = False
+
+    def upload(path, **kwargs):
+        kwargs["before_mutation"]()
+        assert path.read_bytes() == storage.get_bytes(document["artifact"]["path"])
+        assert kwargs["title"] == title and kwargs["description"] == marker
+        return publish.PublishResult(status="draft", anchor_episode_id=123456)
+
+    uploader = Mock(side_effect=upload)
+
+    def promote_video(_id, **kwargs):
+        nonlocal published
+        assert config.spotify_video_publish_mode == "live"
+        assert publish._spotify_video_allow_live_publish()
+        kwargs["before_mutation"]()
+        published = True
+        return publish.VideoPromoteResult(terminal_state="published", is_published=True)
+
+    promote = Mock(side_effect=promote_video)
+    monkeypatch.setattr(publish, "upload_video_to_episode", uploader)
+    monkeypatch.setattr(publish, "promote_spotify_video_draft", promote)
+
+    def readback(_session, anchor_id, user_id):
+        assert anchor_id == 123456
+        assert user_id == "offline-user"
+        return published, {"id": anchor_id, "title": title, "description": marker}
+
+    monkeypatch.setattr(publish, "_read_episode_overview", readback)
+    assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+    assert uploader.call_count == 1
+    state = repository.read(document["outbox_id"])
+    if config.spotify_video_publish_mode == "live":
+        promote.assert_called_once()
+        assert state["aggregate"]["externally_verified_public"] is True
+        assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+        assert uploader.call_count == 1
+        promote.assert_called_once()
+    else:
+        promote.assert_not_called()
+        assert state["providers"]["spotify"]["result"] == "manual_handoff_required"
+        assert state["aggregate"]["externally_verified_public"] is False
 
 
 @pytest.mark.parametrize("field", ["outbox_id", "publication_digest", "artifact_sha256"])
@@ -328,7 +575,21 @@ def test_media_decision_requires_actual_fresh_explicit_review(prepared_exact_vid
     assert _private_storage_snapshot(storage) == before
 
 
-@pytest.mark.parametrize("drift", ["script", "audio", "request", "claim", "missing_proof"])
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "script",
+        "audio",
+        "request",
+        "claim",
+        "missing_proof",
+        "prepended_mp3",
+        "empty_proof_missing_mp3",
+        "missing_mp3_proof",
+        "selected_path",
+        "manifest_audio_digest",
+    ],
+)
 def test_private_video_rejects_stale_synthesis_without_side_effects(
     prepared_exact_video, monkeypatch, drift
 ):
@@ -346,10 +607,35 @@ def test_private_video_rejects_stale_synthesis_without_side_effects(
         manifest["request"]["language"] = "es"
     elif drift == "claim":
         manifest["generation"]["synthesis_claim"]["dispatch_id"] = "different-dispatch"
+    elif drift == "prepended_mp3":
+        path = f"jobs/{job_id}/unrelated.mp3"
+        storage.put_bytes(path, b"unreviewed-audio", "audio/mpeg")
+        manifest["artifacts"] = {
+            path: {"sha256": sha256(b"unreviewed-audio").hexdigest(), "size_bytes": 16},
+            **manifest["artifacts"],
+        }
+    elif drift == "empty_proof_missing_mp3":
+        audio = manifest["generation"]["synthesis_runner"]["audio"]
+        storage.delete_blob(audio["path"])
+        audio["artifacts"] = {}
+    elif drift == "missing_mp3_proof":
+        manifest["generation"]["synthesis_runner"]["audio"]["artifacts"].pop("mp3")
+    elif drift == "selected_path":
+        manifest["generation"]["synthesis_runner"]["audio"]["path"] = f"jobs/{job_id}/other.mp3"
+    elif drift == "manifest_audio_digest":
+        path = manifest["generation"]["synthesis_runner"]["audio"]["path"]
+        manifest["artifacts"][path]["sha256"] = "c" * 64
     else:
         manifest["generation"]["synthesis_runner"].pop("review_input_sha256")
     storage.put_bytes(f"jobs/{job_id}/manifest.json", manifest_bytes(manifest), "application/json")
     before = _private_storage_snapshot(storage)
+    from podcaster.review import validate_private_media_inputs
+    from podcaster.video.job_runner import _resolve_audio_path
+
+    with pytest.raises(ReviewBindingError):
+        validate_private_media_inputs(manifest, storage, job_id)
+    with pytest.raises(ReviewBindingError):
+        _resolve_audio_path(manifest, job_id, storage, storage.root)
     assert run_video_generation(job_id, storage, config=config).status == "skipped"
     assert composer.call_count == 1
     with pytest.raises(ReviewBindingError):

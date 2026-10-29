@@ -946,11 +946,14 @@ def test_run_synthesis_keeps_video_and_audio_blocked_until_media_review(monkeypa
     )
 
     assert outcome.status == job_runner.STATUS_COMPLETED
-    assert enqueued == []
+    assert enqueued == [JOB_ID]
     assert published == []
     persisted = load_manifest(storage, JOB_ID)
     assert persisted["review"]["status"] == "pending"
     assert persisted["review"]["synthesis_approval"]["status"] == "approved"
+    assert persisted["publishing"]["eligible"] is False
+    assert "human_review" in persisted["publishing"]["blocked_by"]
+    assert "video_publish" not in persisted["generation"]
     duplicate = job_runner.run_synthesis(
         JOB_ID,
         storage,
@@ -959,7 +962,9 @@ def test_run_synthesis_keeps_video_and_audio_blocked_until_media_review(monkeypa
         enqueue_video=lambda job_id: enqueued.append(job_id) or True,
     )
     assert duplicate.reason == job_runner.REASON_ALREADY_SYNTHESIZED
-    assert enqueued == []
+    assert enqueued == [JOB_ID, JOB_ID]
+    assert published == []
+    assert load_manifest(storage, JOB_ID) == persisted
 
 
 def _video_only_manifest(**request_extra) -> dict:
@@ -1002,7 +1007,7 @@ def test_run_synthesis_video_only_skips_audio_publish_and_records_skipped(monkey
         )
 
     assert outcome.status == job_runner.STATUS_COMPLETED
-    assert enqueued == []
+    assert enqueued == [JOB_ID]
     persisted = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode())
     publish_result = persisted["generation"]["publish_result"]
     assert publish_result["status"] == "skipped"
@@ -1012,6 +1017,9 @@ def test_run_synthesis_video_only_skips_audio_publish_and_records_skipped(monkey
     assert publish_result["details"] == {"reason": "spotify_audio_publish_disabled"}
     assert publish_result["publish_run_id"]
     assert persisted["status"] != "publish_failed"
+    assert persisted["review"]["status"] == "pending"
+    assert persisted["publishing"]["eligible"] is False
+    assert "video_publish" not in persisted["generation"]
     messages = [record.getMessage() for record in caplog.records]
     assert not any("no listener-facing publish target" in message for message in messages)
     assert not any(
@@ -1117,12 +1125,28 @@ def test_spotify_audio_publish_flag_matches_publisher_gate(monkeypatch):
 
 
 def test_run_synthesis_never_calls_video_queue_before_media_review(monkeypatch):
+    """Private preparation replaces the legacy live-video queue contract."""
     _patch_audio(monkeypatch)
     monkeypatch.delenv("VIDEO_GENERATION_ENABLED", raising=False)
     storage = FakeStorage()
     _stage(storage, _base_manifest(), _two_voice_script())
 
-    enqueue = Mock(side_effect=AssertionError("media has not been approved"))
+    enqueue = Mock(return_value=True)
+    external = Mock(side_effect=AssertionError("media has not been approved"))
+    monkeypatch.setattr(publish, "publish_episode", external)
+    monkeypatch.setattr("podcaster.video.job_runner.distribute_video", external)
+    monkeypatch.setattr("podcaster.video.job_runner.enqueue_distribution_job", external)
+
+    def private_preparation(job_id):
+        from podcaster.review import validate_private_media_inputs
+
+        assert job_id == JOB_ID
+        prepared = load_manifest(storage, JOB_ID)
+        verified = validate_private_media_inputs(prepared, storage, JOB_ID)
+        assert verified.content == storage.get_bytes(verified.path)
+        assert prepared["review"]["status"] == "pending"
+        assert prepared["publishing"]["eligible"] is False
+        return enqueue(job_id)
 
     outcome = job_runner.run_synthesis(
         JOB_ID,
@@ -1130,11 +1154,12 @@ def test_run_synthesis_never_calls_video_queue_before_media_review(monkeypatch):
         _production_config(),
         token_provider=lambda scope: "token",
         transport=lambda request: b"segment-bytes",
-        enqueue_video=enqueue,
+        enqueue_video=private_preparation,
     )
 
     assert outcome.status == job_runner.STATUS_COMPLETED
-    enqueue.assert_not_called()
+    enqueue.assert_called_once_with(JOB_ID)
+    external.assert_not_called()
 
 
 # --- idempotency & skip paths ---------------------------------------------

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import Any
 
 from podcaster.config import PodcastConfig
@@ -34,6 +35,12 @@ PROVIDER_AUTHORIZATION_FIELDS = (
 
 class ReviewBindingError(ValueError):
     """The staged content or dispatch no longer permits exact-content approval."""
+
+
+@dataclass(frozen=True)
+class VerifiedSynthesisAudio:
+    path: str
+    content: bytes
 
 
 def is_exact_script_job(manifest: dict[str, Any]) -> bool:
@@ -210,7 +217,7 @@ def private_media_input_sha256(manifest: dict[str, Any]) -> str:
 
 def validate_private_media_inputs(
     manifest: dict[str, Any], storage: StorageBackend, job_id: str
-) -> None:
+) -> VerifiedSynthesisAudio:
     """Admit private video preparation only from completed, exact-reviewed audio."""
     try:
         validate_review_binding(manifest)
@@ -235,10 +242,36 @@ def validate_private_media_inputs(
             or cost_gate_blockers(manifest.get("cost_ledger"))
         ):
             raise ReviewBindingError("completed synthesis is not bound to reviewed inputs")
-        for artifact in runner["audio"]["artifacts"].values():
+        audio = runner["audio"]
+        proofs = audio["artifacts"]
+        if not isinstance(proofs, dict) or set(proofs) != {"mp3", "wav"}:
+            raise ReviewBindingError("complete MP3 and WAV synthesis proof is required")
+        selected = proofs["mp3"]
+        if any(audio[field] != selected[field] for field in ("path", "sha256", "size_bytes")):
+            raise ReviewBindingError("selected audio does not match synthesis proof")
+        manifest_artifacts = manifest["artifacts"]
+        if {
+            path for path in manifest_artifacts if isinstance(path, str) and path.endswith(".mp3")
+        } != {selected["path"]}:
+            raise ReviewBindingError("synthesized MP3 selection is missing or ambiguous")
+        mp3_content = b""
+        for kind, artifact in proofs.items():
             path = artifact["path"]
-            if not isinstance(path, str) or not path.startswith(f"jobs/{job_id}/"):
+            if (
+                not isinstance(path, str)
+                or not path.startswith(f"jobs/{job_id}/")
+                or str(PurePosixPath(path)) != path
+                or ".." in PurePosixPath(path).parts
+                or not path.endswith(f".{kind}")
+            ):
                 raise ReviewBindingError("synthesized media escapes the staged job")
+            staged = manifest_artifacts[path]
+            if (
+                type(artifact["size_bytes"]) is not int
+                or artifact["size_bytes"] <= 0
+                or any(staged[field] != artifact[field] for field in ("sha256", "size_bytes"))
+            ):
+                raise ReviewBindingError("staged media does not match complete synthesis proof")
             content = storage.get_bytes(path)
             if (
                 not content
@@ -246,6 +279,9 @@ def validate_private_media_inputs(
                 or len(content) != artifact["size_bytes"]
             ):
                 raise ReviewBindingError("synthesized media is missing or changed")
+            if kind == "mp3":
+                mp3_content = content
+        return VerifiedSynthesisAudio(path=selected["path"], content=mp3_content)
     except (KeyError, TypeError, AttributeError) as exc:
         raise ReviewBindingError("missing completed synthesis continuation proof") from exc
 

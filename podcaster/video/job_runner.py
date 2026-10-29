@@ -1085,9 +1085,10 @@ def run_video_generation(
             raise
         raise TransientVideoError(f"invalid manifest for job_id={job_id}") from exc
     exact_script_job = is_exact_script_job(manifest)
+    reviewed_audio = None
     if exact_script_job:
         try:
-            validate_private_media_inputs(manifest, storage, job_id)
+            reviewed_audio = validate_private_media_inputs(manifest, storage, job_id)
         except ReviewBindingError:
             return VideoOutcome(job_id, STATUS_SKIPPED, reason="completed_media_review_required")
 
@@ -1700,7 +1701,17 @@ def run_video_generation(
                         ownership_guard.assert_permit(archive_permit)
                         if exact_script_job:
                             latest_manifest = json.loads(storage.get_bytes(manifest_path(job_id)))
-                            validate_private_media_inputs(latest_manifest, storage, job_id)
+                            latest_audio = validate_private_media_inputs(
+                                latest_manifest, storage, job_id
+                            )
+                            if (
+                                latest_audio != reviewed_audio
+                                or audio_path is None
+                                or audio_path.read_bytes() != reviewed_audio.content
+                            ):
+                                raise ReviewBindingError(
+                                    "rendered audio no longer matches synthesis proof"
+                                )
 
                     artifact = commit_immutable_artifact(
                         storage,
@@ -1736,6 +1747,17 @@ def run_video_generation(
                             "feed_path": dist_config.spotify_rss_feed_path,
                         },
                     }
+                    from podcaster.video.distribution import provider_runtime_sha256
+
+                    for provider in objectives:
+                        provider_context[provider]["runtime_sha256"] = provider_runtime_sha256(
+                            provider, dist_config, job_language
+                        )
+                        if reviewed_audio is not None:
+                            provider_context[provider]["synthesis_audio_path"] = reviewed_audio.path
+                            provider_context[provider]["synthesis_audio_sha256"] = hashlib.sha256(
+                                reviewed_audio.content
+                            ).hexdigest()
                     outbox_permit = ownership_guard.begin(
                         "distribution_outbox",
                         allow_idempotent_takeover=True,
@@ -1746,7 +1768,17 @@ def run_video_generation(
                         ownership_guard.assert_permit(outbox_permit)
                         if exact_script_job:
                             latest_manifest = json.loads(storage.get_bytes(manifest_path(job_id)))
-                            validate_private_media_inputs(latest_manifest, storage, job_id)
+                            latest_audio = validate_private_media_inputs(
+                                latest_manifest, storage, job_id
+                            )
+                            if (
+                                latest_audio != reviewed_audio
+                                or audio_path is None
+                                or audio_path.read_bytes() != reviewed_audio.content
+                            ):
+                                raise ReviewBindingError(
+                                    "rendered audio no longer matches synthesis proof"
+                                )
 
                     outbox_document, _created = repository.enqueue(
                         publication_context,
@@ -2257,6 +2289,14 @@ def _resolve_audio_path(
     output_dir: Path,
 ) -> Path | None:
     """Download the episode audio from blob storage if available."""
+    from podcaster.review import is_exact_script_job, validate_private_media_inputs
+
+    if is_exact_script_job(manifest):
+        verified = validate_private_media_inputs(manifest, storage, job_id)
+        local_audio = output_dir / "audio.mp3"
+        local_audio.write_bytes(verified.content)
+        return local_audio
+
     # Check manifest for MP3 path
     artifacts = manifest.get("artifacts")
     mp3_path = None

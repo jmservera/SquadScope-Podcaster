@@ -228,6 +228,36 @@ def test_distribution_worker_infra_is_wired_but_provider_mutation_defaults_off()
     assert "DISTRIBUTION_WORKER_PROVIDER_MUTATION_ENABLED" in worker
     assert "param providerMutationEnabled string = 'false'" in worker
     assert "PODCAST_AUTO_PUBLISH" not in worker
+    distribution_params = main.split("module acaDistribution '", 1)[1].split(
+        "module acaDistributionScheduler '", 1
+    )[0]
+    for parameter in (
+        "spotifySessionCookieDc",
+        "spotifySessionCookieKey",
+        "spotifyShowId",
+        "spotifyVideoAllowLivePublish",
+        "spotifyVideoPublishMode",
+        "videoYoutubeEnabled",
+        "videoYoutubeCategoryId",
+        "videoYoutubePrivacy",
+        "videoYoutubePlaylistId",
+        "videoYoutubeClientId",
+        "videoYoutubeClientSecret",
+        "videoYoutubeRefreshToken",
+    ):
+        assert f"{parameter}: {parameter}" in distribution_params
+        assert f"param {parameter} string" in worker
+    for name in (
+        "youtube-client-id",
+        "youtube-client-secret",
+        "youtube-refresh-token",
+        "spotify-sp-dc",
+        "spotify-sp-key",
+    ):
+        assert f"secretRef: '{name}'" in worker
+    assert "secrets: concat(youtubeSecrets, spotifySecrets)" in worker
+    assert "spotifyConfigured ? [" in worker
+    assert "youtubeConfigured ? [" in worker
 
     assert "triggerType: 'Schedule'" in scheduler
     assert "'podcaster.distribution_scheduler'" in scheduler

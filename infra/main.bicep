@@ -580,6 +580,18 @@ module acaDistribution 'modules/aca-distribution.bicep' = {
     distributionImage: synthesisImage
     containerRegistryServer: acrLoginServer
     providerMutationEnabled: distributionWorkerProviderMutationEnabled
+    spotifySessionCookieDc: spotifySessionCookieDc
+    spotifySessionCookieKey: spotifySessionCookieKey
+    spotifyShowId: spotifyShowId
+    spotifyVideoAllowLivePublish: spotifyVideoAllowLivePublish
+    spotifyVideoPublishMode: spotifyVideoPublishMode
+    videoYoutubeEnabled: videoYoutubeEnabled
+    videoYoutubeCategoryId: videoYoutubeCategoryId
+    videoYoutubePrivacy: videoYoutubePrivacy
+    videoYoutubePlaylistId: videoYoutubePlaylistId
+    videoYoutubeClientId: videoYoutubeClientId
+    videoYoutubeClientSecret: videoYoutubeClientSecret
+    videoYoutubeRefreshToken: videoYoutubeRefreshToken
   }
   dependsOn: [
     artifactContainer

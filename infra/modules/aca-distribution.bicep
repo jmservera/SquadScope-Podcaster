@@ -1,7 +1,8 @@
 // Provider distribution worker (#681): queue-triggered ACA Job that consumes
 // distribution-jobs outbox identifiers and claims the durable outbox record.
 // Provider mutation remains disabled by default until a canary explicitly turns
-// DISTRIBUTION_WORKER_PROVIDER_MUTATION_ENABLED on with provider dispatch code.
+// DISTRIBUTION_WORKER_PROVIDER_MUTATION_ENABLED on. Actual media-bound human
+// approval remains required even when this flag is enabled.
 targetScope = 'resourceGroup'
 
 @description('Azure region for the Container Apps Job.')
@@ -37,6 +38,24 @@ param containerRegistryServer string = ''
 @description('Whether the worker may invoke mutating provider dispatch. Defaults false until canary.')
 param providerMutationEnabled string = 'false'
 
+@secure()
+param spotifySessionCookieDc string = ''
+@secure()
+param spotifySessionCookieKey string = ''
+param spotifyShowId string = ''
+param spotifyVideoAllowLivePublish string = 'false'
+param spotifyVideoPublishMode string = 'draft'
+param videoYoutubeEnabled string = 'false'
+param videoYoutubeCategoryId string = '28'
+param videoYoutubePrivacy string = 'unlisted'
+param videoYoutubePlaylistId string = ''
+@secure()
+param videoYoutubeClientId string = ''
+@secure()
+param videoYoutubeClientSecret string = ''
+@secure()
+param videoYoutubeRefreshToken string = ''
+
 @description('vCPU allocated to a distribution worker replica.')
 param jobCpu string = '1.0'
 
@@ -64,6 +83,26 @@ param maxExecutions int = 2
 
 var storageDnsSuffix = environment().suffixes.storage
 var hasContainerRegistry = !empty(containerRegistryServer)
+var youtubeConfigured = videoYoutubeEnabled == 'true'
+var spotifyConfigured = !empty(spotifySessionCookieDc) && !empty(spotifySessionCookieKey)
+var youtubeSecrets = youtubeConfigured ? [
+  { name: 'youtube-client-id', value: videoYoutubeClientId }
+  { name: 'youtube-client-secret', value: videoYoutubeClientSecret }
+  { name: 'youtube-refresh-token', value: videoYoutubeRefreshToken }
+] : []
+var spotifySecrets = spotifyConfigured ? [
+  { name: 'spotify-sp-dc', value: spotifySessionCookieDc }
+  { name: 'spotify-sp-key', value: spotifySessionCookieKey }
+] : []
+var youtubeEnvironment = youtubeConfigured ? [
+  { name: 'VIDEO_YOUTUBE_CLIENT_ID', secretRef: 'youtube-client-id' }
+  { name: 'VIDEO_YOUTUBE_CLIENT_SECRET', secretRef: 'youtube-client-secret' }
+  { name: 'VIDEO_YOUTUBE_REFRESH_TOKEN', secretRef: 'youtube-refresh-token' }
+] : []
+var spotifyEnvironment = spotifyConfigured ? [
+  { name: 'SP_DC', secretRef: 'spotify-sp-dc' }
+  { name: 'SP_KEY', secretRef: 'spotify-sp-key' }
+] : []
 
 resource distributionJob 'Microsoft.App/jobs@2025-01-01' = {
   name: distributionJobName
@@ -80,6 +119,7 @@ resource distributionJob 'Microsoft.App/jobs@2025-01-01' = {
       triggerType: 'Event'
       replicaTimeout: replicaTimeoutSeconds
       replicaRetryLimit: 1
+      secrets: concat(youtubeSecrets, spotifySecrets)
       registries: hasContainerRegistry ? [
         {
           server: containerRegistryServer
@@ -128,7 +168,7 @@ resource distributionJob 'Microsoft.App/jobs@2025-01-01' = {
             cpu: json(jobCpu)
             memory: jobMemory
           }
-          env: [
+          env: concat([
             {
               name: 'AZURE_CLIENT_ID'
               value: jobIdentityClientId
@@ -153,7 +193,16 @@ resource distributionJob 'Microsoft.App/jobs@2025-01-01' = {
               name: 'DISTRIBUTION_WORKER_PROVIDER_MUTATION_ENABLED'
               value: providerMutationEnabled
             }
-          ]
+            { name: 'VIDEO_YOUTUBE_ENABLED', value: videoYoutubeEnabled }
+            { name: 'VIDEO_YOUTUBE_CATEGORY_ID', value: videoYoutubeCategoryId }
+            { name: 'VIDEO_YOUTUBE_PRIVACY', value: videoYoutubePrivacy }
+            { name: 'VIDEO_YOUTUBE_PLAYLIST_ID', value: videoYoutubePlaylistId }
+            { name: 'VIDEO_SPOTIFY_UPLOAD_ENABLED', value: 'true' }
+            { name: 'SPOTIFY_PUBLISH_ENABLED', value: 'false' }
+            { name: 'SPOTIFY_SHOW_ID', value: spotifyShowId }
+            { name: 'SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH', value: spotifyVideoAllowLivePublish }
+            { name: 'SPOTIFY_VIDEO_PUBLISH_MODE', value: spotifyVideoPublishMode }
+          ], youtubeEnvironment, spotifyEnvironment)
         }
       ]
     }

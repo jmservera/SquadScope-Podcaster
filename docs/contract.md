@@ -247,8 +247,10 @@ Sample request fixtures for integration testing:
 Exact script review is pre-TTS consent, not approval of unseen audio or video.
 After successful one-shot synthesis, the same video runner may privately prepare
 an MP4 only when the completed synthesis claim, reviewed script, surviving input
-fingerprint, validated audio digests and sizes still agree. Missing or changed
-proof blocks preparation before recording. Normal jobs keep their existing route.
+fingerprint, complete nonempty MP3/WAV proof, staged artifact digests and sizes
+still agree. The renderer consumes the MP3 bytes returned by that same verifier,
+never a first-match manifest track. Missing/ambiguous selection or changed proof
+blocks preparation before recording. Normal jobs keep their existing route.
 
 The prepared MP4 is stored through the existing immutable-artifact/outbox
 contracts. Its outbox has `media_review.status=pending`; no provider upload,
@@ -281,11 +283,20 @@ replay is idempotent. The decision/audit and provider approvals are committed
 together in the existing outbox; generic audio approval stays separate. The
 existing scheduler owns one-shot notification repair after approval.
 
-This transition does **not** assert provider-publication capability: the current
-distribution worker's default dispatcher is not implemented. Its production
-mutation flag and legacy-outbox routing flag remain unchanged. No uploaded draft or public
-URL follows merely from media approval, a queue hint or outbox admission.
-Completing an operation-aware provider consumer, with actual external identity,
-ambiguity, lease/intent/receipt and terminal-readback contracts, is required
-before this route can publish. Do not substitute direct legacy distribution:
-its coarse provider callbacks do not implement those outbox contracts.
+The production distribution worker uses the existing YouTube and Spotify video
+adapters with separate outbox operations for draft creation/upload, playlist
+insertion and public promotion. Each operation consumes its own fenced intent
+and persists a receipt. A lost/ambiguous outcome is reconciliation-only and
+never repeats a create. Runtime destinations/policy are fingerprinted at
+preparation and bound into media review; changed providers, job/media identity,
+expired verification windows or changed bytes stop before provider mutation.
+Legacy outboxes are not automatically admitted by this dispatcher.
+
+`DISTRIBUTION_WORKER_PROVIDER_MUTATION_ENABLED` remains false by default;
+enabling it does not waive media review or the existing Spotify video live
+flags. Runtime provider credentials/policy reuse the video job's deployment
+parameters via secret references. Spotify audio is never invoked. Disabled
+destinations and RSS-only delivery require explicit operator handoff. Neither
+an uploaded draft, successful mutation response nor queue acknowledgement is
+terminal success: exact media/identity-bound authoritative public readback
+must satisfy the existing outbox verification proof.

@@ -1340,11 +1340,26 @@ def media_review_allows_distribution(document: Mapping[str, Any]) -> bool:
         == document.get("publication_identity", {}).get("accepted_job_id")
         and binding.get("publication_digest") == document.get("publication_digest")
         and binding.get("artifact_sha256") == document.get("artifact", {}).get("sha256")
+        and binding.get("destination_sha256") == media_destination_sha256(document)
         and binding in review.get("audit_trail", [])
         and all(
             provider_approval_is_valid(document, provider) for provider in document["providers"]
         )
     )
+
+
+def media_destination_sha256(document: Mapping[str, Any]) -> str:
+    return hashlib.sha256(
+        _canonical_json_bytes(
+            {
+                "objectives": document["provider_objectives"],
+                "contexts": {
+                    provider: leg.get("context") for provider, leg in document["providers"].items()
+                },
+                "artifact": document["artifact"],
+            }
+        )
+    ).hexdigest()
 
 
 def _attempt_event(attempt: dict[str, Any], state: str, at: str, **details: Any) -> None:
@@ -1732,6 +1747,7 @@ class DistributionOutboxRepository:
                 "accepted_job_id": accepted_job_id,
                 "publication_digest": publication_digest,
                 "artifact_sha256": artifact_sha256,
+                "destination_sha256": media_destination_sha256(document),
                 "reviewer": reviewer,
                 "reviewed_at": reviewed_at,
                 "decision": decision,
@@ -1748,6 +1764,7 @@ class DistributionOutboxRepository:
                 or current["publication_digest"] != publication_digest
                 or current["artifact"]["sha256"] != artifact_sha256
                 or current["artifact"]["media_kind"] != "video"
+                or media_destination_sha256(current) != binding["destination_sha256"]
             ):
                 raise OutboxConflictError("media decision is not bound to this prepared video")
             previous = review.get("binding")
@@ -2152,6 +2169,49 @@ class DistributionOutboxRepository:
             document["claim"]["lease_expires_at"] = _iso(now + timedelta(seconds=lease_seconds))
 
         return self._update(claim.outbox_id, _heartbeat)
+
+    def authorize_dispatch(
+        self, claim: Claim, *, provider: str, operation: str | None = None
+    ) -> dict[str, Any]:
+        """Check live fencing and the original verification window at provider I/O."""
+        document = self.read(claim.outbox_id)
+        if document is None:
+            raise DistributionOutboxError("outbox item does not exist")
+        self._require_claim(document, claim, mutation=operation is not None)
+        artifact = document["artifact"]
+        canonical = document.get("canonical_artifact") or {}
+        if (
+            document["publication_digest"]
+            != _publication_digest(document["publication_identity"], artifact)
+            or canonical.get("selected") is not True
+            or canonical.get("artifact_id") != artifact["sha256"]
+            or any(
+                canonical.get(field) != artifact[field]
+                for field in ("path", "sha256", "media_kind")
+            )
+        ):
+            raise DistributionOutboxError("canonical media identity changed")
+        leg = self._provider(document, provider)
+        if not provider_approval_is_valid(document, provider):
+            raise MediaReviewRequiredError("provider approval is missing or stale")
+        horizon = _parse_time(leg.get("verification_horizon_at"))
+        if (
+            horizon is None
+            or self.now() >= horizon
+            or int(leg.get("verification_attempt") or 0) >= int(leg.get("verification_budget") or 0)
+        ):
+            raise DistributionOutboxError("provider verification window is exhausted")
+        if operation is not None:
+            intent = leg.get("intent") or {}
+            if (
+                intent.get("operation") != operation
+                or not intent.get("consumed_at")
+                or intent.get("consumed_owner") != claim.owner
+                or intent.get("consumed_fence") != claim.fencing_token
+                or intent.get("consumed_attempt_id") != claim.attempt_id
+            ):
+                raise StaleClaimError("provider operation is not owned by this dispatch")
+        return document
 
     def persist_intent(
         self,

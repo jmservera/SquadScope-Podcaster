@@ -29,7 +29,10 @@ YouTube playlist insertion and public promotion require a durable human approval
 review manifest into the outbox and bound to the publication digest and manifest hash. Automated
 actors such as `system:auto-publish` are not accepted as distribution approval. An unapproved item
 may upload an unlisted/private draft, but it cannot consume playlist-insert or public-promotion
-intent.
+intent. Exact-script private media is stricter: no upload or claim is admitted
+until its separate MP4/job/destination-bound human outbox review. The production
+dispatcher only admits these reviewed-video records; enabling the mutation flag
+does not opt legacy records into a new route.
 
 Spotify video draft creation always performs strict, complete reconcile-before-create. The
 `PODCASTER_SPOTIFY_RECONCILE` escape hatch is ignored; disabling it cannot restore blind create.
@@ -37,7 +40,8 @@ Video upload retains separate audio/video episode identities, protected historic
 mode/operator gates, `uploadType=default`, and fail-closed handling for incomplete pagination or
 ambiguous provider state.
 
-Spotify RSS is a separate fenced provider leg. It requires
+Spotify RSS remains a separate provider objective requiring an operator handoff
+in the reviewed-video dispatcher. The external verification contract requires
 `VIDEO_SPOTIFY_RSS_PUBLIC_MEDIA_ORIGIN`, `VIDEO_SPOTIFY_RSS_PUBLIC_FEED_URL`, and
 `VIDEO_SPOTIFY_RSS_FEED_PATH`. Both public locators must be HTTPS without credentials, query
 parameters, or fragments; the media origin must not contain a path prefix. The worker appends the
@@ -45,7 +49,8 @@ immutable content-addressed artifact path, hashes the complete externally fetche
 requires its byte count and SHA-256 to match before feed mutation. Terminal success additionally
 requires an external feed fetch containing the exact outbox GUID and immutable enclosure URL. A
 private storage marker, signed SAS URL, inaccessible origin, redirect, content mismatch, or
-unverified feed never becomes `externally_verified_public`.
+unverified feed never becomes `externally_verified_public`. This release does not
+silently enable public RSS archive/feed mutation.
 
 Attempt records are append-only and use unique attempt identities, lifecycle events, authorization
 and predecessor references, mutation intents, receipts, and terminal evidence. A weekly decision is
