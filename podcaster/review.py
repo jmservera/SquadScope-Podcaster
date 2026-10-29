@@ -183,6 +183,73 @@ def validate_review_binding(manifest: dict[str, Any]) -> None:
         raise ReviewBindingError("missing or invalid exact-content human approval") from exc
 
 
+def private_media_input_sha256(manifest: dict[str, Any]) -> str:
+    """Bind completed synthesis to the reviewed inputs that survive synthesis.
+
+    The pre-TTS projection also includes placeholder artifacts and engine state;
+    those deliberately change on completion. Keep this continuation proof in
+    the existing synthesis record, never in a second publication registry.
+    """
+    generation = manifest["generation"]
+    return checksum(
+        manifest_bytes(
+            {
+                "job_id": manifest["job_id"],
+                "created_at": manifest["created_at"],
+                "expires_at": manifest["expires_at"],
+                "request": manifest["request"],
+                "cost_ledger": manifest["cost_ledger"],
+                "snapshot": manifest["review"]["snapshot"],
+                "resolved_podcast_config": generation["resolved_podcast_config"],
+                "provider_settings": generation["provider_settings"],
+                "provider_settings_sha256": generation["provider_settings_sha256"],
+            }
+        )
+    )
+
+
+def validate_private_media_inputs(
+    manifest: dict[str, Any], storage: StorageBackend, job_id: str
+) -> None:
+    """Admit private video preparation only from completed, exact-reviewed audio."""
+    try:
+        validate_review_binding(manifest)
+        generation = manifest["generation"]
+        runner = generation["synthesis_runner"]
+        claim = generation["synthesis_claim"]
+        script = storage.get_bytes(f"jobs/{job_id}/script.txt")
+        if (
+            manifest["job_id"] != job_id
+            or manifest["request"]["dry_run"] is not False
+            or job_id.endswith("-dry-run")
+            or not script
+            or checksum(script) != manifest["review"]["snapshot"]["script_sha256"]
+            or generation["audio_mode"] != "synthesized"
+            or runner["status"] != "completed"
+            or claim["status"] != "completed"
+            or claim["dispatch_id"] != generation["synthesis_queue"]["dispatch_id"]
+            or claim["manifest_sha256"] != manifest["review"]["snapshot"]["manifest_sha256"]
+            or runner["review_input_sha256"] != private_media_input_sha256(manifest)
+            or claim["review_input_sha256"] != runner["review_input_sha256"]
+            or not _audio_validation_ready(manifest)
+            or cost_gate_blockers(manifest.get("cost_ledger"))
+        ):
+            raise ReviewBindingError("completed synthesis is not bound to reviewed inputs")
+        for artifact in runner["audio"]["artifacts"].values():
+            path = artifact["path"]
+            if not isinstance(path, str) or not path.startswith(f"jobs/{job_id}/"):
+                raise ReviewBindingError("synthesized media escapes the staged job")
+            content = storage.get_bytes(path)
+            if (
+                not content
+                or checksum(content) != artifact["sha256"]
+                or len(content) != artifact["size_bytes"]
+            ):
+                raise ReviewBindingError("synthesized media is missing or changed")
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise ReviewBindingError("missing completed synthesis continuation proof") from exc
+
+
 def apply_review_decision(
     manifest: dict[str, Any],
     *,

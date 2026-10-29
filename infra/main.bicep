@@ -159,10 +159,12 @@ param synthesisJobName string = '${baseName}-synth'
 param videoJobName string = '${baseName}-video'
 
 @description('Queue-triggered provider distribution Container Apps Job name.')
-param distributionJobName string = '${baseName}-distribution'
+@maxLength(32)
+param distributionJobName string = '${take(baseName, 27)}-dist'
 
 @description('Scheduled reconciliation notifier Container Apps Job name.')
-param distributionSchedulerJobName string = '${baseName}-distribution-scheduler'
+@maxLength(32)
+param distributionSchedulerJobName string = '${take(baseName, 25)}-dsched'
 
 @description('Queue-triggered scale-out recorder Container Apps Job name (#552/#565).')
 param videoRecorderJobName string = '${baseName}-recorder'
@@ -294,6 +296,12 @@ param uiAuthSecret string = ''
 @description('Deploy VNet + private endpoints for ACA ↔ Storage connectivity. Requires environment recreation if enabling on an existing deployment (VNet integration is a create-time-only setting).')
 param deployVnet bool = false
 
+@description('Existing externally managed ACA subnet NSG resource ID. Preserve the current binding on redeployment; empty only for a subnet without an NSG.')
+param acaSubnetNetworkSecurityGroupId string = ''
+
+@description('Existing externally managed private-endpoint subnet NSG resource ID. Preserve the current binding on redeployment.')
+param peSubnetNetworkSecurityGroupId string = ''
+
 @allowed([
   'Enabled'
   'Disabled'
@@ -328,6 +336,8 @@ module network 'modules/network.bicep' = if (deployVnet) {
     vnetName: '${baseName}-vnet'
     storageAccountId: storage.id
     storageAccountName: storage.name
+    acaSubnetNetworkSecurityGroupId: acaSubnetNetworkSecurityGroupId
+    peSubnetNetworkSecurityGroupId: peSubnetNetworkSecurityGroupId
   }
 }
 

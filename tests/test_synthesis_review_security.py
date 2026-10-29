@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from unittest.mock import Mock
 
@@ -61,7 +61,8 @@ def test_canonical_post_audio_review_never_authorizes_unseen_video(
     assert manifest["generation"]["audio_mode"] == "synthesized"
     assert "video_runner" not in manifest["generation"]
     assert manifest["review"]["snapshot"]
-    video.assert_not_called()
+    # This queue now requests private preparation only, never provider dispatch.
+    video.assert_called_once_with(job_id, None)
 
     outcome = process_review_decision(
         job_id,
@@ -79,9 +80,281 @@ def test_canonical_post_audio_review_never_authorizes_unseen_video(
     assert "video_runner" not in persisted["generation"]
     publish.assert_not_called()
     if boundary == "video_queue":
-        video.assert_not_called()
+        video.assert_called_once_with(job_id, None)
     else:
         assert _distribution_human_approval(persisted) == {"approved": False}
+
+
+@pytest.fixture
+def prepared_exact_video(reviewed_stage, monkeypatch, tmp_path):
+    """Run real approval/synthesis/preparation against private local contracts."""
+    from podcaster.generation import manifest_bytes
+    from podcaster.review import content_snapshot_sha256
+    from podcaster.video.distribution import VideoDistributionConfig
+    from podcaster.video.job_runner import run_video_generation
+
+    storage, result, *_ = reviewed_stage
+    job_id = result.response["job_id"]
+    manifest = result.manifest
+    manifest["request"].update(
+        publication_identity_mode="canonical",
+        publish_run_id="40269058395",
+        article_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+    )
+    manifest["review"]["snapshot"]["manifest_sha256"] = content_snapshot_sha256(manifest)
+    storage.put_bytes(f"jobs/{job_id}/manifest.json", manifest_bytes(manifest), "application/json")
+    _approve(storage, result)
+    _patch_audio(monkeypatch)
+    monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "true")
+    private_queue = Mock(return_value=True)
+    synth = run_synthesis(
+        job_id,
+        storage,
+        load_tts_config(),
+        token_provider=lambda scope: "offline-token",
+        transport=lambda request: b"offline-segment",
+        enqueue_video=private_queue,
+    )
+    assert synth.status == STATUS_COMPLETED
+    private_queue.assert_called_once_with(job_id)
+    monkeypatch.setattr("podcaster.video.job_runner._probe_audio_duration", lambda _: 60.0)
+    monkeypatch.setattr("podcaster.video.job_runner._resolve_dog_logo", lambda *args: None)
+    monkeypatch.setattr("podcaster.video.sync_plan.check_repo_removed", lambda *args, **kw: False)
+    monkeypatch.setattr(
+        "podcaster.video.video_gen.record_episode", Mock(return_value=Mock(recorded=[]))
+    )
+
+    def compose(*args, output_path, **kwargs):
+        output_path.write_bytes(b"V" * 2048)
+        return Mock(duration_seconds=60.0, segment_count=1)
+
+    composer = Mock(side_effect=compose)
+    monkeypatch.setattr("podcaster.video.video_compose.compose_video", composer)
+    provider = Mock(side_effect=AssertionError("private preparation cannot distribute"))
+    notification = Mock(
+        side_effect=AssertionError("private preparation cannot notify distribution")
+    )
+    monkeypatch.setattr("podcaster.video.job_runner.distribute_video", provider)
+    monkeypatch.setattr("podcaster.video.job_runner.enqueue_distribution_job", notification)
+    monkeypatch.delenv("DISTRIBUTION_OUTBOX_ENABLED", raising=False)
+    config = VideoDistributionConfig(youtube_enabled=True, dry_run=False)
+    outcome = run_video_generation(job_id, storage, config=config, fanout=False)
+    assert outcome.status == STATUS_COMPLETED
+    assert outcome.distribution.public_delivery_status == "awaiting_review"
+    repository = DistributionOutboxRepository(storage)
+    document = repository.read(outcome.distribution.outbox_id)
+    assert document["media_review"]["status"] == "pending"
+    assert not provider_approval_is_valid(document, "youtube")
+    provider.assert_not_called()
+    notification.assert_not_called()
+    assert storage.get_bytes(document["artifact"]["path"]) == b"V" * 2048
+    assert _distribution_human_approval(load_manifest(storage, job_id)) == {"approved": False}
+    return storage, job_id, repository, document, config, composer
+
+
+def _video_decision(storage, job_id, document, **overrides):
+    return process_review_decision(
+        job_id,
+        storage=storage,
+        reviewer="actual-offline-media-reviewer",
+        reviewed_at=(
+            datetime.fromisoformat(document["created_at"].replace("Z", "+00:00"))
+            + timedelta(seconds=1)
+        ).isoformat(),
+        decision="approved",
+        review_checks_confirmed=True,
+        media_review={
+            "outbox_id": document["outbox_id"],
+            "publication_digest": document["publication_digest"],
+            "artifact_sha256": document["artifact"]["sha256"],
+            **overrides,
+        },
+    )
+
+
+def _private_storage_snapshot(storage):
+    return {
+        str(path.relative_to(storage.root)): path.read_bytes()
+        for path in storage.root.rglob("*")
+        if path.is_file()
+    }
+
+
+def test_exact_review_private_video_separate_media_decision_and_existing_outbox_progression(
+    prepared_exact_video,
+):
+    from podcaster.distribution_outbox import MediaReviewRequiredError
+
+    storage, job_id, repository, document, *_ = prepared_exact_video
+    with pytest.raises(MediaReviewRequiredError):
+        repository.claim(
+            document["outbox_id"], owner="worker", execution_id="one", lease_seconds=600
+        )
+    # Pending review cannot be queued by either existing scheduler scan.
+    notified = Mock()
+    assert repository.repair_notifications_page(notified)[0] == 0
+    assert repository.due_reconciliations_page()[0] == []
+    notified.assert_not_called()
+    _video_decision(storage, job_id, document)
+    approved = repository.read(document["outbox_id"])
+    assert provider_approval_is_valid(approved, "youtube")
+    assert approved["media_review"]["binding"]["artifact_sha256"] == document["artifact"]["sha256"]
+
+    # Queue notification uses the existing scheduler's consumed one-shot intent.
+    def notify(_id, authorize_send, mark_accepted):
+        assert authorize_send()
+        assert mark_accepted()
+        return True
+
+    assert repository.repair_notifications_page(notify)[0] == 1
+    assert repository.repair_notifications_page(notify)[0] == 0
+    claim = repository.claim(
+        document["outbox_id"], owner="worker", execution_id="one", lease_seconds=600
+    )
+    repository.persist_intent(claim, provider="youtube", operation="draft_upload")
+    repository.consume_intent(
+        claim, provider="youtube", provider_timeout_seconds=60, receipt_margin_seconds=15
+    )
+    # Ordinary audio review/publication remains closed even after video approval.
+    assert _distribution_human_approval(load_manifest(storage, job_id)) == {"approved": False}
+
+
+@pytest.mark.parametrize("field", ["outbox_id", "publication_digest", "artifact_sha256"])
+def test_wrong_media_binding_has_no_side_effects(prepared_exact_video, field):
+    storage, job_id, _repository, document, *_ = prepared_exact_video
+    before = _private_storage_snapshot(storage)
+    with pytest.raises(ReviewBindingError):
+        _video_decision(storage, job_id, document, **{field: "c" * 64})
+    assert _private_storage_snapshot(storage) == before
+
+
+def test_media_review_and_video_preparation_are_idempotent(prepared_exact_video):
+    from podcaster.video.job_runner import run_video_generation
+
+    storage, job_id, repository, document, config, composer = prepared_exact_video
+    assert run_video_generation(job_id, storage, config=config, fanout=False).status == "skipped"
+    assert composer.call_count == 1
+    _video_decision(storage, job_id, document)
+    _video_decision(storage, job_id, document)
+    assert len(repository.read(document["outbox_id"])["media_review"]["audit_trail"]) == 1
+    with pytest.raises(ReviewBindingError):
+        process_review_decision(
+            job_id,
+            storage=storage,
+            reviewer="different-reviewer",
+            reviewed_at="2026-10-29T11:16:00Z",
+            decision="approved",
+            review_checks_confirmed=True,
+            media_review={
+                "outbox_id": document["outbox_id"],
+                "publication_digest": document["publication_digest"],
+                "artifact_sha256": document["artifact"]["sha256"],
+            },
+        )
+
+
+@pytest.mark.parametrize("decision", ["rejected", "changes_requested"])
+def test_negative_media_decision_keeps_existing_outbox_closed(prepared_exact_video, decision):
+    from podcaster.distribution_outbox import MediaReviewRequiredError
+
+    _storage, job_id, repository, document, *_ = prepared_exact_video
+    reviewed_at = datetime.now(timezone.utc).isoformat()
+    repository.record_media_review(
+        document["outbox_id"],
+        accepted_job_id=job_id,
+        publication_digest=document["publication_digest"],
+        artifact_sha256=document["artifact"]["sha256"],
+        reviewer="actual-offline-media-reviewer",
+        reviewed_at=reviewed_at,
+        decision=decision,
+        checks_confirmed=True,
+    )
+    with pytest.raises(MediaReviewRequiredError):
+        repository.claim(
+            document["outbox_id"], owner="worker", execution_id="one", lease_seconds=600
+        )
+    assert repository.repair_notifications_page(Mock())[0] == 0
+    assert not provider_approval_is_valid(repository.read(document["outbox_id"]), "youtube")
+
+
+def test_media_review_starts_verification_budget_once_after_private_wait(prepared_exact_video):
+    from datetime import timedelta
+
+    _storage, job_id, repository, document, *_ = prepared_exact_video
+    admission = datetime.now(timezone.utc) + timedelta(days=2)
+    repository.now = lambda: admission
+    arguments = {
+        "accepted_job_id": job_id,
+        "publication_digest": document["publication_digest"],
+        "artifact_sha256": document["artifact"]["sha256"],
+        "reviewer": "actual-offline-media-reviewer",
+        "reviewed_at": admission.isoformat(),
+        "decision": "approved",
+        "checks_confirmed": True,
+    }
+    approved = repository.record_media_review(document["outbox_id"], **arguments)
+    horizon = approved["providers"]["youtube"]["verification_horizon_at"]
+    assert datetime.fromisoformat(horizon.replace("Z", "+00:00")) == admission + timedelta(hours=24)
+    repository.now = lambda: admission + timedelta(hours=1)
+    repeated = repository.record_media_review(document["outbox_id"], **arguments)
+    assert repeated["providers"]["youtube"]["verification_horizon_at"] == horizon
+    assert len(repeated["media_review"]["audit_trail"]) == 1
+
+
+@pytest.mark.parametrize("invalid", ["missing_checks", "old_time", "naive_time"])
+def test_media_decision_requires_actual_fresh_explicit_review(prepared_exact_video, invalid):
+    from podcaster.distribution_outbox import OutboxConflictError
+
+    storage, job_id, repository, document, *_ = prepared_exact_video
+    before = _private_storage_snapshot(storage)
+    with pytest.raises(OutboxConflictError):
+        repository.record_media_review(
+            document["outbox_id"],
+            accepted_job_id=job_id,
+            publication_digest=document["publication_digest"],
+            artifact_sha256=document["artifact"]["sha256"],
+            reviewer="actual-offline-media-reviewer",
+            reviewed_at=(
+                "2026-01-01T00:00:00Z"
+                if invalid == "old_time"
+                else datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+                if invalid == "naive_time"
+                else datetime.now(timezone.utc).isoformat()
+            ),
+            decision="approved",
+            checks_confirmed=invalid != "missing_checks",
+        )
+    assert _private_storage_snapshot(storage) == before
+
+
+@pytest.mark.parametrize("drift", ["script", "audio", "request", "claim", "missing_proof"])
+def test_private_video_rejects_stale_synthesis_without_side_effects(
+    prepared_exact_video, monkeypatch, drift
+):
+    from podcaster.generation import manifest_bytes
+    from podcaster.video.job_runner import run_video_generation
+
+    storage, job_id, _repository, document, config, composer = prepared_exact_video
+    manifest = load_manifest(storage, job_id)
+    if drift == "script":
+        storage.put_bytes(f"jobs/{job_id}/script.txt", b"unreviewed", "text/plain")
+    elif drift == "audio":
+        path = manifest["generation"]["synthesis_runner"]["audio"]["path"]
+        storage.put_bytes(path, b"wrong-audio", "audio/mpeg")
+    elif drift == "request":
+        manifest["request"]["language"] = "es"
+    elif drift == "claim":
+        manifest["generation"]["synthesis_claim"]["dispatch_id"] = "different-dispatch"
+    else:
+        manifest["generation"]["synthesis_runner"].pop("review_input_sha256")
+    storage.put_bytes(f"jobs/{job_id}/manifest.json", manifest_bytes(manifest), "application/json")
+    before = _private_storage_snapshot(storage)
+    assert run_video_generation(job_id, storage, config=config).status == "skipped"
+    assert composer.call_count == 1
+    with pytest.raises(ReviewBindingError):
+        _video_decision(storage, job_id, document)
+    assert _private_storage_snapshot(storage) == before
 
 
 def test_noncanonical_post_audio_review_keeps_legacy_approval_contract(tmp_path):

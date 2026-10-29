@@ -1054,7 +1054,11 @@ def run_video_generation(
     barrier instead of recording inline (RFC §3). The compose/distribute path is
     unchanged. ``fanout_scratch`` / ``clip_producer`` are injectable for tests.
     """
-    from podcaster.review import is_exact_script_job
+    from podcaster.review import (
+        ReviewBindingError,
+        is_exact_script_job,
+        validate_private_media_inputs,
+    )
 
     raw_manifest = storage.get_bytes(manifest_path(job_id))
     if raw_manifest is None:
@@ -1080,8 +1084,12 @@ def run_video_generation(
         if isinstance(exc, TransientVideoError):
             raise
         raise TransientVideoError(f"invalid manifest for job_id={job_id}") from exc
-    if is_exact_script_job(manifest):
-        return VideoOutcome(job_id, STATUS_SKIPPED, reason="completed_media_review_required")
+    exact_script_job = is_exact_script_job(manifest)
+    if exact_script_job:
+        try:
+            validate_private_media_inputs(manifest, storage, job_id)
+        except ReviewBindingError:
+            return VideoOutcome(job_id, STATUS_SKIPPED, reason="completed_media_review_required")
 
     # Imported here (not at module scope) to match the existing lazy
     # ``video_compose`` import policy in this module, while still binding the
@@ -1186,6 +1194,10 @@ def run_video_generation(
     if raw_script is None:
         raise TransientVideoError(f"no script for job_id={job_id}")
     script = raw_script.decode("utf-8")
+    if exact_script_job and (
+        hashlib.sha256(raw_script).hexdigest() != manifest["review"]["snapshot"]["script_sha256"]
+    ):
+        raise PermanentVideoError("reviewed script changed", reason="review_binding_changed")
     pinned_article = _load_pinned_article(manifest, storage, job_id)
     sections_metadata = _load_sections_metadata(storage, job_id)
 
@@ -1624,7 +1636,12 @@ def run_video_generation(
                             if platform == "spotify"
                             else None,
                         }
-                    elif enabled and not dist_config.dry_run and not outbox_routing_enabled():
+                    elif (
+                        enabled
+                        and not dist_config.dry_run
+                        and not outbox_routing_enabled()
+                        and not exact_script_job
+                    ):
                         try:
                             claim = append_evidence(
                                 storage,
@@ -1653,7 +1670,7 @@ def run_video_generation(
             evidence_failures: list[str] = []
 
             with timings.phase("distribution"):
-                if outbox_routing_enabled():
+                if outbox_routing_enabled() or exact_script_job:
                     if publication_context is None:
                         raise PermanentVideoError(
                             "distribution outbox requires canonical publication identity",
@@ -1678,6 +1695,13 @@ def run_video_generation(
                         allow_idempotent_takeover=True,
                     )
                     archive_token = ownership_guard.source_token(archive_permit)
+
+                    def authorize_private_archive() -> None:
+                        ownership_guard.assert_permit(archive_permit)
+                        if exact_script_job:
+                            latest_manifest = json.loads(storage.get_bytes(manifest_path(job_id)))
+                            validate_private_media_inputs(latest_manifest, storage, job_id)
+
                     artifact = commit_immutable_artifact(
                         storage,
                         output_path,
@@ -1685,11 +1709,18 @@ def run_video_generation(
                         content_type="video/mp4",
                         suffix=output_path.suffix,
                         source_ownership=archive_token,
-                        authorize=lambda: ownership_guard.assert_permit(archive_permit),
+                        authorize=authorize_private_archive,
                     )
                     ownership_guard.complete(archive_permit, target=artifact.path)
                     repository = DistributionOutboxRepository(storage)
-                    approval = _distribution_human_approval(manifest)
+                    # Pre-TTS (or generic audio) consent never approves unseen MP4
+                    # bytes. Exact-script jobs always prepare the existing outbox
+                    # privately; a separate artifact-bound review authorizes it.
+                    approval = (
+                        {"approved": False}
+                        if exact_script_job
+                        else _distribution_human_approval(manifest)
+                    )
                     provider_approvals = {provider: approval for provider in objectives}
                     provider_context: dict[str, dict[str, Any]] = {
                         "youtube": {
@@ -1710,6 +1741,13 @@ def run_video_generation(
                         allow_idempotent_takeover=True,
                     )
                     outbox_token = ownership_guard.source_token(outbox_permit)
+
+                    def authorize_private_outbox() -> None:
+                        ownership_guard.assert_permit(outbox_permit)
+                        if exact_script_job:
+                            latest_manifest = json.loads(storage.get_bytes(manifest_path(job_id)))
+                            validate_private_media_inputs(latest_manifest, storage, job_id)
+
                     outbox_document, _created = repository.enqueue(
                         publication_context,
                         artifact,
@@ -1717,54 +1755,65 @@ def run_video_generation(
                         enqueue_source="video_runner",
                         enqueue_version="v1",
                         source_ownership=outbox_token,
-                        authorize=lambda: ownership_guard.assert_permit(outbox_permit),
+                        authorize=authorize_private_outbox,
                         provider_approvals=provider_approvals,
                         provider_context={
                             provider: provider_context[provider] for provider in objectives
                         },
+                        await_media_review=exact_script_job,
                     )
                     ownership_guard.complete(
                         outbox_permit,
                         target=outbox_document["outbox_id"],
                     )
-                    notification_permit = ownership_guard.begin(
-                        "distribution_notification",
-                        allow_idempotent_takeover=True,
-                    )
-                    notification_token = ownership_guard.source_token(notification_permit)
-                    repository.reserve_notification(
-                        outbox_document["outbox_id"],
-                        source_ownership=notification_token,
-                        authorize=lambda: ownership_guard.assert_permit(notification_permit),
-                    )
-                    enqueue_distribution_job(
-                        outbox_document["outbox_id"],
-                        authorize_send=lambda: repository.authorize_notification_send(
+                    if not exact_script_job:
+                        notification_permit = ownership_guard.begin(
+                            "distribution_notification",
+                            allow_idempotent_takeover=True,
+                        )
+                        notification_token = ownership_guard.source_token(notification_permit)
+                        repository.reserve_notification(
                             outbox_document["outbox_id"],
                             source_ownership=notification_token,
                             authorize=lambda: ownership_guard.assert_permit(notification_permit),
-                        ),
-                        mark_accepted=lambda: repository.accept_notification_send(
+                        )
+                        enqueue_distribution_job(
                             outbox_document["outbox_id"],
-                            source_ownership=notification_token,
-                            authorize=lambda: ownership_guard.assert_permit(notification_permit),
-                        ),
-                    )
-                    ownership_guard.complete(
-                        notification_permit,
-                        target=outbox_document["outbox_id"],
-                    )
+                            authorize_send=lambda: repository.authorize_notification_send(
+                                outbox_document["outbox_id"],
+                                source_ownership=notification_token,
+                                authorize=lambda: ownership_guard.assert_permit(
+                                    notification_permit
+                                ),
+                            ),
+                            mark_accepted=lambda: repository.accept_notification_send(
+                                outbox_document["outbox_id"],
+                                source_ownership=notification_token,
+                                authorize=lambda: ownership_guard.assert_permit(
+                                    notification_permit
+                                ),
+                            ),
+                        )
+                        ownership_guard.complete(
+                            notification_permit,
+                            target=outbox_document["outbox_id"],
+                        )
                     dist_result = DistributionResult(
-                        status="partial",
-                        public_delivery_status="pending",
+                        status="completed" if exact_script_job else "partial",
+                        public_delivery_status="awaiting_review" if exact_script_job else "pending",
                         outbox_id=outbox_document["outbox_id"],
                         provider_outcomes={
-                            provider: "publication_unknown" for provider in objectives
+                            provider: "pending_provider"
+                            if exact_script_job
+                            else "publication_unknown"
+                            for provider in objectives
                         },
                         provider_records={
                             provider: {
                                 "provider": provider,
-                                "outcome": "publication_unknown",
+                                "outcome": "pending_provider"
+                                if exact_script_job
+                                else "publication_unknown",
                                 "status": "pending",
                                 "transport_status": "not_attempted",
                                 "verification": "none",
@@ -1814,6 +1863,9 @@ def run_video_generation(
             result_publish_run_id = getattr(dist_result, "publish_run_id", None)
             if not isinstance(result_publish_run_id, str):
                 result_publish_run_id = publish_run_id
+            result_outbox_id = getattr(dist_result, "outbox_id", None)
+            if not isinstance(result_outbox_id, str):
+                result_outbox_id = None
             result_provider_outcomes = getattr(dist_result, "provider_outcomes", None)
             if not isinstance(result_provider_outcomes, dict):
                 result_provider_outcomes = {}
@@ -1929,6 +1981,7 @@ def run_video_generation(
                     "performance": timings.to_dict(),
                     "distribution": {
                         "status": dist_result.status,
+                        "outbox_id": result_outbox_id,
                         "youtube_id": dist_result.youtube_id,
                         "blob_path": dist_result.blob_path,
                         "spotify_rss_updated": dist_result.spotify_rss_updated,

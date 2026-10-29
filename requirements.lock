@@ -107,11 +107,11 @@ pluggy==1.7.0
     # via pytest
 pycparser==3.12
     # via cffi
-pydantic==2.14.1
+pydantic==2.14.2
     # via
     #   squadscope-podcaster (pyproject.toml)
     #   fastapi
-pydantic-core==2.50.1
+pydantic-core==2.50.2
     # via pydantic
 pyee==13.0.1
     # via playwright

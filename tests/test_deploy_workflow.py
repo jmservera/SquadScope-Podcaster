@@ -15,6 +15,43 @@ ALERTS_BICEP = ROOT / "infra/modules/distribution-alerts.bicep"
 ACA_DISTRIBUTION_BICEP = ROOT / "infra/modules/aca-distribution.bicep"
 
 
+@pytest.mark.parametrize("base_length", [2, 22, 35])
+def test_distribution_default_names_fit_aca_and_preserve_parameter_consumers(base_length):
+    source = BICEP.read_text()
+    base = "p" * base_length
+    for parameter, limit, suffix in (
+        ("distributionJobName", 27, "-dist"),
+        ("distributionSchedulerJobName", 25, "-dsched"),
+    ):
+        assert f"param {parameter} string = '${{take(baseName, {limit})}}{suffix}'" in source
+        assert 2 <= len(base[:limit] + suffix) <= 32
+        assert f"output {parameter} string = " in source
+    assert "distributionJobName: distributionJobName" in source
+    assert "schedulerJobName: distributionSchedulerJobName" in source
+
+
+def test_redeployment_preserves_existing_aca_subnet_nsg_and_security_defaults():
+    source = BICEP.read_text()
+    network = (ROOT / "infra/modules/network.bicep").read_text()
+    workflow = REUSABLE_WORKFLOW.read_text()
+    assert "param acaSubnetNetworkSecurityGroupId string = ''" in source
+    assert "acaSubnetNetworkSecurityGroupId: acaSubnetNetworkSecurityGroupId" in source
+    assert "networkSecurityGroup: {\n            id: acaSubnetNetworkSecurityGroupId" in network
+    assert "empty(acaSubnetNetworkSecurityGroupId) ? {}" in network
+    assert "peSubnetNetworkSecurityGroupId: peSubnetNetworkSecurityGroupId" in source
+    assert "networkSecurityGroup: {\n            id: peSubnetNetworkSecurityGroupId" in network
+    assert 'peSubnetNetworkSecurityGroupId="$pe_subnet_nsg_id"' in workflow
+    assert "Microsoft.Network/networkSecurityGroups@" not in network  # external NSG ownership
+    assert "az network vnet subnet show" in workflow
+    assert 'acaSubnetNetworkSecurityGroupId="$aca_subnet_nsg_id"' in workflow
+    assert workflow.index("az network vnet subnet show") < workflow.index(
+        "az deployment group create"
+    )
+    openai = (ROOT / "infra/modules/openai.bicep").read_text()
+    assert openai.count("raiPolicyName: 'Microsoft.DefaultV2'") == 2
+    assert "azureADAuthenticationAsArmPolicy:" in (ROOT / "infra/modules/acr.bicep").read_text()
+
+
 @pytest.mark.parametrize("custom_policy", [False, True])
 def test_deployed_api_and_worker_have_identical_effective_review_provider_fingerprint(
     monkeypatch, custom_policy

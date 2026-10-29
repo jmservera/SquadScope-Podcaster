@@ -55,6 +55,8 @@ from podcaster.queue import (
 from podcaster.review import (
     ReviewBindingError,
     is_exact_script_job,
+    private_media_input_sha256,
+    validate_private_media_inputs,
     validate_review_binding,
     validate_review_snapshot,
 )
@@ -183,7 +185,9 @@ def run_synthesis(
         # generation unless the video was already produced for this job. Without
         # this, re-triggering a podcast that already has audio would never start
         # the video pipeline (the enqueue below in the synthesis path is skipped).
-        if video_generation_enabled() and _media_review_allows_video(manifest):
+        if video_generation_enabled() and _private_video_preparation_allowed(
+            manifest, storage, job_id
+        ):
             if _video_already_generated(manifest):
                 logger.info(
                     "video enqueue skipped job_id=%s reason=video_already_generated",
@@ -318,6 +322,7 @@ def run_synthesis(
             "dispatch_id": dispatch["dispatch_id"],
             "started_at": _iso(current),
             "manifest_sha256": latest["review"]["synthesis_approval"]["binding"]["manifest_sha256"],
+            "review_input_sha256": private_media_input_sha256(latest),
         }
         return manifest_bytes(latest)
 
@@ -482,6 +487,8 @@ def run_synthesis(
                 if claim.get("claim_id") != claim_id or claim.get("status") != "started":
                     raise ReviewBindingError("synthesis completion claim ownership changed")
                 validate_review_binding(document)
+                if private_media_input_sha256(document) != claim["review_input_sha256"]:
+                    raise ReviewBindingError("reviewed inputs changed during synthesis")
                 claim["status"] = "completed"
                 claim["completed_at"] = _iso(current)
                 _apply_completion(
@@ -548,7 +555,10 @@ def run_synthesis(
             # video episode (via podcaster.video.distribution). This runs
             # independently of the MP3 publish above, whether it ran or was skipped.
             # A failed or unconfigured enqueue never breaks synthesis completion.
-            if video_generation_enabled() and _media_review_allows_video(manifest):
+            completed_manifest = json.loads(storage.get_bytes(manifest_path(job_id)))
+            if video_generation_enabled() and _private_video_preparation_allowed(
+                completed_manifest, storage, job_id
+            ):
                 _enqueue_video(job_id, enqueue_video)
 
             logger.info(
@@ -959,9 +969,17 @@ def _video_already_generated(manifest: dict[str, Any]) -> bool:
     return isinstance(video_state, dict) and video_state.get("status") == STATUS_COMPLETED
 
 
-def _media_review_allows_video(manifest: dict[str, Any]) -> bool:
-    """Never turn exact-script or generic audio consent into live video authorization."""
-    return not is_exact_script_job(manifest)
+def _private_video_preparation_allowed(
+    manifest: dict[str, Any], storage: StorageBackend, job_id: str
+) -> bool:
+    """Private preparation is not distribution consent; the video runner enforces it."""
+    if not is_exact_script_job(manifest):
+        return True
+    try:
+        validate_private_media_inputs(manifest, storage, job_id)
+        return True
+    except ReviewBindingError:
+        return False
 
 
 def _enqueue_video(job_id: str, enqueue_video=None) -> None:
@@ -1078,6 +1096,8 @@ def _apply_completion(
     # marker regression stays visible in the manifest.
     generation["synthesis_runner"]["realized_audio_metadata_path"] = realized_metadata_path
     generation["synthesis_runner"]["plan_warnings"] = list(plan_warnings or [])
+    if is_exact_script_job(manifest):
+        generation["synthesis_runner"]["review_input_sha256"] = private_media_input_sha256(manifest)
 
     artifacts = manifest.get("artifacts")
     if isinstance(artifacts, dict):

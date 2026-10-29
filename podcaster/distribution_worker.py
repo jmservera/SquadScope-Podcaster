@@ -15,6 +15,7 @@ from podcaster.distribution_outbox import (
     Claim,
     DistributionOutboxError,
     DistributionOutboxRepository,
+    MediaReviewRequiredError,
     StaleClaimError,
 )
 from podcaster.queue import (
@@ -154,6 +155,9 @@ def process_message(
             execution_id=execution_value,
             lease_seconds=lease_seconds,
         )
+    except MediaReviewRequiredError:
+        queue.delete_message(message)
+        return DistributionWorkerOutcome(outbox_id, "handled", "media_review_required")
     except StaleClaimError:
         logger.info(
             "distribution outbox already claimed outbox_id=%s message_id=%s dequeue_count=%s",

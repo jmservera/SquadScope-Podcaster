@@ -242,3 +242,50 @@ Sample request fixtures for integration testing:
 
 - `tests/fixtures/podcaster_request_legacy_strings.json` — legacy string source artifacts
 - `tests/fixtures/podcaster_request_squadscope_objects.json` — SquadScope object references
+# Exact-script private video continuation
+
+Exact script review is pre-TTS consent, not approval of unseen audio or video.
+After successful one-shot synthesis, the same video runner may privately prepare
+an MP4 only when the completed synthesis claim, reviewed script, surviving input
+fingerprint, validated audio digests and sizes still agree. Missing or changed
+proof blocks preparation before recording. Normal jobs keep their existing route.
+
+The prepared MP4 is stored through the existing immutable-artifact/outbox
+contracts. Its outbox has `media_review.status=pending`; no provider upload,
+public archive, distribution notification or provider claim is admitted by
+pre-TTS consent. The review package is the private MP4 referenced by the outbox's
+`artifact.path`, together with `outbox_id`, `publication_digest` and
+`artifact.sha256`. Retrieve it through authenticated private storage; never
+make the container public for review.
+
+A separate actual human decision uses the existing authenticated `/api/review`:
+
+```json
+{
+  "job_id": "<existing accepted job>",
+  "reviewer": "<actual reviewer>",
+  "decision": "approved",
+  "review_checks_confirmed": true,
+  "media_review": {
+    "outbox_id": "<prepared outbox id>",
+    "publication_digest": "<that outbox publication digest>",
+    "artifact_sha256": "<the reviewed MP4 sha256>"
+  }
+}
+```
+
+`changes_requested` and `rejected` are also supported. Decisions must postdate the
+prepared artifact. Wrong/stale identities or media, missing explicit checks,
+prior ambiguous provider work, or conflicting replay fail closed. An identical
+replay is idempotent. The decision/audit and provider approvals are committed
+together in the existing outbox; generic audio approval stays separate. The
+existing scheduler owns one-shot notification repair after approval.
+
+This transition does **not** assert provider-publication capability: the current
+distribution worker's default dispatcher is not implemented. Its production
+mutation flag and legacy-outbox routing flag remain unchanged. No uploaded draft or public
+URL follows merely from media approval, a queue hint or outbox admission.
+Completing an operation-aware provider consumer, with actual external identity,
+ambiguity, lease/intent/receipt and terminal-readback contracts, is required
+before this route can publish. Do not substitute direct legacy distribution:
+its coarse provider callbacks do not implement those outbox contracts.

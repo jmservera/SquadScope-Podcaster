@@ -112,6 +112,10 @@ class OutboxConflictError(DistributionOutboxError):
     """Raised when an existing logical item conflicts with a new enqueue."""
 
 
+class MediaReviewRequiredError(DistributionOutboxError):
+    """Private prepared media cannot be claimed before its separate human review."""
+
+
 class StaleClaimError(DistributionOutboxError):
     """Raised when a stale or non-owning worker attempts a fenced write."""
 
@@ -1318,6 +1322,31 @@ def provider_approval_is_valid(
     )
 
 
+def media_review_allows_distribution(document: Mapping[str, Any]) -> bool:
+    """Keep normal jobs unchanged; exact-script media must retain its actual binding."""
+    if "media_review" not in document:
+        return True
+    review = document.get("media_review")
+    if not isinstance(review, Mapping):
+        return False
+    binding = review.get("binding")
+    return bool(
+        review.get("status") == "approved"
+        and isinstance(binding, Mapping)
+        and binding.get("decision") == "approved"
+        and binding.get("checks_confirmed") is True
+        and binding.get("outbox_id") == document.get("outbox_id")
+        and binding.get("accepted_job_id")
+        == document.get("publication_identity", {}).get("accepted_job_id")
+        and binding.get("publication_digest") == document.get("publication_digest")
+        and binding.get("artifact_sha256") == document.get("artifact", {}).get("sha256")
+        and binding in review.get("audit_trail", [])
+        and all(
+            provider_approval_is_valid(document, provider) for provider in document["providers"]
+        )
+    )
+
+
 def _attempt_event(attempt: dict[str, Any], state: str, at: str, **details: Any) -> None:
     event = {
         "sequence": len(attempt["events"]) + 1,
@@ -1503,6 +1532,7 @@ class DistributionOutboxRepository:
         authorize: Callable[[], None] | None = None,
         provider_approvals: Mapping[str, Mapping[str, Any]] | None = None,
         provider_context: Mapping[str, Mapping[str, Any]] | None = None,
+        await_media_review: bool = False,
     ) -> tuple[dict[str, Any], bool]:
         verify_artifact(self.storage, artifact)
         item_id = outbox_id_for(
@@ -1536,6 +1566,8 @@ class DistributionOutboxRepository:
                     or existing.get("provider_objectives") != expected["provider_objectives"]
                 ):
                     raise OutboxConflictError("logical outbox item conflicts with existing record")
+                if await_media_review and "media_review" not in existing:
+                    raise OutboxConflictError("existing outbox lacks the private media review gate")
                 if source_ownership is not None:
                     existing["source_ownership"] = _safe_value(source_ownership)
                 for provider in provider_objectives:
@@ -1630,6 +1662,8 @@ class DistributionOutboxRepository:
                 "updated_at": timestamp,
             }
             _ensure_truth_fields(document)
+            if await_media_review:
+                document["media_review"] = {"status": "pending", "audit_trail": []}
             _ensure_provider_reconciliation(
                 document,
                 due_at=self.now() + INITIAL_RECONCILIATION_DELAY,
@@ -1646,6 +1680,100 @@ class DistributionOutboxRepository:
             _create,
         )
         return captured, created
+
+    def record_media_review(
+        self,
+        outbox_id: str,
+        *,
+        accepted_job_id: str,
+        publication_digest: str,
+        artifact_sha256: str,
+        reviewer: str,
+        reviewed_at: str,
+        decision: str,
+        checks_confirmed: bool,
+        notes: str = "",
+    ) -> dict[str, Any]:
+        """Review the already-private immutable MP4, not a future render.
+
+        Persist approval on the existing provider legs and audit record in one
+        CAS. Repeated identical decisions are idempotent; competing or changed
+        decisions require explicit reconciliation, never silent reauthorization.
+        """
+        document = self.read(outbox_id)
+        if document is None:
+            raise OutboxConflictError("prepared video does not exist")
+        verify_artifact(self.storage, _artifact_from(document))
+        if decision not in {"approved", "changes_requested", "rejected"}:
+            raise OutboxConflictError("invalid media review decision")
+        approval = _provider_approval(
+            {
+                "approved": True,
+                "approved_by": reviewer,
+                "approved_at": reviewed_at,
+                "source": "manifest_human_review",
+            },
+            publication_digest=publication_digest,
+            manifest_sha256=document["publication_identity"]["manifest_sha256"],
+        )
+        if checks_confirmed is not True or approval["approved"] is not True:
+            raise OutboxConflictError("explicit human media review checks are required")
+        review_time = _parse_time(reviewed_at)
+        if (
+            review_time is None
+            or datetime.fromisoformat(reviewed_at.replace("Z", "+00:00")).tzinfo is None
+            or review_time < _parse_time(document["created_at"])
+            or review_time > self.now() + timedelta(minutes=5)
+        ):
+            raise OutboxConflictError("media decision predates its artifact or is future-dated")
+        binding = _safe_value(
+            {
+                "outbox_id": outbox_id,
+                "accepted_job_id": accepted_job_id,
+                "publication_digest": publication_digest,
+                "artifact_sha256": artifact_sha256,
+                "reviewer": reviewer,
+                "reviewed_at": reviewed_at,
+                "decision": decision,
+                "checks_confirmed": True,
+                "notes": notes,
+            }
+        )
+
+        def _record(current: dict[str, Any]) -> None:
+            review = current.get("media_review")
+            if (
+                not isinstance(review, dict)
+                or current["publication_identity"]["accepted_job_id"] != accepted_job_id
+                or current["publication_digest"] != publication_digest
+                or current["artifact"]["sha256"] != artifact_sha256
+                or current["artifact"]["media_kind"] != "video"
+            ):
+                raise OutboxConflictError("media decision is not bound to this prepared video")
+            previous = review.get("binding")
+            if previous is not None:
+                if previous != binding:
+                    raise OutboxConflictError("media review already consumed; reconcile explicitly")
+                return
+            if current.get("claim") is not None or any(
+                leg.get("intent") or leg.get("receipts") for leg in current["providers"].values()
+            ):
+                raise OutboxConflictError("media review cannot authorize ambiguous prior work")
+            review.update(status=decision, binding=binding)
+            review["audit_trail"].append(binding)
+            for leg in current["providers"].values():
+                if decision == "approved":
+                    leg["approval"] = approval
+                    # The existing verification budget begins at media
+                    # admission, not while the human is reviewing private bytes.
+                    leg["verification_horizon_at"] = _iso(self.now() + timedelta(hours=24))
+                    leg["active_schedule_token"] = None
+            if decision == "approved":
+                _ensure_provider_reconciliation(
+                    current, due_at=self.now() + INITIAL_RECONCILIATION_DELAY
+                )
+
+        return self._update(outbox_id, _record)
 
     def _register_artifact_reference(self, artifact_sha256: str, outbox_id: str) -> None:
         path = f"{ARTIFACT_REFERENCE_PREFIX}/{artifact_sha256}.json"
@@ -1816,6 +1944,8 @@ class DistributionOutboxRepository:
         result: dict[str, Any] = {}
 
         def _claim(document: dict[str, Any]) -> None:
+            if not media_review_allows_distribution(document):
+                raise MediaReviewRequiredError("separate prepared-media review required")
             now = self.now()
             _ensure_truth_fields(document)
             current = document.get("claim")
@@ -2458,6 +2588,8 @@ class DistributionOutboxRepository:
                 if raw is None:
                     continue
                 document = json.loads(raw.decode("utf-8"))
+                if not media_review_allows_distribution(document):
+                    continue
                 for provider, leg in document.get("providers", {}).items():
                     due_at = _parse_time(str(leg.get("next_reconcile_at") or ""))
                     token = leg.get("active_schedule_token")
@@ -2838,6 +2970,8 @@ class DistributionOutboxRepository:
             if raw is None:
                 continue
             document = _load_outbox_document(raw)
+            if not media_review_allows_distribution(document):
+                continue
             item_id = str(document["outbox_id"])
             document = self._update(
                 item_id,
@@ -3047,6 +3181,8 @@ class DistributionOutboxRepository:
         if mutation and (claim.read_only or current.get("read_only")):
             raise StaleClaimError("takeover claim is reconciliation-only")
         if mutation:
+            if not media_review_allows_distribution(document):
+                raise MediaReviewRequiredError("prepared-media review is missing or stale")
             attempt = _active_attempt(document)
             if attempt.get("authz_source") != "initial_enqueue" and not (
                 _recovery_authorization_binding_is_valid(
