@@ -2175,7 +2175,12 @@ class DistributionOutboxRepository:
         return self._update(claim.outbox_id, _heartbeat)
 
     def authorize_dispatch(
-        self, claim: Claim, *, provider: str, operation: str | None = None
+        self,
+        claim: Claim,
+        *,
+        provider: str,
+        operation: str | None = None,
+        provider_io: bool = True,
     ) -> dict[str, Any]:
         """Check live fencing and the original verification window at provider I/O."""
         document = self.read(claim.outbox_id)
@@ -2199,7 +2204,7 @@ class DistributionOutboxRepository:
         if not provider_approval_is_valid(document, provider):
             raise MediaReviewRequiredError("provider approval is missing or stale")
         horizon = _parse_time(leg.get("verification_horizon_at"))
-        if (
+        if (provider_io or operation is not None) and (
             horizon is None
             or self.now() >= horizon
             or int(leg.get("verification_attempt") or 0) >= int(leg.get("verification_budget") or 0)
@@ -2508,7 +2513,7 @@ class DistributionOutboxRepository:
                 leg.get("verification_budget") or 0
             ):
                 exhaustion_reason = "provider verification budget is exhausted"
-            elif horizon is not None and due_at > horizon:
+            elif horizon is None or self.now() >= horizon or due_at > horizon:
                 exhaustion_reason = "provider verification horizon is exhausted"
             if exhaustion_reason:
                 captured.pop("token", None)

@@ -448,6 +448,45 @@ def test_real_dispatcher_final_permitted_youtube_poll_is_durable(
             "provider verification budget is exhausted"
         )
         assert state["attempts"][-1]["terminal_outcome"] == "manual_action_required"
+    assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+    assert len(http.readback_parts) == 8
+    assert http.mutations == ["upload"]
+
+
+def test_real_dispatcher_delayed_due_message_persists_expired_pending_handoff(
+    prepared_exact_video, monkeypatch
+):
+    from podcaster.video import distribution
+
+    storage, job_id, repository, document, config, _ = prepared_exact_video
+    _video_decision(storage, job_id, document)
+    http = _ReviewedYouTubeTransport(processing_status="processing")
+    monkeypatch.setattr(distribution.VideoDistributionConfig, "from_env", lambda: config)
+    monkeypatch.setattr(distribution, "_DefaultTransport", lambda: http)
+    monkeypatch.setattr(distribution, "_get_youtube_access_token", lambda *_: "offline")
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.DistributionOutboxRepository", lambda _: repository
+    )
+    assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+    leg = repository.read(document["outbox_id"])["providers"]["youtube"]
+    late = datetime.fromisoformat(leg["verification_horizon_at"].replace("Z", "+00:00"))
+    repository.now = lambda: late + timedelta(seconds=1)
+    assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+    state = repository.read(document["outbox_id"])
+    leg = state["providers"]["youtube"]
+    assert leg["result"] == leg["verification"]["result"] == "manual_handoff_required"
+    assert leg["verification"]["exhaustion_reason"] == (
+        "provider verification horizon is exhausted"
+    )
+    assert leg["verification_attempt"] == 1
+    assert leg["next_reconcile_at"] is None
+    assert leg["active_schedule_token"] is None
+    assert state["claim"] is None
+    assert state["attempts"][-1]["terminal_outcome"] == "manual_action_required"
+    assert repository.due_reconciliations() == []
+    assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+    assert len(http.readback_parts) == 1
+    assert http.mutations == ["upload"]
 
 
 @pytest.mark.parametrize(
@@ -564,8 +603,18 @@ def test_real_dispatcher_rejects_changed_bindings_before_provider_io(
     monkeypatch.setattr("podcaster.video.distribution._get_youtube_access_token", external)
     try:
         outcome = _run_reviewed_worker(storage, document)
-        assert outcome.reason == "media_review_required"
+        if drift == "window":
+            assert outcome.reason == "reviewed_video_dispatched"
+            state = repository.read(document["outbox_id"])
+            assert state["claim"] is None
+            assert state["providers"]["youtube"]["result"] == "manual_handoff_required"
+            assert state["providers"]["youtube"]["verification_attempt"] == 0
+            assert state["providers"]["youtube"]["next_reconcile_at"] is None
+        else:
+            assert outcome.reason == "media_review_required"
     except (DistributionOutboxError, ReviewBindingError):
+        if drift == "window":
+            raise
         pass
     external.assert_not_called()
 
@@ -704,8 +753,9 @@ def test_real_spotify_dispatcher_preserves_live_gate_and_exact_video_identity(
 
 
 @pytest.mark.parametrize("prepared_exact_video", ["both", "both_live"], indirect=True)
+@pytest.mark.parametrize("terminal_exhaustion", [None, "budget", "horizon"])
 def test_real_adapters_continue_pending_leg_without_replaying_finished_mutations(
-    prepared_exact_video, monkeypatch
+    prepared_exact_video, monkeypatch, terminal_exhaustion
 ):
     from podcaster import publish
     from podcaster.video import distribution
@@ -780,6 +830,16 @@ def test_real_adapters_continue_pending_leg_without_replaying_finished_mutations
     assert state["attempts"][-1]["terminal_outcome"] is None
     assert session.creates == session.uploads == 1
     assert http.mutations == ["upload"]
+    if terminal_exhaustion:
+
+        def exhaust_terminal(document):
+            leg = document["providers"]["spotify"]
+            if terminal_exhaustion == "budget":
+                leg["verification_budget"] = leg["verification_attempt"]
+            else:
+                leg["verification_horizon_at"] = clock.isoformat()
+
+        repository._update(document["outbox_id"], exhaust_terminal)
     token = state["providers"]["youtube"]["active_schedule_token"]
     due = state["providers"]["youtube"]["next_reconcile_at"]
 

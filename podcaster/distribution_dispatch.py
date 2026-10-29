@@ -73,11 +73,13 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
     admitted_audio = None
     admitted_audio_sha256 = None
 
-    def validate(provider, operation=None, *, verify_media=True):
+    def validate(provider, operation=None, *, verify_media=True, provider_io=True):
         nonlocal admitted_audio, admitted_audio_sha256
-        if provider == "spotify" and not publish._spotify_reconcile_enabled():
+        if provider_io and provider == "spotify" and not publish._spotify_reconcile_enabled():
             raise DistributionOutboxError("Spotify outbox requires strict reconcile-before-create")
-        current = repository.authorize_dispatch(claim, provider=provider, operation=operation)
+        current = repository.authorize_dispatch(
+            claim, provider=provider, operation=operation, provider_io=provider_io
+        )
         latest = load_manifest(repository.storage, job_id)
         if not is_exact_script_job(latest):
             raise DistributionOutboxError("canonical synthesis proof is required")
@@ -126,8 +128,29 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
 
     # Validate *all* destinations before the first provider call, not midway
     # through a multi-provider publication.
+    active_providers = []
     for provider in document["providers"]:
-        validate(provider)
+        current = validate(provider, provider_io=False)
+        leg = current["providers"][provider]
+        if leg["result"] in {
+            "externally_verified_public",
+            "manual_handoff_required",
+            "failed_terminal",
+            "poisoned",
+            "identity_conflict",
+        }:
+            continue
+        horizon = leg.get("verification_horizon_at")
+        if (
+            not horizon
+            or datetime.fromisoformat(horizon.replace("Z", "+00:00")) <= repository.now()
+            or leg["verification_attempt"] >= leg["verification_budget"]
+        ):
+            repository.schedule_reconciliation(claim, provider=provider, due_at=repository.now())
+            continue
+        active_providers.append(provider)
+    if not active_providers:
+        return "reviewed_video_dispatched"
     root = Path(".scratch") / "distribution" / claim.claim_id
     root.mkdir(parents=True, mode=0o700)
     path = root / "reviewed.mp4"
@@ -205,7 +228,7 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
             )
             return str(item_id)
 
-        for provider in document["providers"]:
+        for provider in active_providers:
             state = validate(provider)
             if state["providers"][provider]["result"] == "externally_verified_public":
                 continue

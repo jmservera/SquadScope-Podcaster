@@ -92,6 +92,10 @@ Config-driven podcast generation engine. Receives article content and editorial 
     title, 5,000-character description with the publication marker retained).
     Each readback consumes one verification attempt; exhausted polling persists
     a manual handoff and clears scheduling before the worker releases its claim.
+    Binding/fencing checks still cover completed legs, but polling limits admit
+    only new provider I/O: terminal legs do not block duplicates or other pending
+    destinations. Delayed pending deliveries past their horizon hand off without
+    provider I/O.
 
 ## API Contract
 ### Config Contract (received via API payload)
