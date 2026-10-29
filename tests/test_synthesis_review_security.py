@@ -143,6 +143,8 @@ def prepared_exact_video(reviewed_stage, monkeypatch, tmp_path, request):
     target = getattr(request, "param", "youtube")
     if target == "spotify_live":
         monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
+    if target == "spotify_override":
+        monkeypatch.setenv("PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE", "true")
     config = VideoDistributionConfig(
         youtube_enabled=target == "youtube",
         spotify_upload_enabled=target.startswith("spotify"),
@@ -231,17 +233,22 @@ def test_exact_review_private_video_separate_media_decision_and_existing_outbox_
 
 
 class _ReviewedYouTubeTransport:
-    def __init__(self):
+    def __init__(self, *, processing_status="succeeded", upload_status="processed"):
         self.video = None
         self.mutations = []
         self.bytes_uploaded = None
+        self.processing_status = processing_status
+        self.upload_status = upload_status
+        self.readback_parts = []
 
     def request_with_headers(self, url, *, method="GET", headers=None, data=None):
         assert method == "POST"
         self.mutations.append("upload")
         self.video = {"id": "reviewed-video", **json.loads(data)}
         self.video["snippet"]["channelId"] = "owned-channel"
-        self.video["status"]["uploadStatus"] = "processed"
+        self.video["status"]["uploadStatus"] = self.upload_status
+        if self.processing_status is not None:
+            self.video["processingDetails"] = {"processingStatus": self.processing_status}
         return 200, {"location": "https://www.googleapis.com/upload-session"}, b""
 
     def request(self, url, *, method="GET", headers=None, data=None):
@@ -266,6 +273,9 @@ class _ReviewedYouTubeTransport:
         if "/playlistItems?" in url:
             return 200, b'{"items":[]}'
         assert "/videos?" in url
+        from urllib.parse import parse_qs, urlparse
+
+        self.readback_parts.append(parse_qs(urlparse(url).query)["part"][0])
         return 200, json.dumps({"items": [self.video] if self.video else []}).encode()
 
 
@@ -309,6 +319,70 @@ def test_real_dispatcher_uploads_exact_reviewed_mp4_then_promotes_once(
     ]
     assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
     assert http.mutations == ["upload", "promote"]
+
+
+@pytest.mark.parametrize(
+    ("processing_status", "upload_status"),
+    [
+        ("processing", "uploaded"),
+        ("failed", "processed"),
+        (None, "processed"),
+        ("succeeded", "failed"),
+    ],
+)
+def test_real_dispatcher_blocks_unready_youtube_before_public_promotion(
+    prepared_exact_video, monkeypatch, processing_status, upload_status
+):
+    from podcaster.video import distribution
+
+    storage, job_id, repository, document, config, _ = prepared_exact_video
+    _video_decision(storage, job_id, document)
+    http = _ReviewedYouTubeTransport(
+        processing_status=processing_status, upload_status=upload_status
+    )
+    monkeypatch.setattr(distribution.VideoDistributionConfig, "from_env", lambda: config)
+    monkeypatch.setattr(distribution, "_DefaultTransport", lambda: http)
+    monkeypatch.setattr(distribution, "_get_youtube_access_token", lambda *_: "offline")
+    assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+    assert http.mutations == ["upload"]
+    state = repository.read(document["outbox_id"])
+    assert state["aggregate"]["externally_verified_public"] is False
+    assert state["providers"]["youtube"]["result"] == "pending_provider"
+    assert state["providers"]["youtube"]["verification"]["source"] == "youtube_processing_not_ready"
+    assert all("processingDetails" in parts for parts in http.readback_parts)
+
+    # Even public privacy on a later reconciliation cannot certify playability.
+    http.video["status"]["privacyStatus"] = "public"
+    assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+    state = repository.read(document["outbox_id"])
+    assert state["aggregate"]["externally_verified_public"] is False
+    assert http.mutations == ["upload"]
+
+
+def test_real_dispatcher_rechecks_youtube_processing_after_promotion(
+    prepared_exact_video, monkeypatch
+):
+    from podcaster.video import distribution
+
+    storage, job_id, repository, document, config, _ = prepared_exact_video
+    _video_decision(storage, job_id, document)
+
+    class FailedAfterPromotion(_ReviewedYouTubeTransport):
+        def request(self, url, **kwargs):
+            result = super().request(url, **kwargs)
+            if "promote" in self.mutations:
+                self.video["processingDetails"]["processingStatus"] = "failed"
+            return result
+
+    http = FailedAfterPromotion()
+    monkeypatch.setattr(distribution.VideoDistributionConfig, "from_env", lambda: config)
+    monkeypatch.setattr(distribution, "_DefaultTransport", lambda: http)
+    monkeypatch.setattr(distribution, "_get_youtube_access_token", lambda *_: "offline")
+    assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+    assert http.mutations == ["upload", "promote"]
+    state = repository.read(document["outbox_id"])
+    assert state["aggregate"]["externally_verified_public"] is False
+    assert state["providers"]["youtube"]["verification"]["source"] == "youtube_processing_not_ready"
 
 
 @pytest.mark.parametrize(
@@ -461,6 +535,7 @@ def test_real_spotify_dispatcher_preserves_live_gate_and_exact_video_identity(
 
     def upload(path, **kwargs):
         kwargs["before_mutation"]()
+        assert kwargs["require_reconciliation"] is True
         assert path.read_bytes() == storage.get_bytes(document["artifact"]["path"])
         assert kwargs["title"] == title and kwargs["description"] == marker
         return publish.PublishResult(status="draft", anchor_episode_id=123456)
@@ -498,6 +573,80 @@ def test_real_spotify_dispatcher_preserves_live_gate_and_exact_video_identity(
         promote.assert_not_called()
         assert state["providers"]["spotify"]["result"] == "manual_handoff_required"
         assert state["aggregate"]["externally_verified_public"] is False
+
+
+@pytest.mark.parametrize("prepared_exact_video", ["spotify_override"], indirect=True)
+@pytest.mark.parametrize("listing_failure", ["http", "malformed", "incomplete"])
+def test_real_spotify_adapter_cannot_blind_create_on_reviewed_dispatch(
+    prepared_exact_video, monkeypatch, listing_failure
+):
+    from podcaster import publish
+    from podcaster.distribution_outbox import DistributionOutboxError
+    from podcaster.video.distribution import VideoDistributionConfig
+    from tests.test_publish import _mock_error_resp, _mock_graphql_listing_resp, _mock_json_resp
+
+    storage, job_id, repository, document, config, _ = prepared_exact_video
+    # The override was already set during preparation, so the reviewed runtime
+    # matches. Exercise the real adapter, pagination/parser and retry boundary.
+    _video_decision(storage, job_id, document)
+    monkeypatch.setattr(VideoDistributionConfig, "from_env", lambda: config)
+    monkeypatch.setattr(
+        publish, "_get_credentials", lambda _: ("offline-show", "offline", "offline")
+    )
+    session = Mock()
+    if listing_failure == "http":
+        session.request.return_value = _mock_error_resp(503, "listing unavailable")
+    elif listing_failure == "malformed":
+        session.request.return_value = _mock_json_resp({"episodes": []})
+    else:
+        session.request.return_value = _mock_graphql_listing_resp([], totalItems=1, totalPages=2)
+    monkeypatch.setattr(publish, "_build_session", lambda *_: session)
+    monkeypatch.setattr(publish, "_resolve_legacy_ids", lambda *_: ("99", "7"))
+    monkeypatch.setattr(publish.time, "sleep", lambda _: None)
+    create = Mock(side_effect=AssertionError("blind create reached real provider boundary"))
+    monkeypatch.setattr(publish, "_create_episode", create)
+    with pytest.raises(DistributionOutboxError, match="confirmed identity"):
+        _run_reviewed_worker(storage, document)
+    assert session.request.call_count >= 1
+    assert session.request.call_args.kwargs["json"]["operationName"] == "WebGetIndexedEpisodeList"
+    create.assert_not_called()
+    assert storage.get_bytes(f"publication-evidence/{job_id}.json") is None
+    state = repository.read(document["outbox_id"])
+    assert state["aggregate"]["externally_verified_public"] is False
+    assert state["providers"]["spotify"]["result"] == "publication_unknown"
+    # A failed/unknown outbox attempt remains reconciliation-only on redelivery.
+    from podcaster.distribution_outbox import Claim
+
+    live = state["claim"]
+    repository.release(
+        Claim(
+            **{key: live[key] for key in Claim.__dataclass_fields__ if key != "outbox_id"},
+            outbox_id=document["outbox_id"],
+        )
+    )
+    calls = session.request.call_count
+    assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
+    assert session.request.call_count == calls
+    create.assert_not_called()
+
+
+@pytest.mark.parametrize("prepared_exact_video", ["spotify"], indirect=True)
+def test_real_dispatcher_rejects_spotify_override_changed_after_media_review(
+    prepared_exact_video, monkeypatch
+):
+    from podcaster import publish
+    from podcaster.distribution_outbox import DistributionOutboxError
+    from podcaster.video.distribution import VideoDistributionConfig
+
+    storage, job_id, _repository, document, config, _ = prepared_exact_video
+    _video_decision(storage, job_id, document)
+    monkeypatch.setenv("PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE", "true")
+    monkeypatch.setattr(VideoDistributionConfig, "from_env", lambda: config)
+    session = Mock(side_effect=AssertionError("provider I/O before runtime validation"))
+    monkeypatch.setattr(publish, "_build_session", session)
+    with pytest.raises(DistributionOutboxError, match="binding changed"):
+        _run_reviewed_worker(storage, document)
+    session.assert_not_called()
 
 
 @pytest.mark.parametrize("field", ["outbox_id", "publication_digest", "artifact_sha256"])

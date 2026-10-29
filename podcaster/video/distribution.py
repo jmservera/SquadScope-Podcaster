@@ -211,6 +211,9 @@ def provider_runtime_sha256(provider: str, config: VideoDistributionConfig, lang
             "mode": config.spotify_video_publish_mode,
             "live": os.environ.get("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "false"),
             "reconcile": os.environ.get("PODCASTER_SPOTIFY_RECONCILE", "true"),
+            "unreconciled_create": os.environ.get(
+                "PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE", "false"
+            ),
         }
     else:
         settings = {

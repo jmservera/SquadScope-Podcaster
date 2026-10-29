@@ -2995,6 +2995,7 @@ def upload_video_to_episode(
     publish_on: datetime | None = None,
     episode_type: str = "full",
     explicit: bool = False,
+    require_reconciliation: bool = False,
 ) -> PublishResult:
     """Publish a video as a NEW separate Spotify episode draft (#340).
 
@@ -3013,6 +3014,10 @@ def upload_video_to_episode(
     ``publish_behavior``/``publish_on`` default to a draft. A live behavior makes
     the final ``/update`` the go-live mutation (#700) and classifies the outcome
     from ``/overview`` readback; ``details["go_live_attempted"]`` is then set.
+
+    ``require_reconciliation`` enforces complete reconciliation even when legacy
+    operator flags permit an unreconciled create. Reviewed outbox dispatch uses
+    this strict policy; compatibility callers retain their existing defaults.
 
     Returns a PublishResult; ``anchor_episode_id`` is the NEW video episode id,
     status is "draft"/"scheduled"/"published" on success and "failed" otherwise.
@@ -3073,7 +3078,7 @@ def upload_video_to_episode(
     create_retry_authorized = False
     create_rejection: str | None = None
     unresolved_create_intent_snapshot: ProviderSnapshot | None = None
-    reconcile_enabled = _spotify_reconcile_enabled()
+    reconcile_enabled = require_reconciliation or _spotify_reconcile_enabled()
 
     if publication_storage is not None and publication_identity_context is not None:
         try:
@@ -3211,6 +3216,10 @@ def upload_video_to_episode(
 
         def _persist_unreconciled_create_intent(reason: str) -> None:
             nonlocal create_intent_persisted, create_provenance
+            if require_reconciliation:
+                raise SpotifyDraftReconcileError(
+                    "Reviewed Spotify video dispatch requires complete reconciliation."
+                )
             if publication_storage is None or publication_identity_context is None:
                 raise SpotifyMutationEvidenceError(
                     "Spotify unreconciled video create override requires durable "
@@ -3435,6 +3444,8 @@ def upload_video_to_episode(
                     unresolved_create_intent_snapshot=unresolved_create_intent_snapshot,
                 )
             except SpotifyDraftReconcileError:
+                if require_reconciliation:
+                    raise
                 if create_intent_persisted:
                     raise
                 if unresolved_create_intent_snapshot is not None:

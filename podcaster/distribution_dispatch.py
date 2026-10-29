@@ -299,7 +299,7 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
         validate("youtube")
         status, body = http.request(
             "https://www.googleapis.com/youtube/v3/videos?"
-            + urlencode({"part": "snippet,status", "id": video_id}),
+            + urlencode({"part": "snippet,status,processingDetails", "id": video_id}),
             headers={"Authorization": f"Bearer {token}"},
         )
         data = json.loads(body) if status == 200 else {}
@@ -313,9 +313,16 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
             or item.get("snippet", {}).get("channelId") != channel_id
         ):
             raise DistributionOutboxError("YouTube media identity mismatch")
-        return item.get("status", {}).get("privacyStatus")
+        metadata = {
+            **item.get("snippet", {}),
+            **item.get("status", {}),
+            **item.get("processingDetails", {}),
+        }
+        return metadata.get("privacyStatus"), youtube_publish.video_readiness_problems(
+            metadata, allow_public=True
+        )
 
-    privacy = readback()
+    privacy, readiness_problems = readback()
     # The observed ID is persisted before promotion and reused on redelivery.
     repository.record_verification(
         claim,
@@ -327,6 +334,9 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
     )
     if privacy not in {"public", "private", "unlisted"}:
         raise DistributionOutboxError("YouTube privacy readback is unknown")
+    if readiness_problems:
+        _pending(repository, claim, "youtube", video_id, privacy, "youtube_processing_not_ready")
+        return
     if claim.read_only:
         if privacy != "public":
             _pending(repository, claim, "youtube", video_id, privacy, "youtube_media_readback")
@@ -353,7 +363,10 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
                 return (video_id if result.succeeded else None), result.privacy_status
 
             mutate("youtube", "public_promotion", promote, provider_id=video_id)
-        privacy = readback()
+        privacy, readiness_problems = readback()
+    if readiness_problems:
+        _pending(repository, claim, "youtube", video_id, privacy, "youtube_processing_not_ready")
+        return
     if privacy == "public":
         repository.record_verification(
             claim,
@@ -400,6 +413,7 @@ def _spotify(repository, claim, document, identity, config, path, language, vali
                 before_mutation=authorize,
                 publication_storage=repository.storage,
                 publication_identity_context=identity,
+                require_reconciliation=True,
             )
             return (
                 str(result.anchor_episode_id)

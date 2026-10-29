@@ -34,8 +34,12 @@ until its separate MP4/job/destination-bound human outbox review. The production
 dispatcher only admits these reviewed-video records; enabling the mutation flag
 does not opt legacy records into a new route.
 
-Spotify video draft creation always performs strict, complete reconcile-before-create. The
-`PODCASTER_SPOTIFY_RECONCILE` escape hatch is ignored; disabling it cannot restore blind create.
+Reviewed outbox Spotify video draft creation always performs strict, complete
+reconcile-before-create through the actual upload adapter. Disabling
+`PODCASTER_SPOTIFY_RECONCILE` blocks outbox admission, and
+`PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE` cannot permit blind create on this
+route. Both settings are bound to the reviewed runtime fingerprint. Existing
+non-outbox compatibility callers retain their explicit operator override.
 Video upload retains separate audio/video episode identities, protected historical IDs, the live
 mode/operator gates, `uploadType=default`, and fail-closed handling for incomplete pagination or
 ambiguous provider state.
