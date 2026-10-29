@@ -89,6 +89,9 @@ param ttsVoiceHostA string = 'fable'
 @description('TTS voice for host B.')
 param ttsVoiceHostB string = 'alloy'
 
+@description('Shared nonsecret TTS runtime policy environment from main.bicep.')
+param ttsRuntimeEnvironment array = []
+
 @description('Spotify show ID for auto-publish (#182). Empty disables publishing in the container.')
 param spotifyShowId string = ''
 
@@ -280,7 +283,7 @@ resource synthesisJob 'Microsoft.App/jobs@2025-01-01' = {
             cpu: json(jobCpu)
             memory: jobMemory
           }
-          env: [
+          env: concat([
             {
               name: 'AZURE_CLIENT_ID'
               value: jobIdentity.properties.clientId
@@ -377,7 +380,7 @@ resource synthesisJob 'Microsoft.App/jobs@2025-01-01' = {
               name: 'SP_KEY'
               secretRef: 'spotify-sp-key'
             }
-          ]
+          ], ttsRuntimeEnvironment)
         }
       ]
     }

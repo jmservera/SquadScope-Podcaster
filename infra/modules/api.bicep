@@ -45,6 +45,18 @@ param corsOrigins string = ''
 @description('Azure OpenAI endpoint URL for LLM script generation.')
 param openAiEndpoint string = ''
 
+@description('Azure OpenAI TTS deployment used by the synthesis worker.')
+param ttsDeploymentName string = ''
+
+@description('TTS voice for host A; must match synthesis.')
+param ttsVoiceHostA string = 'fable'
+
+@description('TTS voice for host B; must match synthesis.')
+param ttsVoiceHostB string = 'alloy'
+
+@description('Shared nonsecret TTS runtime policy environment from main.bicep.')
+param ttsRuntimeEnvironment array = []
+
 @description('Chat model deployment name for LLM script generation.')
 param chatDeploymentName string = ''
 
@@ -159,7 +171,7 @@ resource apiApp 'Microsoft.App/containerApps@2025-01-01' = {
             cpu: json(appCpu)
             memory: appMemory
           }
-          env: [
+          env: concat([
             {
               name: 'AZURE_CLIENT_ID'
               value: identityClientId
@@ -201,6 +213,18 @@ resource apiApp 'Microsoft.App/containerApps@2025-01-01' = {
               value: chatDeploymentName
             }
             {
+              name: 'AZURE_OPENAI_TTS_DEPLOYMENT'
+              value: ttsDeploymentName
+            }
+            {
+              name: 'AZURE_OPENAI_TTS_VOICE_HOST_A'
+              value: ttsVoiceHostA
+            }
+            {
+              name: 'AZURE_OPENAI_TTS_VOICE_HOST_B'
+              value: ttsVoiceHostB
+            }
+            {
               name: 'AZURE_OPENAI_AUTH_MODE'
               value: 'managed_identity'
             }
@@ -240,7 +264,7 @@ resource apiApp 'Microsoft.App/containerApps@2025-01-01' = {
               name: 'UI_AUTH_SECRET'
               secretRef: 'ui-auth-secret'
             }
-          ]
+          ], ttsRuntimeEnvironment)
         }
       ]
       scale: {

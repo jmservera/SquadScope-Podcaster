@@ -3,6 +3,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/deploy-azure.yml"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
@@ -10,6 +13,75 @@ REUSABLE_WORKFLOW = ROOT / ".github/workflows/reusable-deploy-azure.yml"
 BICEP = ROOT / "infra/main.bicep"
 ALERTS_BICEP = ROOT / "infra/modules/distribution-alerts.bicep"
 ACA_DISTRIBUTION_BICEP = ROOT / "infra/modules/aca-distribution.bicep"
+
+
+@pytest.mark.parametrize("custom_policy", [False, True])
+def test_deployed_api_and_worker_have_identical_effective_review_provider_fingerprint(
+    monkeypatch, custom_policy
+) -> None:
+    from podcaster.review import provider_settings_sha256
+    from podcaster.tts import load_tts_config
+    from podcaster.tts_pool import load_tts_pool_config
+
+    main = BICEP.read_text(encoding="utf-8")
+    root_values = dict(re.findall(r"(?m)^param (\w+) string = '([^'\n]*)'$", main))
+    root_values["openAiEndpoint"] = "https://offline-review.openai.azure.com/"
+    runtime = re.search(r"param ttsRuntimePolicy object = \{(.*?)\n\}", main, re.S)
+    assert runtime, "API and synthesis need a shared fingerprinted TTS pool policy"
+    policy = yaml.safe_load(runtime[1])
+    if custom_policy:
+        root_values.update(
+            ttsDeploymentName="operator-reviewed-tts",
+            ttsVoiceHostA="nova",
+            ttsVoiceHostB="onyx",
+        )
+        policy.update(concurrency=3, maxRetries=2, format="mp3", styleHostA="Measured")
+
+    shared = re.search(r"var ttsRuntimeEnvironment = \[(.*?)\n\]", main, re.S)
+    assert shared
+    env_pattern = r"name: '(AZURE_OPENAI_\w+|PODCASTER_TTS_\w+)'\s+value: ([^\n]+)"
+
+    def resolve(expression, values):
+        expression = expression.strip()
+        if expression.startswith("string(") and expression.endswith(")"):
+            return resolve(expression[7:-1], values)
+        if expression.startswith("'") and expression.endswith("'"):
+            return expression[1:-1]
+        if expression.startswith("ttsRuntimePolicy."):
+            return str(policy[expression.split(".")[1]])
+        return values[expression]
+
+    shared_env = {name: resolve(value, {}) for name, value in re.findall(env_pattern, shared[1])}
+    effective = []
+    for module_name in ("api", "aca"):
+        module = (ROOT / f"infra/modules/{module_name}.bicep").read_text(encoding="utf-8")
+        binding = re.search(
+            rf"module \w+ 'modules/{module_name}\.bicep'.*?\n  params: \{{(.*?)\n  \}}",
+            main,
+            re.S,
+        )
+        assert binding
+        references = dict(re.findall(r"(?m)^\s+(\w+): (\w+)$", binding[1]))
+        for field in ("ttsDeploymentName", "ttsVoiceHostA", "ttsVoiceHostB"):
+            assert references.get(field) == field
+        assert references.get("ttsRuntimeEnvironment") == "ttsRuntimeEnvironment"
+        assert re.search(r"env:\s*concat\(\[.*?\], ttsRuntimeEnvironment\)", module, re.S)
+        values = {
+            key: root_values[value] for key, value in references.items() if value in root_values
+        }
+        env = {name: resolve(value, values) for name, value in re.findall(env_pattern, module)}
+        env.update(shared_env)
+        with monkeypatch.context() as environment:
+            for name, value in env.items():
+                environment.setenv(name, value)
+            config = load_tts_config(env)
+            assert config.production_ready
+            effective.append((config, load_tts_pool_config(env), provider_settings_sha256(config)))
+    assert effective[0] == effective[1]
+    if custom_policy:
+        assert effective[0][0].tts_deployment == "operator-reviewed-tts"
+        assert effective[0][1].concurrency == 3
+        assert effective[0][1].max_retries == 2
 
 
 def _workflow_text() -> str:

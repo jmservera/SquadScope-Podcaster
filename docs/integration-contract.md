@@ -288,6 +288,8 @@ existing job-ID-only synthesis message. `publish_on_approval` still controls onl
 post-audio publication, not this pre-TTS dispatch. Stale/missing digests, changed
 content/config/provider settings, missing approval binding, dry runs, or repeated
 dispatch requests fail closed (`409` for binding/dispatch conflicts).
+Both the deployed FastAPI monitoring app and the standalone API use this same
+review route contract and conflict status.
 `required_for_tts:false` cannot waive the policy.
 Script approval and its evidence are stored only under
 `review.synthesis_approval` (`binding.scope=pre_tts`), with a dedicated audit trail.
@@ -303,6 +305,10 @@ Dispatch states are `staging`, `awaiting_review`, `dispatching`, `enqueued`,
 or `unknown`; neither those states nor `not_configured` permit blind review resubmission.
 Inspect/reconcile the existing queue/job evidence instead. No automatic recovery or
 artifact adoption endpoint is introduced. Dry-run artifacts cannot become production.
+Negative decisions (`rejected` or `changes_requested`) remain available after dispatch:
+they atomically revoke script approval without replacing or rearming the dispatch intent.
+An already accepted provider request cannot be rolled back; any live synthesis outcome
+requires reconciliation, not automatic retry.
 
 Before any TTS provider call the worker re-verifies the staged bytes, immutable
 projection, effective provider/config settings and recorded binding. A separate atomic
@@ -310,6 +316,15 @@ projection, effective provider/config settings and recorded binding. A separate 
 duplicate queue delivery cannot duplicate TTS. A started or ambiguous provider attempt
 is consumed permanently pending operator reconciliation, even if audio/result
 persistence failed. Existing cost gates and explicit provider/rights blockers remain.
+Exact-review synthesis admits one segment at a time, checking the current approval
+before every attempt (including auxiliary clips). Only explicit HTTP 429 rejections
+are retried with the configured backoff; ambiguous transport/timeouts and server
+failures stop the run, mark the claim unknown and never send later segments.
+Legacy non-exact-review callers retain their existing pool and retry behavior.
+
+Infrastructure passes the same endpoint, managed-identity auth mode, deployment,
+voices and `ttsRuntimePolicy` (API version, styles, format and pool/backoff settings)
+to the API and synthesis deployments, so both compute the same provider fingerprint.
 
 Pre-TTS script approval is **not** audio/video/public promotion approval. Synthesis
 does not publish audio automatically. The staged script includes the caller's
@@ -330,6 +345,8 @@ establish a supported safe preparation/publication route for these jobs or
 implement that later review. Video/provider mutation therefore remains blocked;
 generic `/api/review` approval, `publish_on_approval`, and a configured video target
 do not unblock it. Existing unrelated legacy publication behavior is unchanged.
+The manual video enqueue endpoint returns `409` for these jobs, and the direct video
+worker skips them before resolving default configuration, stores or mutable budgets.
 
 ## Provider delivery outcomes
 

@@ -580,6 +580,25 @@ class TestStructuredJobLogs:
 
 
 class TestEnqueueVideo:
+    @pytest.mark.parametrize("snapshot", [{"script_sha256": "a" * 64}, None, "corrupt", []])
+    def test_exact_script_job_is_refused_before_manual_video_enqueue(
+        self, client, storage, snapshot
+    ):
+        job_id = "podcast-2026-W44-review-bound"
+        manifest = _make_manifest(job_id)
+        manifest["review"] = {"status": "approved", "snapshot": snapshot}
+        manifest["generation"]["audio_mode"] = "synthesized"
+        path = f"jobs/{job_id}/manifest.json"
+        storage.put_bytes(path, json.dumps(manifest).encode(), "application/json")
+        before = dict(storage._blobs)
+
+        with patch("podcaster.monitoring.enqueue_video_job", return_value=True) as enqueue:
+            response = client.post(f"/api/jobs/{job_id}/video/generate")
+
+        assert response.status_code == 409
+        enqueue.assert_not_called()
+        assert storage._blobs == before
+
     def test_not_found(self, client, storage):
         resp = client.post("/api/jobs/nonexistent/video/generate")
         assert resp.status_code == 404
@@ -724,6 +743,50 @@ class TestGenerateEndpoint:
 
 
 class TestReviewEndpoint:
+    @pytest.mark.parametrize("conflict", [None, "script_sha256", "manifest_sha256"])
+    def test_deployed_review_endpoint_binds_exact_staged_content(
+        self, reviewed_stage, monkeypatch, conflict
+    ):
+        from review_support import approval_evidence_for
+
+        from podcaster.orchestration import load_manifest
+        from podcaster.queue import parse_job_id
+
+        storage, result, generator, producer, script = reviewed_stage
+        job_id = result.response["job_id"]
+        monkeypatch.setattr("podcaster.monitoring.get_storage", lambda: storage)
+        evidence = approval_evidence_for(result.manifest)
+        if conflict:
+            evidence[conflict] = "0" * 64
+        path = f"jobs/{job_id}/manifest.json"
+        before = storage.get_bytes(path)
+        with TestClient(app) as deployed_client:
+            response = deployed_client.post(
+                "/api/review",
+                json={
+                    "job_id": job_id,
+                    "reviewer": "leela",
+                    "reviewed_at": "2026-10-29T11:05:00Z",
+                    "decision": "approved",
+                    "publish_on_approval": False,
+                    **evidence,
+                },
+            )
+
+        assert response.status_code == (409 if conflict else 200)
+        if conflict:
+            assert storage.get_bytes(path) == before
+            assert producer.sent == []
+        else:
+            approval = load_manifest(storage, job_id)["review"]["synthesis_approval"]
+            assert approval["binding"]["script_sha256"] == evidence["script_sha256"]
+            assert approval["binding"]["manifest_sha256"] == evidence["manifest_sha256"]
+            assert approval["provider_authorization"] == evidence["provider_authorization"]
+            assert approval["review_checks_confirmed"] is True
+            assert [parse_job_id(body) for body in producer.sent] == [job_id]
+        assert storage.get_bytes(f"jobs/{job_id}/script.txt") == script
+        generator.assert_called_once()
+
     def test_missing_required_fields_return_400(self, client, storage):
         resp = client.post("/api/review", json={"reviewer": "leela"})
 

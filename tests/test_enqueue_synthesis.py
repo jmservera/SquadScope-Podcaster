@@ -204,6 +204,46 @@ def test_exact_human_approval_enqueues_same_stage_once_without_regeneration(revi
     generator.assert_called_once()
 
 
+@pytest.mark.parametrize("decision", ["rejected", "changes_requested"])
+def test_negative_review_revokes_enqueued_script_without_rearming_dispatch(
+    reviewed_stage, monkeypatch, decision
+):
+    from unittest.mock import Mock
+
+    from podcaster.job_runner import STATUS_SKIPPED, run_synthesis
+    from podcaster.tts import load_tts_config
+
+    storage, result, generator, producer, script = reviewed_stage
+    job_id = result.response["job_id"]
+    approved = _approve_staged(storage, result).manifest
+    dispatch = approved["generation"]["synthesis_queue"].copy()
+    assert len(producer.sent) == 1
+
+    revoked = process_review_decision(
+        job_id,
+        storage=storage,
+        reviewer="second-human-reviewer",
+        reviewed_at="2026-10-29T11:06:00Z",
+        decision=decision,
+        notes="The queued script is no longer authorized for synthesis.",
+    ).manifest
+
+    assert revoked["review"]["synthesis_approval"]["status"] == decision
+    assert revoked["generation"]["tts_synthesis"]["allowed"] is False
+    assert revoked["generation"]["synthesis_queue"] == dispatch
+    assert len(producer.sent) == 1
+    provider = Mock(side_effect=AssertionError("revoked approval reached TTS"))
+    monkeypatch.setattr("podcaster.job_runner.synthesize_episode", provider)
+    outcome = run_synthesis(job_id, storage, load_tts_config())
+    assert outcome.status == STATUS_SKIPPED
+    provider.assert_not_called()
+    with pytest.raises(ValueError):
+        _approve_staged(storage, result)
+    assert len(producer.sent) == 1
+    assert storage.get_bytes(f"jobs/{job_id}/script.txt") == script
+    generator.assert_called_once()
+
+
 @pytest.mark.parametrize(
     "changed", ["script", "script_digest", "manifest_digest", "metadata", "config", "provider"]
 )

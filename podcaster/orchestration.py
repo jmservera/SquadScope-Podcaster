@@ -97,10 +97,11 @@ def process_review_decision(
             raise ReviewBindingError("dry-run artifacts cannot be approved or adopted")
         generation = manifest.get("generation", {})
         pre_tts = generation.get("audio_mode") != "synthesized"
-        if pre_tts and generation.get("synthesis_queue", {}).get("status") not in {
-            None,
-            "awaiting_review",
-        }:
+        if (
+            pre_tts
+            and decision == APPROVED
+            and generation.get("synthesis_queue", {}).get("status") not in {None, "awaiting_review"}
+        ):
             raise ReviewBindingError(
                 "dispatch already requested; reconciliation required, not retry"
             )

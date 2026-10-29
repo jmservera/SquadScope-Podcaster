@@ -36,6 +36,19 @@ class ReviewBindingError(ValueError):
     """The staged content or dispatch no longer permits exact-content approval."""
 
 
+def is_exact_script_job(manifest: dict[str, Any]) -> bool:
+    """Recognize canonical jobs even when their snapshot is malformed."""
+    review = manifest.get("review", {})
+    generation = manifest.get("generation", {})
+    return (
+        not isinstance(review, dict)
+        or not isinstance(generation, dict)
+        or "snapshot" in review
+        or "synthesis_approval" in review
+        or "provider_settings_sha256" in generation
+    )
+
+
 def provider_settings_sha256(config: TtsConfig) -> str:
     """Fingerprint effective provider settings without persisting endpoint or credentials."""
     settings = asdict(config)

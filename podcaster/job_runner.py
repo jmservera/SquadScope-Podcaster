@@ -52,7 +52,12 @@ from podcaster.queue import (
     enqueue_video_job,
     parse_job_id,
 )
-from podcaster.review import ReviewBindingError, validate_review_binding, validate_review_snapshot
+from podcaster.review import (
+    ReviewBindingError,
+    is_exact_script_job,
+    validate_review_binding,
+    validate_review_snapshot,
+)
 from podcaster.spotify_mode import (
     AUDIO_PUBLISH_DISABLED_REASON,
     PUBLISH_STATUS_SKIPPED,
@@ -363,12 +368,15 @@ def run_synthesis(
                     message=f"recording {completed}/{total} segments",
                 )
 
-            # Re-read immediately before the irreversible provider boundary.
-            boundary_manifest = json.loads(storage.get_bytes(manifest_path(job_id)) or b"null")
-            validate_review_snapshot(boundary_manifest, storage, job_id, config)
-            validate_review_binding(boundary_manifest)
-            if boundary_manifest["generation"]["synthesis_claim"]["claim_id"] != claim_id:
-                raise ReviewBindingError("synthesis claim ownership changed")
+            def _before_provider() -> None:
+                boundary_manifest = json.loads(storage.get_bytes(manifest_path(job_id)) or b"null")
+                validate_review_snapshot(boundary_manifest, storage, job_id, config)
+                validate_review_binding(boundary_manifest)
+                claim = boundary_manifest["generation"]["synthesis_claim"]
+                if claim.get("claim_id") != claim_id or claim.get("status") != "started":
+                    raise ReviewBindingError("synthesis claim ownership changed")
+
+            _before_provider()
             episode_audio = synthesize_episode(
                 script,
                 config,
@@ -383,7 +391,11 @@ def run_synthesis(
                 music_mix_spec=mix_spec,
                 backchannel_config=backchannel_config,
                 progress=_on_segment,
+                exact_review=True,
+                before_provider=_before_provider,
             )
+            # Revocation cannot retract accepted audio, but it must stop completion.
+            _before_provider()
             mp3_bytes = output_path.read_bytes()
             wav_bytes = episode_audio.wav_output_path.read_bytes()
 
@@ -469,6 +481,7 @@ def run_synthesis(
                 claim = document["generation"]["synthesis_claim"]
                 if claim.get("claim_id") != claim_id or claim.get("status") != "started":
                     raise ReviewBindingError("synthesis completion claim ownership changed")
+                validate_review_binding(document)
                 claim["status"] = "completed"
                 claim["completed_at"] = _iso(current)
                 _apply_completion(
@@ -948,8 +961,7 @@ def _video_already_generated(manifest: dict[str, Any]) -> bool:
 
 def _media_review_allows_video(manifest: dict[str, Any]) -> bool:
     """Never turn exact-script or generic audio consent into live video authorization."""
-    review = manifest.get("review", {})
-    return not isinstance(review.get("snapshot"), dict)
+    return not is_exact_script_job(manifest)
 
 
 def _enqueue_video(job_id: str, enqueue_video=None) -> None:

@@ -62,6 +62,11 @@ Config-driven podcast generation engine. Receives article content and editorial 
 7. job_runner.py verifies content/config digests and approval again, then consumes
    an atomic one-shot provider claim before TTS. Concurrent/duplicate messages
    cannot repeat TTS; ambiguous dispatch/provider outcomes require reconciliation.
+   Exact-review segments are admitted serially with live approval checks before
+   each attempt. Only explicit rate-limit rejection (429) is retryable; ambiguous
+   acceptance stops subsequent segments and leaves the claim unknown. Negative
+   human decisions can revoke queued approval without rearming dispatch, but
+   cannot retract provider calls already accepted.
 8. audio.py stitches segments + mixes intro/outro music (ffmpeg, eval=frame volume expressions)
 9. Validation pass (duration, file size, format checks)
 10. Artifacts stored to Azure Blob Storage
@@ -75,6 +80,8 @@ Config-driven podcast generation engine. Receives article content and editorial 
     review; Spotify video remains operator-only for reviewed video. This change
     establishes no safe preparation/publication route for those exact-script jobs,
     so video/provider mutation remains blocked rather than inheriting audio consent.
+    Manual video enqueue and direct worker invocation both enforce this block,
+    including malformed canonical snapshot records, before video-side mutation.
 
 ## API Contract
 ### Config Contract (received via API payload)
@@ -105,6 +112,9 @@ transcript_url, show_notes_url, publishing_packet_url, expires_at, warnings, err
 - OpenAI: podcaster-yqabcnkm2junu-openai (deployments: tts, chat)
 - Storage: squadscopepo3f9a07d60de7
 - Auth: Managed Identity (DefaultAzureCredential)
+- API and synthesis share deployment/voice settings and `ttsRuntimePolicy`
+  (API version, format, styles, pool concurrency/retries/backoff) via `main.bicep`;
+  both therefore fingerprint the same effective provider configuration for review.
 
 ## Environment Variables
 Required:

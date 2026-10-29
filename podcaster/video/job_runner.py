@@ -1054,6 +1054,35 @@ def run_video_generation(
     barrier instead of recording inline (RFC §3). The compose/distribute path is
     unchanged. ``fanout_scratch`` / ``clip_producer`` are injectable for tests.
     """
+    from podcaster.review import is_exact_script_job
+
+    raw_manifest = storage.get_bytes(manifest_path(job_id))
+    if raw_manifest is None:
+        raise TransientVideoError(f"no manifest for job_id={job_id}")
+    try:
+        manifest = json.loads(raw_manifest.decode("utf-8"))
+        if not isinstance(manifest, dict):
+            raise TransientVideoError(f"manifest for job_id={job_id} is not a dict")
+    except (ValueError, UnicodeDecodeError, TransientVideoError) as exc:
+        # A repaired legacy manifest must retain this attempt's durable lifetime.
+        if budget is None:
+            current = now or datetime.now(timezone.utc)
+            utcnow = budget_utcnow or (
+                (lambda: current) if now is not None else lambda: datetime.now(timezone.utc)
+            )
+            _load_or_create_video_budget(
+                storage,
+                job_id,
+                now_utc=current,
+                utcnow=utcnow,
+                operation_runner=storage_operation_runner or run_storage_operation,
+            )
+        if isinstance(exc, TransientVideoError):
+            raise
+        raise TransientVideoError(f"invalid manifest for job_id={job_id}") from exc
+    if is_exact_script_job(manifest):
+        return VideoOutcome(job_id, STATUS_SKIPPED, reason="completed_media_review_required")
+
     # Imported here (not at module scope) to match the existing lazy
     # ``video_compose`` import policy in this module, while still binding the
     # name before the ``try`` block whose ``except`` clause needs it.
@@ -1130,19 +1159,6 @@ def run_video_generation(
         if not remaining:
             return float("inf")
         return min(remaining)
-
-    # Load manifest
-    raw_manifest = storage.get_bytes(manifest_path(job_id))
-    if raw_manifest is None:
-        raise TransientVideoError(f"no manifest for job_id={job_id}")
-
-    try:
-        manifest = json.loads(raw_manifest.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError) as exc:
-        raise TransientVideoError(f"invalid manifest for job_id={job_id}") from exc
-
-    if not isinstance(manifest, dict):
-        raise TransientVideoError(f"manifest for job_id={job_id} is not a dict")
 
     if owns_budget:
         _persist_video_budget_in_manifest(storage, job_id, stage_budget)

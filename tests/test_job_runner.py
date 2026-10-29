@@ -6,6 +6,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from threading import Event
 from unittest.mock import Mock
+from urllib.error import HTTPError, URLError
 
 import pytest
 from review_support import approval_evidence_for, provider_authorization_for
@@ -276,6 +277,134 @@ def _patch_tts_network(monkeypatch) -> None:
         tts.ManagedIdentityTokenCredential, "get_token", lambda self, *scopes: "token"
     )
     monkeypatch.setattr(tts, "_default_transport", lambda request: b"segment-bytes")
+
+
+@pytest.mark.parametrize("failure", ["timeout", "network", "server_error"])
+def test_exact_review_transport_ambiguity_is_not_retried_or_followed_by_later_turns(
+    reviewed_stage, monkeypatch, failure
+):
+    storage, result, _generator, producer, _script = reviewed_stage
+    job_id = result.response["job_id"]
+    process_review_decision(
+        job_id,
+        storage=storage,
+        reviewer="leela",
+        reviewed_at="2026-10-29T11:05:00Z",
+        decision="approved",
+        **approval_evidence_for(result.manifest),
+    )
+    calls = []
+
+    def transport(request):
+        calls.append(json.loads(request.data)["input"])
+        if failure == "timeout":
+            raise TimeoutError("provider accepted, response lost")
+        if failure == "network":
+            raise URLError("connection lost after request acceptance")
+        raise HTTPError(request.full_url, 503, "ambiguous provider response", None, None)
+
+    _patch_audio(monkeypatch)
+    with pytest.raises(job_runner.TransientSynthesisError):
+        job_runner.run_synthesis(
+            job_id,
+            storage,
+            load_tts_config(),
+            token_provider=lambda scope: "offline-token",
+            transport=transport,
+        )
+    assert len(calls) == 1
+    first_claim = load_manifest(storage, job_id)["generation"]["synthesis_claim"].copy()
+    outcome = job_runner.run_synthesis(
+        job_id,
+        storage,
+        load_tts_config(),
+        token_provider=lambda scope: "offline-token",
+        transport=transport,
+    )
+    assert outcome.status == job_runner.STATUS_SKIPPED
+    assert len(calls) == 1
+    assert load_manifest(storage, job_id)["generation"]["synthesis_claim"] == first_claim
+    assert len(producer.sent) == 1
+
+
+def test_exact_review_transport_explicit_429_rejection_remains_retryable(
+    reviewed_stage, monkeypatch
+):
+    storage, result, _generator, _producer, _script = reviewed_stage
+    job_id = result.response["job_id"]
+    process_review_decision(
+        job_id,
+        storage=storage,
+        reviewer="leela",
+        reviewed_at="2026-10-29T11:05:00Z",
+        decision="approved",
+        **approval_evidence_for(result.manifest),
+    )
+    calls = []
+
+    def transport(request):
+        calls.append(json.loads(request.data)["input"])
+        if len(calls) == 1:
+            raise HTTPError(request.full_url, 429, "rejected before acceptance", None, None)
+        return b"offline-segment"
+
+    _patch_audio(monkeypatch)
+    outcome = job_runner.run_synthesis(
+        job_id,
+        storage,
+        load_tts_config(),
+        token_provider=lambda scope: "offline-token",
+        transport=transport,
+    )
+    assert outcome.status == job_runner.STATUS_COMPLETED
+    assert len(calls) == 3
+    assert calls[0] == calls[1]
+    assert calls[2] != calls[0]
+    assert load_manifest(storage, job_id)["generation"]["synthesis_claim"]["status"] == "completed"
+
+
+def test_review_revoked_during_first_transport_call_stops_second_provider_turn(
+    reviewed_stage, monkeypatch
+):
+    storage, result, _generator, producer, _script = reviewed_stage
+    job_id = result.response["job_id"]
+    approved = process_review_decision(
+        job_id,
+        storage=storage,
+        reviewer="leela",
+        reviewed_at="2026-10-29T11:05:00Z",
+        decision="approved",
+        **approval_evidence_for(result.manifest),
+    ).manifest
+    dispatch = approved["generation"]["synthesis_queue"].copy()
+    calls = []
+
+    def transport(request):
+        calls.append(json.loads(request.data)["input"])
+        process_review_decision(
+            job_id,
+            storage=storage,
+            reviewer="second-human-reviewer",
+            reviewed_at="2026-10-29T11:06:00Z",
+            decision="changes_requested",
+        )
+        return b"already-accepted-first-segment"
+
+    _patch_audio(monkeypatch)
+    with pytest.raises(job_runner.TransientSynthesisError):
+        job_runner.run_synthesis(
+            job_id,
+            storage,
+            load_tts_config(),
+            token_provider=lambda scope: "offline-token",
+            transport=transport,
+        )
+    revoked = load_manifest(storage, job_id)
+    assert revoked["review"]["synthesis_approval"]["status"] == "changes_requested"
+    assert revoked["generation"]["synthesis_queue"] == dispatch
+    assert revoked["generation"]["audio_mode"] != "synthesized"
+    assert len(calls) == 1
+    assert len(producer.sent) == 1
 
 
 # --- message parsing -------------------------------------------------------
