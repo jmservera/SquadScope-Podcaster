@@ -637,7 +637,7 @@ class AzureBlobStorageBackend:
             f"{self._account_url}/{self._container_name}?{urlencode(values)}",
             method="GET",
             headers={
-                "Authorization": f"Bearer {token.token}",
+                "Authorization": f"Bearer {token}",
                 "x-ms-date": formatdate(timeval=None, localtime=False, usegmt=True),
                 "x-ms-version": "2023-11-03",
             },
