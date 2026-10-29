@@ -1,13 +1,27 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, replace
 from pathlib import Path
+from threading import Event
+from unittest.mock import Mock
+from urllib.error import HTTPError, URLError
 
 import pytest
+from review_support import approval_evidence_for, provider_authorization_for
 
-from podcaster import episode, job_runner, tts
-from podcaster.generation import manifest_bytes
+from podcaster import episode, job_runner, publish, tts
+from podcaster.config import PodcastConfig
+from podcaster.costs import build_cost_ledger
+from podcaster.generation import checksum, manifest_bytes
+from podcaster.orchestration import load_manifest, process_review_decision
 from podcaster.queue import QueueMessage, encode_synthesis_message, parse_job_id
+from podcaster.review import (
+    apply_review_decision,
+    content_snapshot_sha256,
+    provider_settings_sha256,
+)
 from podcaster.storage import StoredArtifact
 from podcaster.tts import load_tts_config
 
@@ -153,13 +167,70 @@ def _base_manifest(status: str = "accepted") -> dict:
 
 
 def _stage(storage: FakeStorage, manifest: dict, script: str) -> None:
+    """Provide an explicitly approved fixture for post-review runner unit tests."""
+    storage.put_bytes(
+        job_runner.script_path(JOB_ID), script.encode("utf-8"), "text/plain; charset=utf-8"
+    )
+    manifest.setdefault("created_at", "2026-10-29T11:00:00Z")
+    manifest.setdefault("expires_at", "2026-11-05T11:00:00Z")
+    manifest.setdefault("request", {}).setdefault("dry_run", False)
+    manifest["cost_ledger"] = build_cost_ledger(
+        week="2026-W24",
+        month="2026-06",
+        provider="openai-tts",
+        voice="fable,alloy",
+        voice_config_hash="test-approved-voices",
+        billable_characters=len(script),
+        duration_seconds=300,
+        audio_byte_length=0,
+        staged_byte_length=len(script.encode("utf-8")),
+    )
+    generation = manifest["generation"]
+    generation["engine"] = "llm-script-gen"
+    generation["cost_ledger_persisted"] = True
+    generation["provider_settings"] = _production_config().safe_summary()
+    generation["resolved_podcast_config"] = asdict(PodcastConfig.from_payload(manifest["request"]))
+    generation["provider_settings_sha256"] = provider_settings_sha256(_production_config())
+    manifest["artifacts"] = {
+        job_runner.script_path(JOB_ID): {
+            "sha256": checksum(script.encode("utf-8")),
+            "content_type": "text/plain; charset=utf-8",
+            "size_bytes": len(script.encode("utf-8")),
+        }
+    }
+    snapshot = {
+        "script_sha256": checksum(script.encode("utf-8")),
+        "manifest_sha256": content_snapshot_sha256(manifest),
+    }
+    manifest["review"] = {"status": "pending", "snapshot": snapshot, "audit_trail": []}
+    manifest = apply_review_decision(
+        manifest,
+        reviewer="leela",
+        reviewed_at="2026-10-29T11:05:00Z",
+        decision="approved",
+        provider_authorization=provider_authorization_for(manifest),
+        review_checks_confirmed=True,
+    )
+    binding = {
+        **snapshot,
+        "reviewer": "leela",
+        "reviewed_at": "2026-10-29T11:05:00Z",
+        "decision": "approved",
+        "scope": "pre_tts",
+        "provider_authorization": provider_authorization_for(manifest),
+        "review_checks_confirmed": True,
+    }
+    if "synthesis_approval" in manifest["review"]:
+        manifest["review"]["synthesis_approval"]["binding"] = binding
+        manifest["review"]["synthesis_approval"]["audit_trail"].append(binding)
+    manifest["generation"]["synthesis_queue"] = {
+        "status": "enqueued",
+        "dispatch_id": "test-reviewed-dispatch",
+    }
     storage.put_bytes(
         job_runner.manifest_path(JOB_ID),
         manifest_bytes(manifest),
         "application/json; charset=utf-8",
-    )
-    storage.put_bytes(
-        job_runner.script_path(JOB_ID), script.encode("utf-8"), "text/plain; charset=utf-8"
     )
 
 
@@ -208,6 +279,134 @@ def _patch_tts_network(monkeypatch) -> None:
     monkeypatch.setattr(tts, "_default_transport", lambda request: b"segment-bytes")
 
 
+@pytest.mark.parametrize("failure", ["timeout", "network", "server_error"])
+def test_exact_review_transport_ambiguity_is_not_retried_or_followed_by_later_turns(
+    reviewed_stage, monkeypatch, failure
+):
+    storage, result, _generator, producer, _script = reviewed_stage
+    job_id = result.response["job_id"]
+    process_review_decision(
+        job_id,
+        storage=storage,
+        reviewer="leela",
+        reviewed_at="2026-10-29T11:05:00Z",
+        decision="approved",
+        **approval_evidence_for(result.manifest),
+    )
+    calls = []
+
+    def transport(request):
+        calls.append(json.loads(request.data)["input"])
+        if failure == "timeout":
+            raise TimeoutError("provider accepted, response lost")
+        if failure == "network":
+            raise URLError("connection lost after request acceptance")
+        raise HTTPError(request.full_url, 503, "ambiguous provider response", None, None)
+
+    _patch_audio(monkeypatch)
+    with pytest.raises(job_runner.TransientSynthesisError):
+        job_runner.run_synthesis(
+            job_id,
+            storage,
+            load_tts_config(),
+            token_provider=lambda scope: "offline-token",
+            transport=transport,
+        )
+    assert len(calls) == 1
+    first_claim = load_manifest(storage, job_id)["generation"]["synthesis_claim"].copy()
+    outcome = job_runner.run_synthesis(
+        job_id,
+        storage,
+        load_tts_config(),
+        token_provider=lambda scope: "offline-token",
+        transport=transport,
+    )
+    assert outcome.status == job_runner.STATUS_SKIPPED
+    assert len(calls) == 1
+    assert load_manifest(storage, job_id)["generation"]["synthesis_claim"] == first_claim
+    assert len(producer.sent) == 1
+
+
+def test_exact_review_transport_explicit_429_rejection_remains_retryable(
+    reviewed_stage, monkeypatch
+):
+    storage, result, _generator, _producer, _script = reviewed_stage
+    job_id = result.response["job_id"]
+    process_review_decision(
+        job_id,
+        storage=storage,
+        reviewer="leela",
+        reviewed_at="2026-10-29T11:05:00Z",
+        decision="approved",
+        **approval_evidence_for(result.manifest),
+    )
+    calls = []
+
+    def transport(request):
+        calls.append(json.loads(request.data)["input"])
+        if len(calls) == 1:
+            raise HTTPError(request.full_url, 429, "rejected before acceptance", None, None)
+        return b"offline-segment"
+
+    _patch_audio(monkeypatch)
+    outcome = job_runner.run_synthesis(
+        job_id,
+        storage,
+        load_tts_config(),
+        token_provider=lambda scope: "offline-token",
+        transport=transport,
+    )
+    assert outcome.status == job_runner.STATUS_COMPLETED
+    assert len(calls) == 3
+    assert calls[0] == calls[1]
+    assert calls[2] != calls[0]
+    assert load_manifest(storage, job_id)["generation"]["synthesis_claim"]["status"] == "completed"
+
+
+def test_review_revoked_during_first_transport_call_stops_second_provider_turn(
+    reviewed_stage, monkeypatch
+):
+    storage, result, _generator, producer, _script = reviewed_stage
+    job_id = result.response["job_id"]
+    approved = process_review_decision(
+        job_id,
+        storage=storage,
+        reviewer="leela",
+        reviewed_at="2026-10-29T11:05:00Z",
+        decision="approved",
+        **approval_evidence_for(result.manifest),
+    ).manifest
+    dispatch = approved["generation"]["synthesis_queue"].copy()
+    calls = []
+
+    def transport(request):
+        calls.append(json.loads(request.data)["input"])
+        process_review_decision(
+            job_id,
+            storage=storage,
+            reviewer="second-human-reviewer",
+            reviewed_at="2026-10-29T11:06:00Z",
+            decision="changes_requested",
+        )
+        return b"already-accepted-first-segment"
+
+    _patch_audio(monkeypatch)
+    with pytest.raises(job_runner.TransientSynthesisError):
+        job_runner.run_synthesis(
+            job_id,
+            storage,
+            load_tts_config(),
+            token_provider=lambda scope: "offline-token",
+            transport=transport,
+        )
+    revoked = load_manifest(storage, job_id)
+    assert revoked["review"]["synthesis_approval"]["status"] == "changes_requested"
+    assert revoked["generation"]["synthesis_queue"] == dispatch
+    assert revoked["generation"]["audio_mode"] != "synthesized"
+    assert len(calls) == 1
+    assert len(producer.sent) == 1
+
+
 # --- message parsing -------------------------------------------------------
 
 
@@ -229,10 +428,228 @@ def test_parse_job_id_rejects_empty_message():
         parse_job_id("   ")
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_approval",
+        "script",
+        "config",
+        "metadata",
+        "dry_run",
+        "missing_snapshot",
+        "missing_binding",
+        "missing_audit_binding",
+        "rejected",
+        "provider",
+        "transcript",
+        "missing_provider_authorization",
+        "missing_privacy_signoff",
+        "missing_rai_signoff",
+        "provider_authorization_config",
+        "unconfirmed_review_checks",
+        "publication_approval_only",
+    ],
+)
+def test_worker_rejects_unreviewed_or_changed_stage_before_provider(
+    reviewed_stage, monkeypatch, mutation
+):
+    storage, result, generator, _producer, script = reviewed_stage
+    job_id = result.response["job_id"]
+    if mutation != "missing_approval":
+        process_review_decision(
+            job_id,
+            storage=storage,
+            reviewer="leela",
+            reviewed_at="2026-10-29T11:05:00Z",
+            decision="approved",
+            **approval_evidence_for(result.manifest),
+        )
+    manifest = load_manifest(storage, job_id)
+    if mutation == "script":
+        storage.put_bytes(f"jobs/{job_id}/script.txt", script + b" Changed.", "text/plain")
+    elif mutation == "config":
+        manifest["request"]["podcast_config"]["host_a"]["voice"] = "different-voice"
+    elif mutation == "metadata":
+        manifest["request"]["article_title"] = "Different title after review"
+    elif mutation == "dry_run":
+        manifest["request"]["dry_run"] = True
+    elif mutation == "missing_snapshot":
+        manifest["review"].pop("snapshot", None)
+    elif mutation == "missing_binding":
+        manifest["review"]["synthesis_approval"].pop("binding", None)
+    elif mutation == "missing_audit_binding":
+        approval = manifest["review"]["synthesis_approval"]
+        approval["audit_trail"].remove(approval["binding"])
+    elif mutation == "rejected":
+        manifest["review"]["synthesis_approval"]["status"] = "rejected"
+    elif mutation == "missing_provider_authorization":
+        manifest["review"]["synthesis_approval"].pop("provider_authorization")
+    elif mutation == "missing_privacy_signoff":
+        manifest["review"]["synthesis_approval"]["provider_authorization"].pop(
+            "provider_privacy_review_reference"
+        )
+    elif mutation == "missing_rai_signoff":
+        manifest["review"]["synthesis_approval"]["provider_authorization"].pop(
+            "rai_security_signoff_reference"
+        )
+    elif mutation == "provider_authorization_config":
+        manifest["review"]["synthesis_approval"]["provider_authorization"][
+            "provider_settings_sha256"
+        ] = "0" * 64
+    elif mutation == "unconfirmed_review_checks":
+        manifest["review"]["synthesis_approval"]["review_checks_confirmed"] = False
+    elif mutation == "publication_approval_only":
+        synthesis_approval = manifest["review"].pop("synthesis_approval")
+        for field in ("status", "approved_by", "approved_at", "audit_trail"):
+            manifest["review"][field] = synthesis_approval[field]
+    elif mutation == "transcript":
+        storage.put_bytes(f"jobs/{job_id}/transcript.txt", b"unreviewed transcript", "text/plain")
+    storage.put_bytes(
+        job_runner.manifest_path(job_id), manifest_bytes(manifest), "application/json"
+    )
+    provider = Mock(side_effect=AssertionError("unapproved bytes reached the TTS provider"))
+    monkeypatch.setattr(job_runner, "synthesize_episode", provider)
+    token = Mock(side_effect=AssertionError("unapproved job requested provider credentials"))
+    video = Mock(side_effect=AssertionError("unapproved job queued video"))
+
+    config = _production_config()
+    if mutation == "provider":
+        config = replace(config, tts_deployment="different-production-deployment")
+    outcome = job_runner.run_synthesis(
+        job_id,
+        storage,
+        config,
+        token_provider=token,
+        transport=provider,
+        enqueue_video=video,
+    )
+
+    assert outcome.status != job_runner.STATUS_COMPLETED
+    assert outcome.reason
+    provider.assert_not_called()
+    token.assert_not_called()
+    video.assert_not_called()
+    generator.assert_called_once()
+
+
+def test_reviewed_worker_uses_staged_bytes_and_duplicate_queue_does_not_repeat_provider(
+    reviewed_stage, monkeypatch
+):
+    storage, result, generator, _producer, script = reviewed_stage
+    job_id = result.response["job_id"]
+    process_review_decision(
+        job_id,
+        storage=storage,
+        reviewer="leela",
+        reviewed_at="2026-10-29T11:05:00Z",
+        decision="approved",
+        **approval_evidence_for(result.manifest),
+    )
+    _patch_audio(monkeypatch)
+    monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "false")
+    transport = Mock(return_value=b"segment-bytes")
+    synthesize = Mock(wraps=job_runner.synthesize_episode)
+    monkeypatch.setattr(job_runner, "synthesize_episode", synthesize)
+    first = job_runner.run_synthesis(
+        job_id,
+        storage,
+        _production_config(),
+        token_provider=lambda scope: "token",
+        transport=transport,
+    )
+    assert first.status == job_runner.STATUS_COMPLETED
+    synthesize.assert_called_once()
+    assert synthesize.call_args.args[0].encode("utf-8") == script
+    provider_calls = transport.call_count
+    assert provider_calls > 0
+    second = job_runner.run_synthesis(
+        job_id,
+        storage,
+        _production_config(),
+        token_provider=lambda scope: "token",
+        transport=transport,
+    )
+    assert second.reason == job_runner.REASON_ALREADY_SYNTHESIZED
+    assert transport.call_count == provider_calls
+    synthesize.assert_called_once()
+    assert storage.get_bytes(f"jobs/{job_id}/script.txt") == script
+    generator.assert_called_once()
+
+
+def test_concurrent_worker_claims_call_provider_only_once(reviewed_stage, monkeypatch):
+    storage, result, generator, _producer, _script = reviewed_stage
+    job_id = result.response["job_id"]
+    process_review_decision(
+        job_id,
+        storage=storage,
+        reviewer="leela",
+        reviewed_at="2026-10-29T11:05:00Z",
+        decision="approved",
+        **approval_evidence_for(result.manifest),
+    )
+    _patch_audio(monkeypatch)
+    monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "false")
+    started = Event()
+    release = Event()
+    original = job_runner.synthesize_episode
+
+    def blocked_provider(*args, **kwargs):
+        started.set()
+        assert release.wait(5), "competing worker did not release first provider"
+        return original(*args, **kwargs)
+
+    provider = Mock(side_effect=blocked_provider)
+    monkeypatch.setattr(job_runner, "synthesize_episode", provider)
+
+    def run():
+        return job_runner.run_synthesis(
+            job_id,
+            storage,
+            _production_config(),
+            token_provider=lambda scope: "offline-token",
+            transport=lambda request: b"segment-bytes",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(run)
+        try:
+            assert started.wait(5), "approved worker never reached provider"
+            second = pool.submit(run)
+            denied = second.result(timeout=5)
+        finally:
+            release.set()
+        assert first.result(timeout=5).status == job_runner.STATUS_COMPLETED
+    assert denied.reason == "synthesis_claim_blocked"
+    provider.assert_called_once()
+    generator.assert_called_once()
+
+
+def test_ambiguous_provider_failure_is_not_replayed(reviewed_stage, monkeypatch):
+    storage, result, generator, _producer, _script = reviewed_stage
+    job_id = result.response["job_id"]
+    process_review_decision(
+        job_id,
+        storage=storage,
+        reviewer="leela",
+        reviewed_at="2026-10-29T11:05:00Z",
+        decision="approved",
+        **approval_evidence_for(result.manifest),
+    )
+    provider = Mock(side_effect=TimeoutError("provider acknowledgement lost"))
+    monkeypatch.setattr(job_runner, "synthesize_episode", provider)
+    with pytest.raises(job_runner.TransientSynthesisError):
+        job_runner.run_synthesis(job_id, storage, _production_config())
+    assert load_manifest(storage, job_id)["generation"]["synthesis_claim"]["status"] == "unknown"
+    retry = job_runner.run_synthesis(job_id, storage, _production_config())
+    assert retry.reason == "synthesis_claim_blocked"
+    provider.assert_called_once()
+    generator.assert_called_once()
+
+
 # --- run_synthesis happy path ---------------------------------------------
 
 
-def test_run_synthesis_completes_and_marks_publish_ready(monkeypatch):
+def test_run_synthesis_completes_and_keeps_final_publication_review_blocked(monkeypatch):
     _patch_audio(monkeypatch)
     storage = FakeStorage()
     _stage(storage, _base_manifest(), _two_voice_script())
@@ -267,12 +684,12 @@ def test_run_synthesis_completes_and_marks_publish_ready(monkeypatch):
     )
     assert gen["synthesis_runner"]["audio"]["upload_format"] == "wav"
     assert gen["tts_synthesis"]["blocked_by"] == []
-    assert manifest["status"] == "synthesized_publish_ready"
+    assert manifest["status"] == "synthesized_review_ready"
 
     pub = manifest["publishing"]
-    assert pub["eligible"] is True
-    assert pub["packet_ready"] is True
-    assert "human_review" not in pub["blocked_by"]
+    assert pub["eligible"] is False
+    assert pub["packet_ready"] is False
+    assert "human_review" in pub["blocked_by"]
     assert "synthesis_not_completed" not in pub["blocked_by"]
     assert pub["readiness_checks"]["real_audio_available"] is True
     assert pub["readiness_checks"]["editorial_review_complete"] is False
@@ -389,7 +806,7 @@ def test_run_synthesis_ignores_podcast_auto_publish_flag(monkeypatch):
     storage = FakeStorage()
     _stage(storage, _base_manifest(), _two_voice_script())
     monkeypatch.setattr(
-        job_runner,
+        publish,
         "publish_episode",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("auto-publish must not mutate Spotify")
@@ -407,7 +824,7 @@ def test_run_synthesis_ignores_podcast_auto_publish_flag(monkeypatch):
     assert outcome.status == job_runner.STATUS_COMPLETED
 
 
-def test_run_synthesis_direct_publishes_when_spotify_config_present(monkeypatch):
+def test_run_synthesis_keeps_publication_blocked_when_spotify_config_present(monkeypatch):
     _patch_audio(monkeypatch)
     monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "true")
     monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "false")
@@ -438,7 +855,7 @@ def test_run_synthesis_direct_publishes_when_spotify_config_present(monkeypatch)
         )
         return job_runner.PublishResult(status="draft")
 
-    monkeypatch.setattr(job_runner, "publish_episode", fake_publish_episode)
+    monkeypatch.setattr(publish, "publish_episode", fake_publish_episode)
 
     outcome = job_runner.run_synthesis(
         JOB_ID,
@@ -449,21 +866,11 @@ def test_run_synthesis_direct_publishes_when_spotify_config_present(monkeypatch)
     )
 
     assert outcome.status == job_runner.STATUS_COMPLETED
-    assert published == [
-        {
-            "mp3_exists": True,
-            "wav_exists": True,
-            "title": "Skills go vertical",
-            "description": "<p>Claracle week 2026-W24.</p><p>Source article: https://claracle.com/weekly/2026/w24/</p>",
-            "year": 2026,
-            "week": 24,
-            "article_title": "Skills go vertical",
-        }
-    ]
+    assert published == []
     persisted = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode())
-    assert persisted["generation"]["publish_result"]["status"] == "draft"
-    assert persisted["generation"]["publish_result"]["outcome"] == "draft_created"
-    assert persisted["generation"]["publish_result"]["publish_run_id"]
+    assert "publish_result" not in persisted["generation"]
+    assert persisted["publishing"]["eligible"] is False
+    assert "human_review" in persisted["publishing"]["blocked_by"]
 
 
 def test_run_synthesis_blocks_invalid_canonical_identity_before_spotify_mutation(
@@ -484,7 +891,7 @@ def test_run_synthesis_blocks_invalid_canonical_identity_before_spotify_mutation
     }
     _stage(storage, manifest, _two_voice_script())
     monkeypatch.setattr(
-        job_runner,
+        publish,
         "publish_episode",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("Spotify mutation path must not run")
@@ -501,15 +908,12 @@ def test_run_synthesis_blocks_invalid_canonical_identity_before_spotify_mutation
 
     assert outcome.status == job_runner.STATUS_COMPLETED
     persisted = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode())
-    publish_result = persisted["generation"]["publish_result"]
-    assert publish_result["outcome"] == "publication_unknown"
-    assert publish_result["details"] == {
-        "retry_blocked": True,
-        "code": "invalid_publication_identity",
-    }
+    assert "publish_result" not in persisted["generation"]
+    assert persisted["publishing"]["eligible"] is False
+    assert "human_review" in persisted["publishing"]["blocked_by"]
 
 
-def test_run_synthesis_enqueues_video_and_publishes_audio_when_video_enabled(monkeypatch):
+def test_run_synthesis_keeps_video_and_audio_blocked_until_media_review(monkeypatch):
     _patch_audio(monkeypatch)
     monkeypatch.delenv("VIDEO_GENERATION_ENABLED", raising=False)
     monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "true")
@@ -530,7 +934,7 @@ def test_run_synthesis_enqueues_video_and_publishes_audio_when_video_enabled(mon
         published.append(str(args[1]))
         return job_runner.PublishResult(status="draft")
 
-    monkeypatch.setattr(job_runner, "publish_episode", fake_publish_episode)
+    monkeypatch.setattr(publish, "publish_episode", fake_publish_episode)
 
     outcome = job_runner.run_synthesis(
         JOB_ID,
@@ -542,9 +946,20 @@ def test_run_synthesis_enqueues_video_and_publishes_audio_when_video_enabled(mon
     )
 
     assert outcome.status == job_runner.STATUS_COMPLETED
-    # Video is enqueued AND explicitly-enabled audio publishing runs immediately.
-    assert enqueued == [JOB_ID]
-    assert published == ["Skills go vertical"]
+    assert enqueued == []
+    assert published == []
+    persisted = load_manifest(storage, JOB_ID)
+    assert persisted["review"]["status"] == "pending"
+    assert persisted["review"]["synthesis_approval"]["status"] == "approved"
+    duplicate = job_runner.run_synthesis(
+        JOB_ID,
+        storage,
+        _production_config(),
+        transport=lambda request: pytest.fail("must not re-synthesize"),
+        enqueue_video=lambda job_id: enqueued.append(job_id) or True,
+    )
+    assert duplicate.reason == job_runner.REASON_ALREADY_SYNTHESIZED
+    assert enqueued == []
 
 
 def _video_only_manifest(**request_extra) -> dict:
@@ -573,7 +988,7 @@ def test_run_synthesis_video_only_skips_audio_publish_and_records_skipped(monkey
     monkeypatch.setenv("PODCAST_AUTO_PUBLISH", "true")
     storage = FakeStorage()
     _stage(storage, _video_only_manifest(), _two_voice_script())
-    monkeypatch.setattr(job_runner, "publish_episode", _no_spotify_mutation)
+    monkeypatch.setattr(publish, "publish_episode", _no_spotify_mutation)
     enqueued: list[str] = []
 
     with caplog.at_level("INFO"):
@@ -587,7 +1002,7 @@ def test_run_synthesis_video_only_skips_audio_publish_and_records_skipped(monkey
         )
 
     assert outcome.status == job_runner.STATUS_COMPLETED
-    assert enqueued == [JOB_ID]
+    assert enqueued == []
     persisted = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode())
     publish_result = persisted["generation"]["publish_result"]
     assert publish_result["status"] == "skipped"
@@ -633,7 +1048,7 @@ def test_run_synthesis_video_only_skip_precedes_identity_check(monkeypatch):
         _video_only_manifest(article_sha256="a" * 64, publish_run_id="123"),
         _two_voice_script(),
     )
-    monkeypatch.setattr(job_runner, "publish_episode", _no_spotify_mutation)
+    monkeypatch.setattr(publish, "publish_episode", _no_spotify_mutation)
 
     outcome = job_runner.run_synthesis(
         JOB_ID,
@@ -670,7 +1085,7 @@ def test_run_synthesis_warns_when_no_publish_target_at_all(
     monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "false")
     storage = FakeStorage()
     _stage(storage, _video_only_manifest(), _two_voice_script())
-    monkeypatch.setattr(job_runner, "publish_episode", _no_spotify_mutation)
+    monkeypatch.setattr(publish, "publish_episode", _no_spotify_mutation)
 
     with caplog.at_level("INFO"):
         outcome = job_runner.run_synthesis(
@@ -701,14 +1116,13 @@ def test_spotify_audio_publish_flag_matches_publisher_gate(monkeypatch):
         assert spotify_audio_publish_enabled() is publish._is_enabled(), value
 
 
-def test_run_synthesis_video_enqueue_failure_does_not_break_completion(monkeypatch):
+def test_run_synthesis_never_calls_video_queue_before_media_review(monkeypatch):
     _patch_audio(monkeypatch)
     monkeypatch.delenv("VIDEO_GENERATION_ENABLED", raising=False)
     storage = FakeStorage()
     _stage(storage, _base_manifest(), _two_voice_script())
 
-    def boom(_job_id):
-        raise RuntimeError("queue send exploded")
+    enqueue = Mock(side_effect=AssertionError("media has not been approved"))
 
     outcome = job_runner.run_synthesis(
         JOB_ID,
@@ -716,10 +1130,11 @@ def test_run_synthesis_video_enqueue_failure_does_not_break_completion(monkeypat
         _production_config(),
         token_provider=lambda scope: "token",
         transport=lambda request: b"segment-bytes",
-        enqueue_video=boom,
+        enqueue_video=enqueue,
     )
 
     assert outcome.status == job_runner.STATUS_COMPLETED
+    enqueue.assert_not_called()
 
 
 # --- idempotency & skip paths ---------------------------------------------
@@ -742,14 +1157,19 @@ def test_run_synthesis_is_idempotent_on_duplicate_delivery(monkeypatch):
     assert outcome.reason == job_runner.REASON_ALREADY_SYNTHESIZED
 
 
-def test_run_synthesis_skip_enqueues_video_on_retrigger(monkeypatch):
-    # Re-triggering a job that already has audio must still start video.
+@pytest.mark.parametrize("canonical", [False, True])
+def test_run_synthesis_skip_enqueues_video_only_for_legacy_retrigger(monkeypatch, canonical):
     _patch_audio(monkeypatch)
     monkeypatch.delenv("VIDEO_GENERATION_ENABLED", raising=False)
     storage = FakeStorage()
     manifest = _base_manifest()
     manifest["generation"]["synthesis_runner"] = {"status": "completed", "job_id": JOB_ID}
-    _stage(storage, manifest, _two_voice_script())
+    if canonical:
+        _stage(storage, manifest, _two_voice_script())
+    else:
+        storage.put_bytes(
+            job_runner.manifest_path(JOB_ID), manifest_bytes(manifest), "application/json"
+        )
 
     enqueued: list[str] = []
     outcome = job_runner.run_synthesis(
@@ -762,7 +1182,7 @@ def test_run_synthesis_skip_enqueues_video_on_retrigger(monkeypatch):
 
     assert outcome.status == job_runner.STATUS_SKIPPED
     assert outcome.reason == job_runner.REASON_ALREADY_SYNTHESIZED
-    assert enqueued == [JOB_ID]
+    assert enqueued == ([] if canonical else [JOB_ID])
 
 
 def test_run_synthesis_skip_does_not_enqueue_video_when_already_generated(monkeypatch):
@@ -773,7 +1193,9 @@ def test_run_synthesis_skip_does_not_enqueue_video_when_already_generated(monkey
     manifest = _base_manifest()
     manifest["generation"]["synthesis_runner"] = {"status": "completed", "job_id": JOB_ID}
     manifest["generation"]["video_runner"] = {"status": "completed", "job_id": JOB_ID}
-    _stage(storage, manifest, _two_voice_script())
+    storage.put_bytes(
+        job_runner.manifest_path(JOB_ID), manifest_bytes(manifest), "application/json"
+    )
 
     enqueued: list[str] = []
     outcome = job_runner.run_synthesis(
@@ -795,7 +1217,9 @@ def test_run_synthesis_skip_no_video_when_generation_disabled(monkeypatch):
     storage = FakeStorage()
     manifest = _base_manifest()
     manifest["generation"]["synthesis_runner"] = {"status": "completed", "job_id": JOB_ID}
-    _stage(storage, manifest, _two_voice_script())
+    storage.put_bytes(
+        job_runner.manifest_path(JOB_ID), manifest_bytes(manifest), "application/json"
+    )
 
     enqueued: list[str] = []
     outcome = job_runner.run_synthesis(
@@ -810,27 +1234,29 @@ def test_run_synthesis_skip_no_video_when_generation_disabled(monkeypatch):
     assert enqueued == []
 
 
-def test_run_synthesis_skip_video_enqueue_failure_is_swallowed(monkeypatch):
+def test_run_synthesis_legacy_skip_video_enqueue_failure_is_swallowed(monkeypatch):
     _patch_audio(monkeypatch)
     monkeypatch.delenv("VIDEO_GENERATION_ENABLED", raising=False)
     storage = FakeStorage()
     manifest = _base_manifest()
     manifest["generation"]["synthesis_runner"] = {"status": "completed", "job_id": JOB_ID}
-    _stage(storage, manifest, _two_voice_script())
+    storage.put_bytes(
+        job_runner.manifest_path(JOB_ID), manifest_bytes(manifest), "application/json"
+    )
 
-    def boom(_job_id):
-        raise RuntimeError("queue send exploded")
+    enqueue = Mock(side_effect=RuntimeError("queue send exploded"))
 
     outcome = job_runner.run_synthesis(
         JOB_ID,
         storage,
         _production_config(),
         transport=lambda request: pytest.fail("must not re-synthesize"),
-        enqueue_video=boom,
+        enqueue_video=enqueue,
     )
 
     assert outcome.status == job_runner.STATUS_SKIPPED
     assert outcome.reason == job_runner.REASON_ALREADY_SYNTHESIZED
+    enqueue.assert_called_once_with(JOB_ID)
 
 
 def test_run_synthesis_skips_placeholder_script(monkeypatch):

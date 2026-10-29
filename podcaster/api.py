@@ -40,6 +40,7 @@ from podcaster.jobs import (
 )
 from podcaster.orchestration import process_review_decision
 from podcaster.podcast_config import PodcastConfigStore
+from podcaster.review import ReviewBindingError
 from podcaster.spotify_mode import (
     record_review_skip_outcome,
     review_publish_fields,
@@ -640,11 +641,19 @@ class GenerateHandler(BaseHTTPRequestHandler):
                 notes=notes,
                 run_url=run_url,
                 publish_on_approval=publish_on_approval and not audio_publish_skipped,
+                publish_video_on_approval=publish_on_approval,
+                script_sha256=payload.get("script_sha256"),
+                manifest_sha256=payload.get("manifest_sha256"),
+                provider_authorization=payload.get("provider_authorization"),
+                review_checks_confirmed=payload.get("review_checks_confirmed") is True,
                 storage=storage,
             )
             outcome = record_review_skip_outcome(
                 storage, job_id, outcome, reviewed_at, audio_publish_skipped
             )
+        except ReviewBindingError:
+            _json_response(self, HTTPStatus.CONFLICT, {"error": "review binding conflict"})
+            return
         except ValueError:
             logger.warning("review decision was rejected", exc_info=True)
             _json_response(self, HTTPStatus.NOT_FOUND, {"error": "review request not found"})

@@ -221,6 +221,35 @@ def test_retries_rate_limited_segment_then_succeeds():
     assert slept  # backed off once
 
 
+@pytest.mark.parametrize("failure", ["timeout", "network", "server_error"])
+def test_legacy_pool_keeps_transient_retry_policy_through_real_transport(failure):
+    config, plan = _plan(1)
+    calls = []
+
+    def transport(request):
+        calls.append(request.data)
+        if len(calls) == 1:
+            if failure == "timeout":
+                raise TimeoutError("legacy timeout")
+            if failure == "network":
+                raise URLError("legacy network failure")
+            raise _http_error(503)
+        return b"recovered-audio"
+
+    outputs = synthesize_plan_concurrent(
+        plan,
+        config,
+        _allowed_decision(config),
+        token_provider=lambda scope: "offline-token",
+        transport=transport,
+        sleeper=_no_sleep,
+    )
+
+    assert outputs == [b"recovered-audio"]
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+
+
 def test_gives_up_after_max_retries_and_raises():
     config, plan = _plan(2)
     decision = _allowed_decision(config)

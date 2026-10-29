@@ -4,7 +4,7 @@ import hashlib
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from urllib.parse import urlparse
@@ -26,10 +26,15 @@ from podcaster.costs import (
 from podcaster.generation import checksum, generate_artifacts, manifest_bytes
 from podcaster.prior_episodes import fetch_prior_episode_themes
 from podcaster.publication_state import canonical_identity_requested
-from podcaster.queue import enqueue_synthesis_job
+from podcaster.review import (
+    PROVIDER_TTS_BLOCKERS,
+    content_snapshot_sha256,
+    provider_settings_sha256,
+)
 from podcaster.script_gen import ScriptGenConfig, generate_script
 from podcaster.sections import parse_script_sections, sections_to_metadata
 from podcaster.storage import StorageBackend, StoredArtifact, create_storage_backend
+from podcaster.tts import load_tts_config
 from podcaster.validation import RESPONSE_KEYS
 
 _REPLAY_IDENTITY_FIELDS = (
@@ -220,6 +225,7 @@ def run_generation_job(
     enqueue: Callable[[str], bool] | None = None,
     validation_warnings: list[str] | None = None,
 ) -> JobResult:
+    """Stage generation once; ``enqueue`` remains accepted for caller compatibility only."""
     current = now or datetime.now(timezone.utc)
     expires_at = (
         (current + timedelta(days=7)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -360,6 +366,7 @@ def run_generation_job(
                     script_directions=script_directions,
                     historical_context=historical_context,
                     breaking_news=payload.get("breaking_news") or None,
+                    generated_at=current,
                 )
                 llm_generation_engine = "llm-script-gen"
                 sections = parse_script_sections(llm_script, podcast_config)
@@ -404,6 +411,12 @@ def run_generation_job(
                 "article_content provided but chat endpoint not configured; using "
                 "placeholder script"
             )
+    if llm_script is None and not payload.get("dry_run"):
+        _release_failed_reservation(storage, job_id, monthly_path, month)
+        raise ScriptGenerationFailed(
+            "production generation requires article content and configured LLM; "
+            "no placeholder allowed"
+        )
     if llm_script is None:
         warnings.append("audio is a deterministic placeholder pending TTS implementation")
 
@@ -419,21 +432,9 @@ def run_generation_job(
         prior_monthly_spend_usd=prior_monthly_spend,
         cost_override=cost_override,
         config=podcast_config,
+        script=llm_script,
+        claim_ledger=llm_claims_json,
     ):
-        # Replace the deterministic script with the LLM-generated one if available.
-        if llm_script and artifact.path.endswith("/script.txt"):
-            from podcaster.generation import GeneratedArtifact
-
-            artifact = GeneratedArtifact(
-                artifact.path, llm_script.encode("utf-8"), artifact.content_type
-            )
-        # Replace the stub claim ledger with LLM-extracted claims if available.
-        if llm_claims_json and artifact.path.endswith("/claim-ledger.json"):
-            from podcaster.generation import GeneratedArtifact
-
-            artifact = GeneratedArtifact(
-                artifact.path, llm_claims_json.encode("utf-8"), artifact.content_type
-            )
         artifact_checksum = checksum(artifact.content)
         if artifact.path.endswith(".mp3"):
             audio_validation = placeholder_audio_validation(
@@ -465,7 +466,8 @@ def run_generation_job(
         audio_validation = placeholder_audio_validation(byte_length=0, sha256="")
 
     created_at = current.replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    manifest_status = "dry_run" if payload.get("dry_run") else "accepted"
+    manifest_status = "dry_run" if payload.get("dry_run") else "review_pending"
+    provider_config = load_tts_config()
     manifest = {
         "schema_version": "squadscope-podcaster-job-v1",
         "job_id": job_id,
@@ -482,15 +484,23 @@ def run_generation_job(
             "audio_mode": "placeholder",
             "tts_provider": None,
             "tts_voice": None,
+            "cost_ledger_persisted": False,
+            "resolved_podcast_config": asdict(podcast_config),
+            "provider_settings": provider_config.safe_summary(),
+            "provider_settings_sha256": provider_settings_sha256(provider_config),
             "tts_synthesis": {
-                "status": "blocked" if payload.get("dry_run") else "queued",
-                "allowed": bool(not payload.get("dry_run")),
-                "blocked_by": ["dry_run"] if payload.get("dry_run") else [],
-                "dry_run_bypass_allowed": bool(payload.get("dry_run")),
+                "status": "blocked",
+                "allowed": False,
+                "blocked_by": (
+                    ["dry_run"]
+                    if payload.get("dry_run")
+                    else ["human_review", *PROVIDER_TTS_BLOCKERS]
+                ),
+                "dry_run_bypass_allowed": False,
             },
             "audio_validation": audio_validation.to_manifest(),
             "synthesis_queue": {
-                "status": "not_requested" if payload.get("dry_run") else "pending",
+                "status": "not_requested" if payload.get("dry_run") else "staging",
                 "enqueued_at": None,
                 "detail": None,
             },
@@ -537,6 +547,10 @@ def run_generation_job(
         },
         "warnings": warnings,
     }
+    manifest["review"]["snapshot"] = {
+        "script_sha256": checksums[f"jobs/{job_id}/script.txt"],
+        "manifest_sha256": content_snapshot_sha256(manifest),
+    }
     manifest_path = f"jobs/{job_id}/manifest.json"
     manifest_artifact = storage.put_bytes(
         manifest_path, manifest_bytes(manifest), "application/json; charset=utf-8"
@@ -555,6 +569,18 @@ def run_generation_job(
             "application/json; charset=utf-8",
             finalize_monthly_budget,
         )
+
+        def finish_staging(content: bytes | None) -> bytes:
+            if content is None:
+                raise RuntimeError("staged manifest missing after cost ledger persistence")
+            latest = json.loads(content)
+            latest["generation"]["cost_ledger_persisted"] = True
+            latest["generation"]["synthesis_queue"]["status"] = "awaiting_review"
+            return manifest_bytes(latest)
+
+        storage.update_bytes(manifest_path, "application/json; charset=utf-8", finish_staging)
+        manifest["generation"]["cost_ledger_persisted"] = True
+        manifest["generation"]["synthesis_queue"]["status"] = "awaiting_review"
     logging.info(
         "podcaster job staged job_id=%s status=%s dry_run=%s artifact_count=%s",
         job_id,
@@ -562,19 +588,6 @@ def run_generation_job(
         bool(payload.get("dry_run")),
         len(stored) + 1,
     )
-
-    if not payload.get("dry_run"):
-        enqueue_state = _enqueue_synthesis(job_id, enqueue)
-        if enqueue_state["warning"]:
-            warnings.append(enqueue_state["warning"])
-        manifest["generation"]["synthesis_queue"] = {
-            "status": enqueue_state["status"],
-            "enqueued_at": enqueue_state["enqueued_at"],
-            "detail": enqueue_state["detail"],
-        }
-        if enqueue_state["warning"] and enqueue_state["warning"] not in manifest["warnings"]:
-            manifest["warnings"].append(enqueue_state["warning"])
-        _record_enqueue_state(storage, manifest_path, enqueue_state)
 
     response = _response_from_artifacts(
         job_id=job_id,
@@ -595,45 +608,6 @@ def failed_response(errors: list[str], warnings: list[str] | None = None) -> dic
             strict=True,
         )
     )
-
-
-def _enqueue_synthesis(job_id: str, enqueue: Callable[[str], bool] | None) -> dict[str, Any]:
-    """Best-effort enqueue of the synthesis message once gates have passed.
-
-    Failures (including an unconfigured queue) never break the stable async 202
-    contract: the request is already staged and the placeholder/publication block
-    remains in force until the ACA Job is provisioned.
-    """
-
-    send = enqueue or enqueue_synthesis_job
-    current = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    try:
-        enqueued = bool(send(job_id))
-        if enqueued:
-            return {
-                "status": "enqueued",
-                "enqueued_at": current,
-                "detail": None,
-                "warning": None,
-            }
-        return {
-            "status": "not_configured",
-            "enqueued_at": current,
-            "detail": "synthesis queue not configured",
-            "warning": (
-                "synthesis queue not configured; job will remain staged until synthesis is replayed"
-            ),
-        }
-    except Exception:
-        logging.exception(
-            "synthesis enqueue failed job_id=%s; continuing with staged placeholder", job_id
-        )
-        return {
-            "status": "failed",
-            "enqueued_at": current,
-            "detail": "synthesis enqueue failed",
-            "warning": "synthesis enqueue failed; job remains staged until synthesis is replayed",
-        }
 
 
 def _job_already_in_ledger(monthly_ledger: dict[str, Any], job_id: str) -> bool:
@@ -728,9 +702,17 @@ def _lifecycle_metadata(payload: dict[str, Any], created_at: str, status: str) -
             "reason": "request_validated",
         }
     ]
+    if not payload.get("dry_run"):
+        transitions.append(
+            {
+                "at": created_at,
+                "to": status,
+                "reason": "script_staged_awaiting_human_review",
+            }
+        )
     return {
         "status": status,
-        "revision": 1,
+        "revision": len(transitions),
         "force": bool(payload.get("force")),
         "transitions": transitions,
     }
@@ -739,7 +721,7 @@ def _lifecycle_metadata(payload: dict[str, Any], created_at: str, status: str) -
 def _review_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "required": True,
-        "required_for_tts": False,
+        "required_for_tts": True,
         "status": "pending",
         "mechanism": "github_environment",
         "environment": "podcast-review",
@@ -758,8 +740,8 @@ def _review_metadata(payload: dict[str, Any]) -> dict[str, Any]:
             "publishing-packet.zip",
         ],
         "gate": {
-            "status": "dry_run_bypass" if payload.get("dry_run") else "blocked",
-            "approval_required_before": "spotify_publication",
+            "status": "blocked",
+            "approval_required_before": "tts_synthesis",
             "checks": [
                 "script_accuracy",
                 "claim_verification",
@@ -806,33 +788,3 @@ def _response_from_artifacts(
             strict=True,
         )
     )
-
-
-def _record_enqueue_state(
-    storage: StorageBackend, manifest_path: str, state: dict[str, Any]
-) -> None:
-    content = storage.get_bytes(manifest_path)
-    document = json.loads(content.decode("utf-8")) if content else {}
-    if not isinstance(document, dict):
-        document = {}
-    generation = document.setdefault("generation", {})
-    if isinstance(generation, dict):
-        generation["synthesis_queue"] = {
-            "status": state["status"],
-            "enqueued_at": state["enqueued_at"],
-            "detail": state["detail"],
-        }
-    warnings = document.get("warnings")
-    if state.get("warning") and isinstance(warnings, list) and state["warning"] not in warnings:
-        warnings.append(state["warning"])
-    lifecycle = document.setdefault("lifecycle", {})
-    if isinstance(lifecycle, dict) and isinstance(lifecycle.get("transitions"), list):
-        lifecycle["transitions"].append(
-            {
-                "at": state["enqueued_at"],
-                "to": "accepted",
-                "reason": f"synthesis_queue_{state['status']}",
-            }
-        )
-        lifecycle["revision"] = int(lifecycle.get("revision") or 1) + 1
-    storage.put_bytes(manifest_path, manifest_bytes(document), "application/json; charset=utf-8")

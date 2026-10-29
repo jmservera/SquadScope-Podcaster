@@ -14,7 +14,7 @@ azure-core==1.41.0
     #   azure-identity
     #   azure-storage-blob
     #   azure-storage-queue
-azure-identity==1.26.0
+azure-identity==1.27.0
     # via squadscope-podcaster (pyproject.toml)
 azure-storage-blob==12.31.0
     # via squadscope-podcaster (pyproject.toml)
@@ -22,7 +22,7 @@ azure-storage-queue==12.18.0
     # via squadscope-podcaster (pyproject.toml)
 babel==2.18.0
     # via sphinx
-certifi==2026.10.19
+certifi==2026.10.23
     # via requests
 cffi==2.1.1
     # via cryptography
@@ -42,7 +42,7 @@ docutils==0.22.4
     # via
     #   myst-parser
     #   sphinx
-fastapi==0.156.2
+fastapi==0.162.0
     # via squadscope-podcaster (pyproject.toml)
 greenlet==3.5.6
     # via playwright
@@ -50,11 +50,11 @@ h11==0.16.0
     # via
     #   httpcore2
     #   uvicorn
-httpcore2==2.15.1
+httpcore2==2.16.0
     # via httpx2
 httptools==0.9.0
     # via uvicorn
-httpx2==2.15.1
+httpx2==2.16.0
     # via squadscope-podcaster (pyproject.toml)
 idna==3.20
     # via
@@ -101,11 +101,11 @@ packaging==26.3
     # via
     #   pytest
     #   sphinx
-playwright==1.64.0
+playwright==1.64.1
     # via squadscope-podcaster (pyproject.toml)
 pluggy==1.7.0
     # via pytest
-pycparser==3.11
+pycparser==3.12
     # via cffi
 pydantic==2.14.1
     # via
@@ -162,7 +162,7 @@ sphinxcontrib-serializinghtml==2.0.0
     # via sphinx
 spotifyconnector==0.8.2
     # via squadscope-podcaster (pyproject.toml)
-starlette==1.9.0
+starlette==1.10.0
     # via fastapi
 tenacity==9.2.1
     # via spotifyconnector

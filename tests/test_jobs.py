@@ -37,11 +37,15 @@ VALID_ARTICLE_CONTENT = (
     "customer impact, and the competitive context the hosts should react to in detail this week."
 )
 
+pytestmark = pytest.mark.usefixtures("offline_script_generation")
+
 
 def test_publication_identity_is_persisted_without_changing_legacy_job_id(tmp_path) -> None:
     base_payload = {
         "week": "2026-W37",
         "article_url": "https://example.com/article",
+        "article_title": "Reviewed weekly signal",
+        "article_content": VALID_ARTICLE_CONTENT,
         "article_sha256": "a" * 64,
     }
     payload = {
@@ -63,6 +67,8 @@ def test_partial_canonical_identity_is_never_marked_legacy(tmp_path) -> None:
     payload = {
         "week": "2026-W37",
         "article_url": "https://example.com/article",
+        "article_title": "Reviewed weekly signal",
+        "article_content": VALID_ARTICLE_CONTENT,
         "publish_run_id": "12345",
     }
     storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
@@ -80,7 +86,12 @@ def test_generation_job_warns_when_podcast_identity_absent(caplog) -> None:
 
     with caplog.at_level(logging.WARNING):
         run_generation_job(
-            {"week": "2026-W23", "article_url": "https://example.com/article"},
+            {
+                "week": "2026-W23",
+                "article_url": "https://example.com/article",
+                "article_title": "Reviewed weekly signal",
+                "article_content": VALID_ARTICLE_CONTENT,
+            },
             storage=storage,
             now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
         )
@@ -177,27 +188,37 @@ def test_generation_job_stages_manifest_review_gate_and_packet() -> None:
     storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
 
     result = run_generation_job(
-        {"week": "2026-W23", "article_url": "https://example.com/article"},
+        {
+            "week": "2026-W23",
+            "article_url": "https://example.com/article",
+            "article_title": "Reviewed weekly signal",
+            "article_content": VALID_ARTICLE_CONTENT,
+        },
         storage=storage,
         now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
     )
 
     assert tuple(result.response.keys()) == RESPONSE_KEYS
     assert result.response["status"] == "accepted"
-    assert result.manifest["status"] == "accepted"
+    assert result.manifest["status"] == "review_pending"
     assert result.manifest["review"]["status"] == "pending"
     assert result.manifest["review"]["required"] is True
     assert result.manifest["review"]["mechanism"] == "github_environment"
     assert result.manifest["review"]["environment"] == "podcast-review"
     assert result.manifest["review"]["workflow"] == ".github/workflows/podcast-review-gate.yml"
     assert result.manifest["review"]["gate"]["status"] == "blocked"
-    assert result.manifest["review"]["gate"]["approval_required_before"] == "spotify_publication"
+    assert result.manifest["review"]["gate"]["approval_required_before"] == "tts_synthesis"
     assert result.manifest["cost_ledger"]["budget"]["status"] == "within_budget"
     assert result.manifest["cost_ledger"]["readiness"]["complete"] is True
     assert result.manifest["generation"]["tts_synthesis"] == {
-        "status": "queued",
-        "allowed": True,
-        "blocked_by": [],
+        "status": "blocked",
+        "allowed": False,
+        "blocked_by": [
+            "human_review",
+            "provider_not_selected",
+            "provider_privacy_review_required",
+            "rai_security_signoff_required",
+        ],
         "dry_run_bypass_allowed": False,
     }
     assert result.manifest["generation"]["audio_validation"]["status"] == "blocked"
@@ -242,9 +263,7 @@ def test_generation_job_stages_manifest_review_gate_and_packet() -> None:
         assert packet_manifest["review_status"] == "pending"
         assert packet_manifest["review"]["environment"] == "podcast-review"
         assert packet_manifest["review"]["gate"]["status"] == "blocked"
-        assert (
-            packet_manifest["review"]["gate"]["approval_required_before"] == "spotify_publication"
-        )
+        assert packet_manifest["review"]["gate"]["approval_required_before"] == "tts_synthesis"
         assert packet_manifest["generation"]["audio_validation"]["status"] == "blocked"
         assert packet_manifest["cost_ledger"]["budget"]["status"] == "within_budget"
         assert packet_manifest["publishing"]["packet_ready"] is False
@@ -281,10 +300,12 @@ def test_dry_run_preserves_response_shape_and_review_metadata() -> None:
         "secret_name_provided": True,
     }
     assert result.manifest["review"]["required"] is True
-    assert result.manifest["review"]["required_for_tts"] is False
+    assert result.manifest["review"]["required_for_tts"] is True
     assert result.manifest["review"]["status"] == "pending"
-    assert result.manifest["review"]["gate"]["status"] == "dry_run_bypass"
-    assert result.manifest["generation"]["tts_synthesis"]["dry_run_bypass_allowed"] is True
+    assert result.manifest["review"]["gate"]["status"] == "blocked"
+    assert result.manifest["generation"]["tts_synthesis"]["dry_run_bypass_allowed"] is False
+    assert result.manifest["generation"]["tts_synthesis"]["allowed"] is False
+    assert result.manifest["generation"]["tts_synthesis"]["blocked_by"] == ["dry_run"]
     assert "callback accepted by contract but not invoked yet" in result.response["warnings"]
     assert "CALLBACK_SECRET" not in json.dumps(result.manifest)
     assert result.response["job_id"].endswith("-dry-run")
@@ -492,7 +513,12 @@ def test_publishing_packet_extracts_with_required_files_and_checksums() -> None:
     storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
 
     result = run_generation_job(
-        {"week": "2026-W23", "article_url": "https://example.com/article"},
+        {
+            "week": "2026-W23",
+            "article_url": "https://example.com/article",
+            "article_title": "Reviewed weekly signal",
+            "article_content": VALID_ARTICLE_CONTENT,
+        },
         storage=storage,
         now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
     )
@@ -528,7 +554,7 @@ def test_publishing_packet_extracts_with_required_files_and_checksums() -> None:
         assert manifest["publishing"]["eligible"] is False
         assert manifest["publishing"]["packet_ready"] is False
         assert manifest["generation"]["audio_placeholder"] is True
-        assert manifest["generation"]["tts_synthesis"]["allowed"] is True
+        assert manifest["generation"]["tts_synthesis"]["allowed"] is False
         cost_ledger = json.loads(packet.read("COST-LEDGER.json"))
         assert cost_ledger == manifest["cost_ledger"]
         readme = packet.read("README.txt").decode("utf-8")
@@ -627,7 +653,12 @@ def test_artifact_urls_are_private_operator_paths_without_query_credentials() ->
     )
 
     result = run_generation_job(
-        {"week": "2026-W23", "article_url": "https://example.com/article"},
+        {
+            "week": "2026-W23",
+            "article_url": "https://example.com/article",
+            "article_title": "Reviewed weekly signal",
+            "article_content": VALID_ARTICLE_CONTENT,
+        },
         storage=storage,
         now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
     )
@@ -685,6 +716,8 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
         "week": "2026-W23",
         "article_url": "https://example.com/article",
         "article_sha256": "b" * 64,
+        "article_title": "Reviewed weekly signal",
+        "article_content": VALID_ARTICLE_CONTENT,
         "source_artifacts": ["https://example.com/source.json"],
         "force": True,
     }
@@ -700,15 +733,15 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
     job_id = build_job_id(payload)
     assert result.response["job_id"] == job_id
     assert manifest["job_id"] == job_id
-    assert manifest["status"] == "accepted"
+    assert manifest["status"] == "review_pending"
     assert manifest["created_at"] == "2026-06-07T19:07:49Z"
     assert manifest["expires_at"] == result.response["expires_at"] == "2026-06-14T19:07:49Z"
     assert manifest["request"] == {
         "week": "2026-W23",
         "article_url": "https://example.com/article",
-        "article_sha256": "b" * 64,
-        "article_title": None,
-        "article_content_provided": False,
+        "article_sha256": hashlib.sha256(VALID_ARTICLE_CONTENT.encode()).hexdigest(),
+        "article_title": "Reviewed weekly signal",
+        "article_content_provided": True,
         "source_artifacts": ["https://example.com/source.json"],
         "dry_run": False,
         "force": True,
@@ -718,15 +751,15 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
             "schema_version": "squadscope-podcaster-replay-input-v1",
             "identity_sha256": replay_identity_sha256(payload),
             "input_manifest_path": f"jobs/{job_id}/inputs/replay.json",
-            "article_path": None,
-            "article_sha256": "b" * 64,
+            "article_path": f"jobs/{job_id}/inputs/article.txt",
+            "article_sha256": hashlib.sha256(VALID_ARTICLE_CONTENT.encode()).hexdigest(),
             "summary_path": None,
             "summary_sha256": None,
         },
         "publication_identity_mode": "legacy",
     }
     assert manifest["lifecycle"]["force"] is True
-    assert manifest["lifecycle"]["transitions"][-1]["to"] == "accepted"
+    assert manifest["lifecycle"]["transitions"][-1]["to"] == "review_pending"
     assert manifest["publishing"]["blocked_by"] == [
         "human_review",
         "synthesis_not_completed",
@@ -742,7 +775,7 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
         "manifest.json",
         "publishing-packet.zip",
     ]
-    assert manifest["generation"]["tts_synthesis"]["allowed"] is True
+    assert manifest["generation"]["tts_synthesis"]["allowed"] is False
     assert manifest["artifact_access"]["publication"]["blocked_by"] == [
         "human_review",
         "synthesis_not_completed",
@@ -775,8 +808,8 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
     serialized = json.loads(manifest_bytes(manifest).decode("utf-8"))
     assert serialized == manifest
     assert (
-        f"podcaster job staged job_id={job_id} status=accepted dry_run=False artifact_count=10"
-        in caplog.text
+        f"podcaster job staged job_id={job_id} status=review_pending "
+        "dry_run=False artifact_count=12" in caplog.text
     )
     shutil.rmtree(artifact_root, ignore_errors=True)
 
@@ -827,7 +860,12 @@ def test_retry_of_existing_job_bypasses_monthly_budget_limit() -> None:
     storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
 
     # Pre-populate ledger with 10 other episodes (at limit) PLUS this job's entry.
-    job_payload = {"week": "2026-W29", "article_url": "https://example.com/retry-article"}
+    job_payload = {
+        "week": "2026-W29",
+        "article_url": "https://example.com/retry-article",
+        "article_title": "Reviewed weekly signal",
+        "article_content": VALID_ARTICLE_CONTENT,
+    }
     from podcaster.jobs import build_job_id
 
     target_job_id = build_job_id(job_payload)
@@ -884,7 +922,12 @@ def test_retry_of_existing_job_bypasses_monthly_budget_limit() -> None:
     storage = TrackingStorage(artifact_root, "https://example.invalid/artifacts")
 
     result = run_generation_job(
-        {"week": "2026-W29", "article_url": "https://example.com/new-article"},
+        {
+            "week": "2026-W29",
+            "article_url": "https://example.com/new-article",
+            "article_title": "Reviewed weekly signal",
+            "article_content": VALID_ARTICLE_CONTENT,
+        },
         storage=storage,
         now=datetime(2026, 6, 30, 19, 7, 49, tzinfo=timezone.utc),
     )
@@ -894,6 +937,7 @@ def test_retry_of_existing_job_bypasses_monthly_budget_limit() -> None:
         f"jobs/{result.response['job_id']}/inputs/replay.json",
         monthly_ledger_path("2026-06"),
         monthly_ledger_path("2026-06"),
+        f"jobs/{result.response['job_id']}/manifest.json",
     ]
     monthly = json.loads(
         (artifact_root / monthly_ledger_path("2026-06")).read_text(encoding="utf-8")
@@ -908,7 +952,12 @@ def test_concurrent_jobs_share_atomic_monthly_budget_reservation() -> None:
     storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
 
     payloads = [
-        {"week": f"2026-W{10 + index:02d}", "article_url": f"https://example.com/article-{index}"}
+        {
+            "week": f"2026-W{10 + index:02d}",
+            "article_url": f"https://example.com/article-{index}",
+            "article_title": "Reviewed weekly signal",
+            "article_content": VALID_ARTICLE_CONTENT,
+        }
         for index in range(13)
     ]
 
@@ -977,6 +1026,8 @@ def test_non_dry_run_allows_explicit_operator_cost_override() -> None:
             "week": "2026-W29",
             "article_url": "https://example.com/new-article",
             "force": True,
+            "article_title": "Reviewed weekly signal",
+            "article_content": VALID_ARTICLE_CONTENT,
             "cost_override": {
                 "actor": "hermes",
                 "reason": "approved launch exception",
@@ -1135,7 +1186,12 @@ def test_artifacts_do_not_include_api_secret_marker() -> None:
     storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
 
     result = run_generation_job(
-        {"week": "2026-W23", "article_url": "https://example.com/article"},
+        {
+            "week": "2026-W23",
+            "article_url": "https://example.com/article",
+            "article_title": "Reviewed weekly signal",
+            "article_content": VALID_ARTICLE_CONTENT,
+        },
         storage=storage,
         now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
     )
@@ -1233,6 +1289,16 @@ def test_llm_script_generation_replaces_placeholder_when_article_content_provide
     assert "AI-generated synthetic voices" in script_content
     assert "## Section: AI Frameworks Showdown" in script_content
     assert "---" in script_content  # Header separator present
+    transcript = (artifact_root / "jobs" / job_id / "transcript.txt").read_text(encoding="utf-8")
+    assert "Theo: Welcome to Claracle!" in transcript
+    assert "Vera: The contrast in developer experience was genuinely striking to me." in transcript
+    packet_path = artifact_root / "jobs" / job_id / "packets" / f"{job_id}.zip"
+    with ZipFile(packet_path) as packet:
+        assert packet.read("script.txt") == script_file.read_bytes()
+        assert packet.read("transcript.txt").decode("utf-8") == transcript
+        checksums = _parse_checksums(packet.read("CHECKSUMS.txt").decode("utf-8"))
+        for name in ("script.txt", "transcript.txt"):
+            assert checksums[name] == hashlib.sha256(packet.read(name)).hexdigest()
 
     sections_file = artifact_root / "jobs" / job_id / "sections.json"
     sections_doc = json.loads(sections_file.read_text(encoding="utf-8"))
@@ -1340,27 +1406,33 @@ def test_configured_llm_failure_fails_closed_and_releases_reservation(
         run_generation_job(payload, storage=storage, now=now)
 
 
-def test_unconfigured_endpoint_keeps_placeholder_for_non_dry_run(monkeypatch, tmp_path) -> None:
+def test_unconfigured_endpoint_fails_closed_for_non_dry_run(monkeypatch, tmp_path) -> None:
     for name in ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_DEPLOYMENT"):
         monkeypatch.delenv(name, raising=False)
     storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
-    result = run_generation_job(
-        {
-            "week": "2026-W24",
-            "article_url": "https://example.com/ai-article",
-            "article_title": "AI Revolution",
-            "article_content": VALID_ARTICLE_CONTENT,
-        },
-        storage=storage,
-        now=datetime(2026, 6, 12, 10, 0, 0, tzinfo=timezone.utc),
-    )
-    assert result.response["status"] == "accepted"
-    assert result.manifest["generation"]["engine"] == "local-deterministic-placeholder"
+    payload = {
+        "week": "2026-W24",
+        "article_url": "https://example.com/ai-article",
+        "article_title": "AI Revolution",
+        "article_content": VALID_ARTICLE_CONTENT,
+    }
+    with pytest.raises(ScriptGenerationFailed, match="no placeholder allowed"):
+        run_generation_job(
+            payload,
+            storage=storage,
+            now=datetime(2026, 6, 12, 10, 0, 0, tzinfo=timezone.utc),
+        )
+    assert storage.get_bytes(f"jobs/{build_job_id(payload)}/manifest.json") is None
 
 
 def test_regeneration_gets_distinct_job_id_and_is_recorded(tmp_path: Path) -> None:
     storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
-    base = {"week": "2026-W43", "article_url": "https://example.com/a"}
+    base = {
+        "week": "2026-W43",
+        "article_url": "https://example.com/a",
+        "article_title": "Reviewed weekly signal",
+        "article_content": VALID_ARTICLE_CONTENT,
+    }
     regen = {
         **base,
         "regeneration": {

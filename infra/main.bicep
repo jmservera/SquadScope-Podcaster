@@ -97,6 +97,58 @@ param ttsVoiceHostA string = 'fable'
 @description('TTS voice for host B of the Claracle conversation.')
 param ttsVoiceHostB string = 'alloy'
 
+@description('Shared TTS format, style, API version and pool policy for staging/review and synthesis. No credentials.')
+param ttsRuntimePolicy object = {
+  apiVersion: '2024-12-01-preview'
+  format: 'wav'
+  styleHostA: ''
+  styleHostB: ''
+  concurrency: 6
+  maxRetries: 4
+  backoffBaseSeconds: '0.5'
+  backoffMaxSeconds: '20.0'
+  backoffJitter: '0.25'
+}
+
+var ttsRuntimeEnvironment = [
+  {
+    name: 'AZURE_OPENAI_TTS_API_VERSION'
+    value: ttsRuntimePolicy.apiVersion
+  }
+  {
+    name: 'AZURE_OPENAI_TTS_FORMAT'
+    value: ttsRuntimePolicy.format
+  }
+  {
+    name: 'AZURE_OPENAI_TTS_STYLE_HOST_A'
+    value: ttsRuntimePolicy.styleHostA
+  }
+  {
+    name: 'AZURE_OPENAI_TTS_STYLE_HOST_B'
+    value: ttsRuntimePolicy.styleHostB
+  }
+  {
+    name: 'PODCASTER_TTS_CONCURRENCY'
+    value: string(ttsRuntimePolicy.concurrency)
+  }
+  {
+    name: 'PODCASTER_TTS_MAX_RETRIES'
+    value: string(ttsRuntimePolicy.maxRetries)
+  }
+  {
+    name: 'PODCASTER_TTS_BACKOFF_BASE_SECONDS'
+    value: string(ttsRuntimePolicy.backoffBaseSeconds)
+  }
+  {
+    name: 'PODCASTER_TTS_BACKOFF_MAX_SECONDS'
+    value: string(ttsRuntimePolicy.backoffMaxSeconds)
+  }
+  {
+    name: 'PODCASTER_TTS_BACKOFF_JITTER'
+    value: string(ttsRuntimePolicy.backoffJitter)
+  }
+]
+
 @description('Container Apps managed environment name.')
 param containerAppsEnvName string = '${baseName}-cae'
 
@@ -442,6 +494,7 @@ module aca 'modules/aca.bicep' = {
     chatDeploymentName: chatDeploymentName
     ttsVoiceHostA: ttsVoiceHostA
     ttsVoiceHostB: ttsVoiceHostB
+    ttsRuntimeEnvironment: ttsRuntimeEnvironment
     podcasterApiKey: podcasterApiKey
     spotifyPublishEnabled: spotifyPublishEnabled
     spotifyShowId: spotifyShowId
@@ -635,6 +688,10 @@ module api 'modules/api.bicep' = if (deployApiApp) {
     containerRegistryServer: acrLoginServer
     corsOrigins: deployUiApp ? 'https://${uiAppName}.${aca.outputs.defaultDomain}' : ''
     openAiEndpoint: openAiEndpoint
+    ttsDeploymentName: ttsDeploymentName
+    ttsVoiceHostA: ttsVoiceHostA
+    ttsVoiceHostB: ttsVoiceHostB
+    ttsRuntimeEnvironment: ttsRuntimeEnvironment
     chatDeploymentName: chatDeploymentName
     spotifyPublishEnabled: spotifyPublishEnabled
     spotifyShowId: spotifyShowId

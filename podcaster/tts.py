@@ -22,6 +22,7 @@ import json
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Mapping
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
@@ -252,12 +253,16 @@ def synthesize_turn(
     *,
     token_provider: TokenProvider | None = None,
     transport: Transport | None = None,
+    exact_review: bool = False,
+    before_provider: Callable[[], None] | None = None,
 ) -> bytes:
     """Synthesize a single turn to audio bytes using the managed identity.
 
     Network and credential access are injectable for testing. This function
     never logs the bearer token, the full endpoint URL, or the (untrusted)
     input text; only the deployment, voice, and character count are logged.
+    Exact review permits style fallback only after explicit request rejection,
+    never after an ambiguous acceptance; fallback rechecks the live approval.
     """
 
     if not config.endpoint or not config.tts_deployment:
@@ -306,10 +311,14 @@ def synthesize_turn(
         has_style,
         config.response_format,
     )
+    if exact_review and before_provider is not None:
+        before_provider()
     try:
         audio = transport(_request(include_style=has_style))
     except Exception as exc:  # noqa: BLE001 - degrade gracefully if style unsupported
-        if not has_style:
+        if not has_style or (
+            exact_review and not (isinstance(exc, HTTPError) and exc.code in {400, 422})
+        ):
             raise
         logging.warning(
             "tts style instructions rejected (deployment=%s voice=%s); retrying without style: %s",
@@ -317,6 +326,8 @@ def synthesize_turn(
             turn.voice,
             type(exc).__name__,
         )
+        if exact_review and before_provider is not None:
+            before_provider()
         audio = transport(_request(include_style=False))
     if not isinstance(audio, bytes) or not audio:
         raise RuntimeError("tts synthesis returned empty audio")
@@ -332,6 +343,8 @@ def synthesize_two_voice(
     transport: Transport | None = None,
     progress: Callable[[int, int], None] | None = None,
     pool: "TtsPoolConfig | None" = None,
+    exact_review: bool = False,
+    before_provider: Callable[[], None] | None = None,
 ) -> list[bytes]:
     """Synthesize every turn, but only when the gating decision allows it.
 
@@ -370,13 +383,26 @@ def synthesize_two_voice(
             token_provider=token_provider,
             transport=transport,
             progress=progress,
+            **({"exact_review": True, "before_provider": before_provider} if exact_review else {}),
         )
     total = len(plan)
     outputs: list[bytes] = []
     progress_failed = False
     for turn in plan:
+        if exact_review and before_provider is not None:
+            before_provider()
         outputs.append(
-            synthesize_turn(turn, config, token_provider=token_provider, transport=transport)
+            synthesize_turn(
+                turn,
+                config,
+                token_provider=token_provider,
+                transport=transport,
+                **(
+                    {"exact_review": True, "before_provider": before_provider}
+                    if exact_review
+                    else {}
+                ),
+            )
         )
         if progress is not None and not progress_failed:
             try:

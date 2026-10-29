@@ -6,13 +6,13 @@ starts this job, and the runner drives the **existing** :mod:`podcaster.episode`
 pipeline (parse -> gated synthesis -> stitch -> ``loudnorm`` -> ``ffprobe``
 validate) to replace the staged placeholder MP3 with real two-voice audio.
 
-* After successful synthesis with passing audio validation, the episode is
-  published as a Spotify draft when ``spotify_publish`` config is present in
-  the request payload. Publish failures never break the pipeline.
+* Requires exact-content human approval and consumes a durable one-shot claim
+  before TTS. Ambiguous work is never retried automatically.
+* Successful audio remains staged; synthesis never publishes a Spotify draft.
 * Identity-only data plane (Blob + Queue + Azure OpenAI). No keys, tokens, SAS
   URLs, or untrusted article text are ever logged.
-* Idempotent on duplicate queue delivery: a job already marked synthesized is
-  skipped instead of re-synthesized.
+* Duplicate queue delivery cannot repeat TTS, including concurrent deliveries
+  and failures after a provider may have accepted work.
 * Scripts that are not in the two-voice synthesis format (e.g. the deterministic
   placeholder staged before production generation is wired) are skipped, not
   failed, so the message is consumed and the episode stays ``review_pending``.
@@ -28,11 +28,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from podcaster.audio import MusicMixSpec
 from podcaster.config import BackchannelConfig, MusicMixConfig, PodcastConfig, SpotifyPublishConfig
+from podcaster.costs import cost_gate_blockers
 from podcaster.episode import (
-    operator_review_decision,
     parse_script_segments,
     synthesize_episode,
 )
@@ -42,13 +43,8 @@ from podcaster.job_logs import LogLevel, emit_log
 from podcaster.notifications import notify_failure
 from podcaster.pipeline_lock import PIPELINE_AUDIO, claim_pipeline
 from podcaster.progress import PipelineStage, emit_progress
-from podcaster.publication_state import (
-    PublicationStateError,
-    canonical_identity_requested,
-    new_publish_run_id,
-    publication_identity,
-)
-from podcaster.publish import PublishResult, publish_episode
+from podcaster.publication_state import new_publish_run_id
+from podcaster.publish import PublishResult
 from podcaster.queue import (
     QueueBackend,
     QueueMessage,
@@ -56,7 +52,12 @@ from podcaster.queue import (
     enqueue_video_job,
     parse_job_id,
 )
-from podcaster.sanitization import normalize_weekly_url
+from podcaster.review import (
+    ReviewBindingError,
+    is_exact_script_job,
+    validate_review_binding,
+    validate_review_snapshot,
+)
 from podcaster.spotify_mode import (
     AUDIO_PUBLISH_DISABLED_REASON,
     PUBLISH_STATUS_SKIPPED,
@@ -64,7 +65,7 @@ from podcaster.spotify_mode import (
     spotify_video_live_publish_configured,
 )
 from podcaster.storage import ManagedIdentityTokenCredential, StorageBackend, create_storage_backend
-from podcaster.tts import PROVIDER, TtsConfig, load_tts_config
+from podcaster.tts import PROVIDER, TtsConfig, load_tts_config, synthesis_decision
 
 logger = logging.getLogger("podcaster.job_runner")
 
@@ -168,13 +169,21 @@ def run_synthesis(
     if not isinstance(manifest, dict):
         raise TransientSynthesisError(f"staged manifest for job_id={job_id} is not a JSON object")
 
+    request = manifest.get("request")
+    if (
+        job_id.endswith("-dry-run")
+        or manifest.get("status") == "dry_run"
+        or (isinstance(request, dict) and request.get("dry_run") is True)
+    ):
+        return SynthesisOutcome(job_id, STATUS_SKIPPED, reason="dry_run")
+
     if _already_synthesized(manifest):
         logger.info("synthesis skipped job_id=%s reason=%s", job_id, REASON_ALREADY_SYNTHESIZED)
         # Audio already exists, but a re-trigger should still kick off video
         # generation unless the video was already produced for this job. Without
         # this, re-triggering a podcast that already has audio would never start
         # the video pipeline (the enqueue below in the synthesis path is skipped).
-        if video_generation_enabled():
+        if video_generation_enabled() and _media_review_allows_video(manifest):
             if _video_already_generated(manifest):
                 logger.info(
                     "video enqueue skipped job_id=%s reason=video_already_generated",
@@ -200,9 +209,12 @@ def run_synthesis(
         )
         return SynthesisOutcome(job_id, STATUS_SKIPPED, reason=REASON_TTS_NOT_CONFIGURED)
 
-    raw_script = storage.get_bytes(script_path(job_id))
-    if raw_script is None:
-        raise TransientSynthesisError(f"no staged script for job_id={job_id}")
+    try:
+        raw_script = validate_review_snapshot(manifest, storage, job_id, config)
+        validate_review_binding(manifest)
+    except ReviewBindingError:
+        logger.warning("synthesis blocked job_id=%s reason=review_binding_invalid", job_id)
+        return SynthesisOutcome(job_id, STATUS_SKIPPED, reason="review_binding_invalid")
     script = raw_script.decode("utf-8")
 
     if not parse_script_segments(script):
@@ -214,7 +226,11 @@ def run_synthesis(
         )
         return SynthesisOutcome(job_id, STATUS_SKIPPED, reason=REASON_NOT_TWO_VOICE)
 
-    decision = operator_review_decision(config)
+    decision = synthesis_decision(
+        config,
+        dry_run=manifest["request"]["dry_run"],
+        review_approved=manifest["review"]["synthesis_approval"]["status"] == "approved",
+    )
     if not decision.get("allowed"):
         logger.warning("synthesis skipped job_id=%s reason=%s", job_id, REASON_TTS_NOT_CONFIGURED)
         _record_runner_state(
@@ -280,6 +296,38 @@ def run_synthesis(
             ),
             at=current,
         )
+    claim_id = uuid4().hex
+
+    def claim_synthesis(content: bytes | None) -> bytes:
+        if content is None:
+            raise ReviewBindingError("missing staged manifest")
+        latest = json.loads(content)
+        validate_review_snapshot(latest, storage, job_id, config)
+        validate_review_binding(latest)
+        generation = latest["generation"]
+        dispatch = generation["synthesis_queue"]
+        if (
+            generation.get("synthesis_claim") is not None
+            or not dispatch.get("dispatch_id")
+            or dispatch.get("status") not in {"dispatching", "enqueued", "unknown"}
+        ):
+            raise ReviewBindingError("synthesis dispatch consumed or ambiguous; never retry TTS")
+        generation["synthesis_claim"] = {
+            "status": "started",
+            "claim_id": claim_id,
+            "dispatch_id": dispatch["dispatch_id"],
+            "started_at": _iso(current),
+            "manifest_sha256": latest["review"]["synthesis_approval"]["binding"]["manifest_sha256"],
+        }
+        return manifest_bytes(latest)
+
+    try:
+        storage.update_bytes(
+            manifest_path(job_id), "application/json; charset=utf-8", claim_synthesis
+        )
+    except ReviewBindingError:
+        return SynthesisOutcome(job_id, STATUS_SKIPPED, reason="synthesis_claim_blocked")
+
     try:
         with tempfile.TemporaryDirectory() as tmp:
             output_path = Path(tmp) / f"{job_id}.mp3"
@@ -320,6 +368,15 @@ def run_synthesis(
                     message=f"recording {completed}/{total} segments",
                 )
 
+            def _before_provider() -> None:
+                boundary_manifest = json.loads(storage.get_bytes(manifest_path(job_id)) or b"null")
+                validate_review_snapshot(boundary_manifest, storage, job_id, config)
+                validate_review_binding(boundary_manifest)
+                claim = boundary_manifest["generation"]["synthesis_claim"]
+                if claim.get("claim_id") != claim_id or claim.get("status") != "started":
+                    raise ReviewBindingError("synthesis claim ownership changed")
+
+            _before_provider()
             episode_audio = synthesize_episode(
                 script,
                 config,
@@ -334,7 +391,11 @@ def run_synthesis(
                 music_mix_spec=mix_spec,
                 backchannel_config=backchannel_config,
                 progress=_on_segment,
+                exact_review=True,
+                before_provider=_before_provider,
             )
+            # Revocation cannot retract accepted audio, but it must stop completion.
+            _before_provider()
             mp3_bytes = output_path.read_bytes()
             wav_bytes = episode_audio.wav_output_path.read_bytes()
 
@@ -414,9 +475,15 @@ def run_synthesis(
                 )
 
             def _apply(content: bytes | None) -> bytes:
-                document = json.loads(content.decode("utf-8")) if content else manifest
+                document = json.loads(content.decode("utf-8")) if content else None
                 if not isinstance(document, dict):
-                    document = manifest
+                    raise ReviewBindingError("synthesis completion manifest missing")
+                claim = document["generation"]["synthesis_claim"]
+                if claim.get("claim_id") != claim_id or claim.get("status") != "started":
+                    raise ReviewBindingError("synthesis completion claim ownership changed")
+                validate_review_binding(document)
+                claim["status"] = "completed"
+                claim["completed_at"] = _iso(current)
                 _apply_completion(
                     document,
                     job_id=job_id,
@@ -469,109 +536,19 @@ def run_synthesis(
                     job_id,
                 )
 
-            # Publish the MP3 right after synthesis when audio Spotify publishing
-            # is enabled (SPOTIFY_PUBLISH_ENABLED=true). The audio publish never
-            # waits for the video pipeline. In video-only mode
-            # (SPOTIFY_PUBLISH_ENABLED=false) the audio publish is skipped and
-            # recorded as ``skipped`` — not failed — and only the video pipeline
-            # publishes.
-            auto_publish = False
-
             if (
                 spotify_publish_config is not None
                 and validation_ready
-                and not auto_publish
                 and not audio_publish_enabled
             ):
                 _record_skipped_audio_publish(storage, job_id, manifest)
-            elif spotify_publish_config is not None and validation_ready and not auto_publish:
-                try:
-                    request = (
-                        manifest.get("request") if isinstance(manifest.get("request"), dict) else {}
-                    )
-                    pub_title = str(
-                        request.get("article_title")
-                        or f"Claracle Podcast — Week {request.get('week') or job_id}"
-                    )
-                    pub_description = (
-                        f"<p>Claracle week {request.get('week') or job_id}.</p>"
-                        f"<p>Source article: "
-                        f"{normalize_weekly_url(request.get('article_url') or '')}</p>"
-                    )
-                    request_run_id = request.get("publish_run_id")
-                    publish_run_id = (
-                        request_run_id
-                        if isinstance(request_run_id, str) and request_run_id.isdecimal()
-                        else new_publish_run_id()
-                    )
-                    identity_blocked = False
-                    try:
-                        identity = publication_identity(manifest, job_id, publish_run_id)
-                    except PublicationStateError as exc:
-                        if canonical_identity_requested(request):
-                            pub_result = PublishResult(
-                                status="failed",
-                                error=(
-                                    "Canonical publication identity is invalid; "
-                                    "Spotify mutation blocked."
-                                ),
-                                outcome="publication_unknown",
-                                publish_run_id=publish_run_id,
-                                details={
-                                    "retry_blocked": True,
-                                    "code": "invalid_publication_identity",
-                                },
-                            )
-                            _record_direct_publish_result(
-                                storage, job_id, pub_result, publish_run_id
-                            )
-                            logger.warning(
-                                "draft publish blocked by invalid canonical identity job_id=%s",
-                                job_id,
-                                exc_info=exc,
-                            )
-                            identity = None
-                            identity_blocked = True
-                        else:
-                            identity = None
-                    if not identity_blocked:
-                        pub_result = publish_episode(
-                            output_path,
-                            pub_title,
-                            pub_description,
-                            spotify_publish_config=spotify_publish_config,
-                            year=_extract_year(manifest),
-                            week=_extract_week(manifest),
-                            article_title=request.get("article_title")
-                            if isinstance(request.get("article_title"), str)
-                            else None,
-                            wav_path=episode_audio.wav_output_path,
-                            language=_request_language(manifest),
-                            **(
-                                {
-                                    "publication_storage": storage,
-                                    "publication_identity_context": identity,
-                                }
-                                if identity is not None
-                                else {}
-                            ),
-                        )
-                        _record_direct_publish_result(storage, job_id, pub_result, publish_run_id)
-                        logger.info(
-                            "draft publish attempted job_id=%s status=%s error=%s",
-                            job_id,
-                            pub_result.status,
-                            pub_result.error,
-                        )
-                except Exception:
-                    logger.warning("draft publish failed job_id=%s", job_id, exc_info=True)
 
             # Additionally hand off to the video pipeline. It composes the MP4
             # and publishes it to its own targets, including a separate Spotify
             # video episode (via podcaster.video.distribution). This runs
             # independently of the MP3 publish above, whether it ran or was skipped.
             # A failed or unconfigured enqueue never breaks synthesis completion.
-            if video_generation_enabled():
+            if video_generation_enabled() and _media_review_allows_video(manifest):
                 _enqueue_video(job_id, enqueue_video)
 
             logger.info(
@@ -614,8 +591,10 @@ def run_synthesis(
                 validation_status=episode_audio.validation.status,
             )
     except TransientSynthesisError:
+        _mark_synthesis_unknown(storage, job_id, claim_id)
         raise
     except Exception as exc:
+        _mark_synthesis_unknown(storage, job_id, claim_id)
         logger.exception("synthesis failed job_id=%s error=%s", job_id, type(exc).__name__)
         emit_progress(
             storage,
@@ -980,6 +959,11 @@ def _video_already_generated(manifest: dict[str, Any]) -> bool:
     return isinstance(video_state, dict) and video_state.get("status") == STATUS_COMPLETED
 
 
+def _media_review_allows_video(manifest: dict[str, Any]) -> bool:
+    """Never turn exact-script or generic audio consent into live video authorization."""
+    return not is_exact_script_job(manifest)
+
+
 def _enqueue_video(job_id: str, enqueue_video=None) -> None:
     """Enqueue a video job, logging outcome. Never raises.
 
@@ -1115,26 +1099,34 @@ def _apply_completion(
                 wav_entry.setdefault("access_model", mp3_entry["access_model"])
 
     publishing = manifest.setdefault("publishing", {})
+    publication_ready = False
     if isinstance(publishing, dict):
-        publishing["packet_ready"] = True
-        publishing["eligible"] = validation_ready
         blocked = publishing.get("blocked_by")
         blocked_set = set(blocked) if isinstance(blocked, list) else set()
-        blocked_set.discard("human_review")
+        checks = publishing.setdefault("readiness_checks", {})
+        review_complete = (
+            isinstance(checks, dict) and checks.get("editorial_review_complete") is True
+        )
+        if review_complete:
+            blocked_set.discard("human_review")
+        else:
+            blocked_set.add("human_review")
         blocked_set.discard("synthesis_not_completed")
         if validation_ready:
             blocked_set.discard("audio_validation_not_passed")
         else:
             blocked_set.add("audio_validation_not_passed")
+        blocked_set.update(cost_gate_blockers(manifest.get("cost_ledger")))
         publishing["blocked_by"] = sorted(blocked_set)
-        checks = publishing.get("readiness_checks")
+        publication_ready = validation_ready and not blocked_set
+        publishing["eligible"] = publication_ready
         if isinstance(checks, dict):
             checks["real_audio_available"] = True
             checks["audio_validation_passed"] = bool(validation_ready)
 
     lifecycle = manifest.get("lifecycle")
     if isinstance(lifecycle, dict):
-        status = "synthesized_publish_ready" if validation_ready else "synthesized_review_ready"
+        status = "synthesized_publish_ready" if publication_ready else "synthesized_review_ready"
         reason = "audio_synthesized_validation_passed" if validation_ready else "audio_synthesized"
         manifest["status"] = status
         lifecycle["status"] = status
@@ -1143,6 +1135,25 @@ def _apply_completion(
             transitions.append({"at": completed_at, "to": status, "reason": reason})
         revision = lifecycle.get("revision")
         lifecycle["revision"] = (revision + 1) if isinstance(revision, int) else 2
+
+
+def _mark_synthesis_unknown(storage: StorageBackend, job_id: str, claim_id: str) -> None:
+    """Keep ambiguous provider work consumed, including when result persistence failed."""
+
+    def update(content: bytes | None) -> bytes:
+        if content is None:
+            raise ReviewBindingError("synthesis manifest missing; reconciliation required")
+        document = json.loads(content)
+        claim = document["generation"]["synthesis_claim"]
+        if claim.get("claim_id") == claim_id and claim.get("status") == "started":
+            claim["status"] = "unknown"
+            claim["detail"] = "provider may have consumed work; operator reconciliation required"
+        return manifest_bytes(document)
+
+    try:
+        storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", update)
+    except Exception:
+        logger.exception("synthesis outcome persistence ambiguous job_id=%s", job_id)
 
 
 def _record_runner_state(storage: StorageBackend, job_id: str, state: dict[str, Any]) -> None:

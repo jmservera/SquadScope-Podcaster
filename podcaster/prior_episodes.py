@@ -121,7 +121,17 @@ def _prior_job_ids(
         except (UnicodeDecodeError, ValueError):
             logger.warning("invalid prior episode manifest for prior_job_id=%s", job_id)
             continue
-        if not isinstance(manifest, dict) or manifest.get("status") != "accepted":
+        if not isinstance(manifest, dict) or manifest.get("status") not in (
+            "accepted",
+            "review_pending",
+            "review_approved",
+            "synthesized_review_ready",
+            "synthesized_publish_ready",
+            "publish_requested",
+            "published",
+            "scheduled",
+            "draft",
+        ):
             continue
         request = manifest.get("request")
         candidate_week = _parse_week(request.get("week") if isinstance(request, dict) else None)

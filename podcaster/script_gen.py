@@ -19,6 +19,7 @@ import logging
 import re
 from dataclasses import dataclass
 from dataclasses import replace as _dataclass_replace
+from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 from urllib.request import Request
 
@@ -1069,6 +1070,7 @@ def generate_script(
     token_provider: TokenProvider | None = None,
     transport: Transport | None = None,
     readme_fetcher: ReadmeFetcher | None = None,
+    generated_at: datetime | None = None,
 ) -> str:
     """Generate a two-voice Claracle script using the Azure OpenAI chat endpoint.
 
@@ -1095,6 +1097,7 @@ def generate_script(
     validate_article_inputs(article_title, article_content)
 
     podcast_config = podcast_config or PodcastConfig()
+    generated_at = generated_at or datetime.now(timezone.utc)
 
     # Overlay localized hosts + disclosure for direct target-language authoring
     # (#434). English contexts are a no-op, preserving existing behaviour.
@@ -1282,13 +1285,15 @@ def generate_script(
         article_sha256=article_sha256 or "computed-on-retrieval",
         dialogue=dialogue,
         podcast_config=podcast_config,
+        generated_at=generated_at,
     )
 
     # When the script uses ``## Section:`` headers, enforce the blocking section
     # rules and log the soft warnings (issue #417). Scripts without section
     # headers leave the feature dormant (no error), preserving backward
     # compatibility with callers and legacy scripts.
-    sections = parse_script_sections(script, podcast_config)
+    # Added disclosure cannot make an underfilled generated section pass validation.
+    sections = parse_script_sections(dialogue, podcast_config)
     if sections:
         try:
             validate_sections(sections)
@@ -1314,8 +1319,9 @@ def generate_script(
                     article_sha256=article_sha256 or "computed-on-retrieval",
                     dialogue=dialogue,
                     podcast_config=podcast_config,
+                    generated_at=generated_at,
                 )
-                sections = parse_script_sections(script, podcast_config)
+                sections = parse_script_sections(dialogue, podcast_config)
                 if not sections:
                     break
                 try:
@@ -1332,7 +1338,7 @@ def generate_script(
         # Emit the section metadata (issue #417: JSON ``sections`` array) so the
         # video pipeline / callers can consume title cards and per-section repo
         # slugs without re-parsing the script body.
-        metadata = sections_to_metadata(sections)
+        metadata = sections_to_metadata(parse_script_sections(script, podcast_config))
         logger.info(
             "script generated with %d section(s); metadata=%s",
             len(sections),
@@ -1342,6 +1348,26 @@ def generate_script(
     return script
 
 
+def _normalize_spoken_markdown(text: str) -> str:
+    """Remove editorial Markdown without interpreting inline code contents."""
+
+    marker = "\x00"
+    while marker in text:
+        marker += marker
+    literals: list[str] = []
+
+    def protect_code(match: re.Match[str]) -> str:
+        literals.append(match.group(2))
+        return f"{marker}{len(literals) - 1}{marker}"
+
+    # Opaque tokens let surrounding emphasis and link labels normalize together.
+    text = re.sub(r"(?<!`)(`+)(?!`)(.*?)(?<!`)\1(?!`)", protect_code, text)
+    text = re.sub(r"!?\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"(?<![\w*])(\*{1,3})([^\s*](?:.*?[^\s*])?)\1(?![\w*])", r"\2", text)
+    text = re.sub(r"(?<!\w)(_{1,3})(\S(?:.*?\S)?)\1(?!\w)", r"\2", text)
+    return re.sub(f"{marker}(\\d+){marker}", lambda match: literals[int(match.group(1))], text)
+
+
 def _format_script(
     *,
     week: str,
@@ -1349,15 +1375,37 @@ def _format_script(
     article_sha256: str,
     dialogue: str,
     podcast_config: PodcastConfig,
+    generated_at: datetime | None = None,
 ) -> str:
     """Format the generated dialogue into the standard script format."""
 
+    spoken_lines: list[str] = []
+    formatted_lines: list[str] = []
+    for line in dialogue.splitlines():
+        speaker, separator, text = line.partition(":")
+        if separator and speaker.strip() in {
+            podcast_config.host_a.name,
+            podcast_config.host_b.name,
+        }:
+            text = _normalize_spoken_markdown(text)
+            line = f"{speaker.strip()}: {text.strip()}"
+            spoken_lines.append(text)
+        formatted_lines.append(line)
+    disclosure = podcast_config.ai_voice_disclosure.strip()
+    if disclosure and not any(disclosure in line for line in spoken_lines):
+        formatted_lines.insert(0, f"{podcast_config.host_b.name}: {disclosure}")
+        spoken_lines.insert(0, disclosure)
+    if disclosure and not spoken_lines[-1].strip().endswith(disclosure):
+        formatted_lines.append(f"{podcast_config.host_b.name}: {disclosure}")
+    dialogue = "\n".join(formatted_lines)
+    timestamp = (generated_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
     header = [
         f"Title: {podcast_config.name} Podcast – Week {week}",
         f"Episode: {week}",
         f"Podcast: {podcast_config.name} ({podcast_config.url})",
         f"Source URL: {article_url}",
         f"Source SHA256: {article_sha256}",
+        f"Generated: {timestamp.replace(microsecond=0).isoformat().replace('+00:00', 'Z')}",
         f"Voices: {podcast_config.host_a.name} = {podcast_config.host_a.voice} (OpenAI TTS); "
         f"{podcast_config.host_b.name} = {podcast_config.host_b.voice} (OpenAI TTS)",
         "Safety: source article text is untrusted data, sanitized, and never executed "

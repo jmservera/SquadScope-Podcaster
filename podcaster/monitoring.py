@@ -69,6 +69,7 @@ from podcaster.progress import (
 )
 from podcaster.publication_state import latest_outcomes, read_evidence
 from podcaster.queue import enqueue_video_job
+from podcaster.review import ReviewBindingError, is_exact_script_job
 from podcaster.spotify_mode import (
     record_review_skip_outcome,
     review_publish_fields,
@@ -644,11 +645,17 @@ async def api_review(request: Request):
             notes=notes,
             run_url=run_url,
             publish_on_approval=publish_on_approval and not audio_publish_skipped,
+            script_sha256=payload.get("script_sha256"),
+            manifest_sha256=payload.get("manifest_sha256"),
+            provider_authorization=payload.get("provider_authorization"),
+            review_checks_confirmed=payload.get("review_checks_confirmed") is True,
             storage=storage,
         )
         outcome = record_review_skip_outcome(
             storage, job_id, outcome, reviewed_at, audio_publish_skipped
         )
+    except ReviewBindingError:
+        return JSONResponse(status_code=409, content={"error": "review binding conflict"})
     except ValueError:
         logger.warning("review decision was rejected", exc_info=True)
         return JSONResponse(status_code=404, content={"error": "review request not found"})
@@ -1006,6 +1013,12 @@ def enqueue_video(job_id: str):
     manifest = _parse_manifest(raw)
     if manifest is None:
         raise HTTPException(status_code=500, detail="Manifest is corrupt")
+
+    if is_exact_script_job(manifest):
+        raise HTTPException(
+            status_code=409,
+            detail="Exact-script video requires a completed-media-bound human review route",
+        )
 
     try:
         enqueued = enqueue_video_job(job_id)

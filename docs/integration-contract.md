@@ -212,12 +212,141 @@ The top-level response keys remain stable for SquadScope compatibility. Addition
 - `schema_version`
 - `lifecycle.status`, `revision`, `force`, and deterministic transition timestamps
 - `review.status`, blocked gate checks, and empty audit trail placeholders
-- `generation.engine=local-deterministic-placeholder` (without `article_content`) or `llm-script-gen` (with `article_content` and configured chat endpoint), `deterministic=true/false` accordingly
-- Initial response stages placeholder audio; the ACA synthesis job runs asynchronously and replaces it with real two-voice TTS (Azure OpenAI `gpt-4o-mini-tts`, voices fable + alloy). The manifest is updated in-place when synthesis completes.
-- `publishing.mode=manual`, `eligible=false`, and blockers until human review and real audio exist
+- Production requires `article_content` and configured LLM generation; missing configuration
+  or failed generation fails closed rather than accepting a placeholder.
+  `generation.engine=llm-script-gen`; dry runs may still use the deterministic placeholder.
+- Initial response stages the final script and placeholder audio, **without enqueueing
+  TTS**. Manifest `status=review_pending`, `review.required_for_tts=true`,
+  `generation.synthesis_queue.status=awaiting_review` and `tts_synthesis.allowed=false`
+  describe this pause. The eleven response keys and HTTP 202 `accepted` remain unchanged.
+  A staging/COST-ledger persistence failure never opens the approval gate.
+- Transcript and packet script/claim content are derived from the same staged generation;
+  durations remain explicitly pending rather than invented timestamps. The packet
+  `MANIFEST.json` records the script digest. The mutable job manifest is authoritative
+  for approval and later lifecycle state.
+- `publishing.mode=review_gate`, `eligible=false`, and blockers until human review and real audio exist
 - `artifact_access.model=private_operator_path`, retention/cleanup timestamps, and audit correlation metadata
 - artifact `content_type`, `size_bytes`, and `sha256`
 - `observability.correlation_id` and safe log field names only
+
+### Exact-content human review before TTS
+
+Use the existing authenticated `POST /api/review` with `job_id`, actual human
+`reviewer`, `decision`, and timezone-qualified `reviewed_at` (server time if omitted).
+For an `approved` decision **before audio exists**, also submit
+`script_sha256` and `manifest_sha256`, copied from the staged job's `review.snapshot`.
+They are optional for other review decisions and existing post-audio publication review.
+Review the actual script, transcript, packet, unverified claim ledger, provider
+constraints/licensing, rights, final configured AI disclosure, acronym pronunciation,
+and Markdown readiness. An agent must not impersonate a human reviewer.
+
+Pre-TTS approvals additionally require `review_checks_confirmed: true` and a
+`provider_authorization` object with **only** these fields:
+
+```json
+{
+  "provider_settings_sha256": "<generation.provider_settings_sha256 reviewed by the human>",
+  "selected_provider": "<generation.provider_settings.provider>",
+  "fallback_provider": "<fallback recorded in the approved provider decision>",
+  "provider_selection_reference": "<recorded primary/fallback bakeoff decision>",
+  "provider_privacy_review_reference": "<recorded terms, retention, deletion and training review>",
+  "rai_security_signoff_reference": "<actual security/RAI reviewer signoff>",
+  "disclosure_reference": "<merged disclosure linked from docs/SECURITY.md>",
+  "region": "<approved processing region>"
+}
+```
+
+All values must be nonempty strings. References must identify actual recorded
+evidence, not promises or generated signoffs, and must not contain credentials or
+signed URLs. The approving human attests to these checks and the effective settings
+fingerprint, including voices/model and pool policy. This records authorization;
+`production_ready` alone is configuration, **not** privacy/security clearance.
+The primary/fallback decision, retention/training/deletion terms, region, logging,
+cost/rate/retry limits, rights and merged operator disclosure must already satisfy
+`docs/SECURITY.md`. No fallback is invoked automatically by this endpoint.
+Missing or mismatched authorization leaves the provider-selection/privacy/RAI
+blockers in force regardless of snapshot presence.
+
+The protected `podcast-review-gate.yml` workflow accepts both digests, the JSON
+authorization and the explicit checklist confirmation as human-supplied inputs.
+It never fetches/hashes unknown content to manufacture human consent.
+These additional inputs remain optional for existing post-audio publication review.
+
+Here `script_sha256` hashes the exact staged UTF-8 script bytes.
+`manifest_sha256` hashes the canonical immutable content projection: job identity,
+creation/expiry, request/source/replay/config metadata, artifact metadata and hashes,
+COST ledger, generation engine, resolved podcast config, and provider-settings digest.
+It is **not** the hash of the mutable `manifest.json` file and is **not** the upstream
+publication-identity `request.manifest_sha256`; those remain separate contracts.
+Lifecycle/progress/audit/dispatch state is excluded so concurrent state can be preserved.
+The provider fingerprint covers effective TTS settings and pool policy without storing
+credentials or the provider endpoint itself.
+
+Approval never regenerates the script. It atomically binds both digests to the human
+identity/time/decision/audit and consumes one dispatch intent before sending the
+existing job-ID-only synthesis message. `publish_on_approval` still controls only
+post-audio publication, not this pre-TTS dispatch. Stale/missing digests, changed
+content/config/provider settings, missing approval binding, dry runs, or repeated
+dispatch requests fail closed (`409` for binding/dispatch conflicts).
+Both the deployed FastAPI monitoring app and the standalone API use this same
+review route contract and conflict status.
+`required_for_tts:false` cannot waive the policy.
+Script approval and its evidence are stored only under
+`review.synthesis_approval` (`binding.scope=pre_tts`), with a dedicated audit trail.
+Shared publication fields `review.status`, `approved_by`, `approved_at` and
+`audit_trail` remain pending/empty. For exact-script jobs, subsequent generic
+post-audio decisions are recorded separately under `review.audio_approval`;
+they do not authorize shared audio/video/public promotion or replace the
+original synthesis binding. Existing nonsnapshot post-audio review behavior
+is unchanged.
+
+Dispatch states are `staging`, `awaiting_review`, `dispatching`, `enqueued`,
+`not_configured`, or `unknown`. A lost acknowledgement/crash may leave `dispatching`
+or `unknown`; neither those states nor `not_configured` permit blind review resubmission.
+Inspect/reconcile the existing queue/job evidence instead. No automatic recovery or
+artifact adoption endpoint is introduced. Dry-run artifacts cannot become production.
+Negative decisions (`rejected` or `changes_requested`) remain available after dispatch:
+they atomically revoke script approval without replacing or rearming the dispatch intent.
+An already accepted provider request cannot be rolled back; any live synthesis outcome
+requires reconciliation, not automatic retry.
+
+Before any TTS provider call the worker re-verifies the staged bytes, immutable
+projection, effective provider/config settings and recorded binding. A separate atomic
+`generation.synthesis_claim` (`started`/`completed`/`unknown`) ensures concurrent or
+duplicate queue delivery cannot duplicate TTS. A started or ambiguous provider attempt
+is consumed permanently pending operator reconciliation, even if audio/result
+persistence failed. Existing cost gates and explicit provider/rights blockers remain.
+Exact-review synthesis admits one segment at a time, checking the current approval
+before every attempt (including auxiliary clips). Only explicit HTTP 429 rejections
+are retried with the configured backoff; ambiguous transport/timeouts and server
+failures stop the run, mark the claim unknown and never send later segments.
+Legacy non-exact-review callers retain their existing pool and retry behavior.
+
+Infrastructure passes the same endpoint, managed-identity auth mode, deployment,
+voices and `ttsRuntimePolicy` (API version, styles, format and pool/backoff settings)
+to the API and synthesis deployments, so both compute the same provider fingerprint.
+
+Pre-TTS script approval is **not** audio/video/public promotion approval. Synthesis
+does not publish audio automatically. The staged script includes the caller's
+configured synthetic-voice disclosure as its final spoken text, even when it
+already appears in the opening; transcript content follows that same script.
+Exact-script jobs preserve the shared
+`human_review` publication blocker even after a generic post-audio approval and
+never automatically enqueue the legacy video pipeline, including on synthesis
+redelivery. Neither script nor audio review can authorize an unknown future video.
+The legacy Spotify video path can live-publish independently of outbox approval;
+it is not a supported publication route for these jobs.
+
+Eventual video delivery requires protected review-only/outbox preparation followed
+by an actual human review bound to the completed video bytes and publication
+identity: YouTube must retain human media-bound outbox review, and Spotify remains
+operator-only for reviewed video. This exact-script-to-TTS change does **not**
+establish a supported safe preparation/publication route for these jobs or
+implement that later review. Video/provider mutation therefore remains blocked;
+generic `/api/review` approval, `publish_on_approval`, and a configured video target
+do not unblock it. Existing unrelated legacy publication behavior is unchanged.
+The manual video enqueue endpoint returns `409` for these jobs, and the direct video
+worker skips them before resolving default configuration, stores or mutable budgets.
 
 ## Provider delivery outcomes
 

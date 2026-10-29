@@ -269,16 +269,24 @@ def test_production_entry_persists_once_and_reloads_budget_on_redelivery():
     assert storage.update_count == 6
 
 
-def test_malformed_manifest_repair_cannot_reset_durable_job_lifetime():
+@pytest.mark.parametrize(
+    "malformed,error",
+    [
+        (b"not json", "invalid manifest"),
+        (b"\xff", "invalid manifest"),
+        (b"[]", "not a dict"),
+    ],
+)
+def test_malformed_manifest_repair_cannot_reset_durable_job_lifetime(malformed, error):
     job_id = "job-malformed-retry"
     storage = _ManifestStorage({"generation": {}})
-    storage.set_manifest(job_id, b"not json")
+    storage.set_manifest(job_id, malformed)
     first_now = datetime(2026, 9, 15, 12, tzinfo=timezone.utc)
 
     def runner(call, timeout):
         return call()
 
-    with pytest.raises(TransientVideoError, match="invalid manifest"):
+    with pytest.raises(TransientVideoError, match=error):
         run_video_generation(
             job_id,
             storage,
@@ -305,6 +313,71 @@ def test_malformed_manifest_repair_cannot_reset_durable_job_lifetime():
     assert storage.manifest(job_id)["generation"]["video_budget"]["deadline_at_utc"] == (
         "2026-09-15T13:25:00Z"
     )
+
+
+@pytest.mark.parametrize("malformed", [b"not json", b"\xff", b"[]"])
+def test_malformed_manifest_retains_existing_budget_without_creating_clients(
+    malformed, monkeypatch
+):
+    from podcaster.video import job_runner
+
+    job_id = "job-existing-budget"
+    started = datetime(2026, 9, 15, 12, tzinfo=timezone.utc)
+    persisted = json.dumps(
+        VideoStageBudget.start(now_utc=started, utcnow=lambda: started).to_dict()
+    ).encode()
+    storage = _ManifestStorage({})
+    storage.set_manifest(job_id, malformed)
+    storage._data[video_budget_path(job_id)] = persisted
+    before = storage._data.copy()
+
+    def forbidden():
+        pytest.fail("malformed manifest initialized a default client")
+
+    for boundary in (
+        "create_intermediate_store",
+        "create_scratch_storage_backend",
+        "create_clip_queue_backend",
+    ):
+        monkeypatch.setattr(job_runner, boundary, forbidden)
+
+    with pytest.raises(TransientVideoError):
+        run_video_generation(
+            job_id,
+            storage,
+            now=started + timedelta(seconds=900),
+            storage_operation_runner=lambda call, timeout: call(),
+        )
+
+    assert storage._data == before
+    assert storage.update_count == 1
+
+
+@pytest.mark.parametrize("malformed", [b"not json", b"\xff", b"[]"])
+def test_malformed_manifest_with_injected_budget_needs_only_read_only_storage(malformed):
+    class ReadOnlyStorage:
+        def get_bytes(self, path):
+            return malformed
+
+    started = datetime(2026, 9, 15, 12, tzinfo=timezone.utc)
+    with pytest.raises(TransientVideoError):
+        run_video_generation(
+            "job-injected-budget",
+            ReadOnlyStorage(),
+            now=started,
+            budget=VideoStageBudget.start(now_utc=started, utcnow=lambda: started),
+        )
+
+
+def test_missing_manifest_does_not_create_budget():
+    storage = _ManifestStorage({})
+    before = storage._data.copy()
+
+    with pytest.raises(TransientVideoError, match="no manifest"):
+        run_video_generation("job-missing", storage)
+
+    assert storage._data == before
+    assert storage.update_count == 0
 
 
 def test_injected_budget_preserves_lower_level_storage_compatibility():

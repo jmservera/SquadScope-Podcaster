@@ -18,6 +18,7 @@ from podcaster.dispatch_receipts import dispatch_receipt_path
 from podcaster.jobs import ReplayCollisionError
 from podcaster.orchestration import JobPublishOutcome
 from podcaster.publish import PublishResult
+from podcaster.review import ReviewBindingError
 
 
 class FakeRequest:
@@ -460,17 +461,21 @@ class TestSuccessfulGeneration:
     def _headers(self, body: bytes) -> dict[str, str]:
         return {"x-podcaster-api-key": "test-key-123", "Content-Length": str(len(body))}
 
-    def test_valid_request_returns_202(self, tmp_path, monkeypatch):
+    def test_valid_request_returns_202(self, tmp_path, monkeypatch, offline_script_generation):
         monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
         monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(tmp_path))
         body = json.dumps(
             {
                 "week": "2026-W24",
                 "article_url": "https://example.com/article",
+                "article_content": "The source describes a product rollout, engineering tradeoffs, "
+                "customer impact, and competitive context in enough detail for a substantive "
+                "weekly discussion of the deployment evidence.",
+                "article_title": "Reviewed weekly signal",
             }
         ).encode()
         handler = make_handler("POST", "/api/generate", body=body, headers=self._headers(body))
-        assert handler.response_code == HTTPStatus.ACCEPTED
+        assert handler.response_code == HTTPStatus.ACCEPTED, handler.get_response_json()
         resp = handler.get_response_json()
         assert resp["job_id"] is not None
         assert resp["status"] == "accepted"
@@ -478,7 +483,7 @@ class TestSuccessfulGeneration:
         assert resp["errors"] == []
 
     def test_registered_dispatch_intent_correlates_first_durable_arrival(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, offline_script_generation
     ):
         monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
         monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(tmp_path))
@@ -503,6 +508,10 @@ class TestSuccessfulGeneration:
             {
                 "week": "2026-W39",
                 "article_url": "https://example.com/article",
+                "article_content": "The source describes a product rollout, engineering tradeoffs, "
+                "customer impact, and competitive context in enough detail for a substantive "
+                "weekly discussion of the deployment evidence.",
+                "article_title": "Reviewed weekly signal",
                 "dispatch_correlation_id": correlation_id,
             }
         ).encode()
@@ -512,7 +521,7 @@ class TestSuccessfulGeneration:
             body=generate_body,
             headers=self._headers(generate_body),
         )
-        assert generated.response_code == HTTPStatus.ACCEPTED
+        assert generated.response_code == HTTPStatus.ACCEPTED, generated.get_response_json()
         receipt = json.loads((tmp_path / dispatch_receipt_path(correlation_id)).read_text())
         assert receipt["arrival_state"] == "arrived"
         assert receipt["accepted_job_id"] == generated.get_response_json()["job_id"]
@@ -658,6 +667,23 @@ class TestReviewEndpoint:
         assert handler.response_code == HTTPStatus.BAD_REQUEST
         assert "job_id is required" in handler.get_response_json()["errors"]
 
+    def test_review_binding_conflict_never_exposes_exception_details(self):
+        confidential = "confidential-review-sentinel: /private/review.json provider-token=hidden"
+        body = json.dumps(
+            {"job_id": "podcast-1", "reviewer": "test-reviewer", "decision": "approved"}
+        ).encode()
+
+        with patch(
+            "podcaster.api.process_review_decision",
+            side_effect=ReviewBindingError(confidential),
+        ) as process:
+            handler = make_handler("POST", "/api/review", body=body, headers=self._headers(body))
+
+        process.assert_called_once()
+        assert handler.response_code == HTTPStatus.CONFLICT
+        assert handler.get_response_json() == {"error": "review binding conflict"}
+        assert confidential not in handler._wfile.getvalue().decode()
+
     @patch("podcaster.api.process_review_decision")
     def test_review_endpoint_returns_manifest_and_publish_status(self, mock_process):
         mock_process.return_value = JobPublishOutcome(
@@ -673,6 +699,38 @@ class TestReviewEndpoint:
         assert response["job_id"] == "podcast-1"
         assert response["publish_status"] == "published"
         assert response["manifest"]["status"] == "published"
+
+    @patch("podcaster.api.process_review_decision")
+    def test_review_endpoint_preserves_digests_and_explicit_checks(self, mock_process):
+        mock_process.return_value = JobPublishOutcome(
+            manifest={"job_id": "podcast-1", "status": "review_approved"},
+        )
+        body = json.dumps(
+            {
+                "job_id": "podcast-1",
+                "reviewer": "leela",
+                "decision": "approved",
+                "script_sha256": "a" * 64,
+                "manifest_sha256": "b" * 64,
+                "provider_authorization": {
+                    "provider_privacy_review_reference": "test-evidence/privacy-review",
+                    "rai_security_signoff_reference": "test-evidence/rai-security-review",
+                    "provider_settings_sha256": "c" * 64,
+                },
+                "review_checks_confirmed": True,
+            }
+        ).encode()
+        handler = make_handler("POST", "/api/review", body=body, headers=self._headers(body))
+
+        assert handler.response_code == HTTPStatus.OK
+        assert mock_process.call_args.kwargs["script_sha256"] == "a" * 64
+        assert mock_process.call_args.kwargs["manifest_sha256"] == "b" * 64
+        assert mock_process.call_args.kwargs["provider_authorization"] == {
+            "provider_privacy_review_reference": "test-evidence/privacy-review",
+            "rai_security_signoff_reference": "test-evidence/rai-security-review",
+            "provider_settings_sha256": "c" * 64,
+        }
+        assert mock_process.call_args.kwargs["review_checks_confirmed"] is True
 
     @patch("podcaster.api.process_review_decision", side_effect=ValueError("secret missing job"))
     def test_review_endpoint_sanitizes_missing_job_error(self, _mock_process, caplog):

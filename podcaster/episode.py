@@ -725,6 +725,8 @@ def synthesize_episode(
     backchannel_config: BackchannelConfig | None = None,
     progress: "Callable[[int, int], None] | None" = None,
     pool: TtsPoolConfig | None = None,
+    exact_review: bool = False,
+    before_provider: Callable[[], None] | None = None,
 ) -> EpisodeAudio:
     """Synthesize the two-voice script into validated WAV and MP3 artifacts.
 
@@ -757,6 +759,7 @@ def synthesize_episode(
         transport=transport,
         progress=progress,
         pool=effective_pool,
+        **({"exact_review": True, "before_provider": before_provider} if exact_review else {}),
     )
 
     output_path = Path(output_path)
@@ -783,6 +786,8 @@ def synthesize_episode(
                 backchannel_tmp,
                 token_provider=token_provider,
                 transport=transport,
+                exact_review=exact_review,
+                before_provider=before_provider,
             )
         except Exception:
             shutil.rmtree(backchannel_tmp, ignore_errors=True)
@@ -873,6 +878,8 @@ def _build_backchannel_mix_items(
     *,
     token_provider: TokenProvider | None,
     transport: Transport | None,
+    exact_review: bool = False,
+    before_provider: Callable[[], None] | None = None,
 ) -> list[BackchannelMixItem]:
     turns = assign_turn_ids(segments)
     interaction_map = build_interaction_map(turns, durations, backchannel_config)
@@ -891,6 +898,7 @@ def _build_backchannel_mix_items(
             decision,
             token_provider=token_provider,
             transport=transport,
+            **({"exact_review": True, "before_provider": before_provider} if exact_review else {}),
         )[0]
 
     placements = resolve_placements(interaction_map, turns, durations, clips)
