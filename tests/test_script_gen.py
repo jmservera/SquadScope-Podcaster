@@ -650,6 +650,42 @@ class TestFormatScript:
                 "Use model_name_v2, x*y, C++, and [batch_size] as raw technical prose.",
                 id="raw-technical-prose",
             ),
+            pytest.param(
+                "Compute a*b*c literally.",
+                "Compute a*b*c literally.",
+                id="unquoted-multiplication-chain",
+            ),
+            pytest.param(
+                "Compute a**b**c literally.",
+                "Compute a**b**c literally.",
+                id="unquoted-exponentiation-chain",
+            ),
+            pytest.param(
+                "Compute a * b * c and a ** b ** c literally.",
+                "Compute a * b * c and a ** b ** c literally.",
+                id="spaced-arithmetic-chains",
+            ),
+            pytest.param(
+                "Keep a***b***c and x**y**z alongside **clear** prose.",
+                "Keep a***b***c and x**y**z alongside clear prose.",
+                id="no-partial-intraword-delimiter-erasure",
+            ),
+            pytest.param(
+                "Read *one*, **two**, and ***three*** carefully.",
+                "Read one, two, and three carefully.",
+                id="standalone-asterisk-emphasis-widths",
+            ),
+            pytest.param(
+                "Read *`a*b*c`*, **`a**b**c`**, and ***`a***b***c`*** literally.",
+                "Read a*b*c, a**b**c, and a***b***c literally.",
+                id="asterisk-emphasis-widths-around-code",
+            ),
+            pytest.param(
+                "Read [*one*](https://example.com/1), [**two**](https://example.com/2), "
+                "and [***three***](https://example.com/3).",
+                "Read one, two, and three.",
+                id="asterisk-emphasis-widths-in-links",
+            ),
         ],
     )
     def test_literal_content_survives_script_speech_and_transcript(

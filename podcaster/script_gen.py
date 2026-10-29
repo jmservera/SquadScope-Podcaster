@@ -1363,7 +1363,7 @@ def _normalize_spoken_markdown(text: str) -> str:
     # Opaque tokens let surrounding emphasis and link labels normalize together.
     text = re.sub(r"(?<!`)(`+)(?!`)(.*?)(?<!`)\1(?!`)", protect_code, text)
     text = re.sub(r"!?\[([^\]]+)\]\([^)]+\)", r"\1", text)
-    text = re.sub(r"(\*{1,3})(\S(?:.*?\S)?)\1", r"\2", text)
+    text = re.sub(r"(?<![\w*])(\*{1,3})([^\s*](?:.*?[^\s*])?)\1(?![\w*])", r"\2", text)
     text = re.sub(r"(?<!\w)(_{1,3})(\S(?:.*?\S)?)\1(?!\w)", r"\2", text)
     return re.sub(f"{marker}(\\d+){marker}", lambda match: literals[int(match.group(1))], text)
 
