@@ -202,7 +202,7 @@ def apply_review_decision(
     updated = json.loads(json.dumps(manifest))
     publication_review = updated.setdefault("review", {})
     synthesized_audio = _has_synthesized_audio(updated)
-    exact_script_job = isinstance(publication_review.get("snapshot"), dict)
+    exact_script_job = is_exact_script_job(updated)
     exact_script_review = exact_script_job and not synthesized_audio
     review = (
         publication_review.setdefault(

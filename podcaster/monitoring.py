@@ -654,8 +654,8 @@ async def api_review(request: Request):
         outcome = record_review_skip_outcome(
             storage, job_id, outcome, reviewed_at, audio_publish_skipped
         )
-    except ReviewBindingError as exc:
-        return JSONResponse(status_code=409, content={"error": str(exc)})
+    except ReviewBindingError:
+        return JSONResponse(status_code=409, content={"error": "review binding conflict"})
     except ValueError:
         logger.warning("review decision was rejected", exc_info=True)
         return JSONResponse(status_code=404, content={"error": "review request not found"})

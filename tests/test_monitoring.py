@@ -15,6 +15,7 @@ from podcaster.jobs import ReplayCollisionError
 from podcaster.monitoring import app, set_storage
 from podcaster.orchestration import JobPublishOutcome
 from podcaster.publish import PublishResult
+from podcaster.review import ReviewBindingError
 
 # ---------------------------------------------------------------------------
 # In-memory storage backend for tests
@@ -743,6 +744,27 @@ class TestGenerateEndpoint:
 
 
 class TestReviewEndpoint:
+    def test_review_binding_conflict_never_exposes_exception_details(self, client):
+        confidential = "confidential-review-sentinel: /private/review.json provider-token=hidden"
+
+        with patch(
+            "podcaster.monitoring.process_review_decision",
+            side_effect=ReviewBindingError(confidential),
+        ) as process:
+            response = client.post(
+                "/api/review",
+                json={
+                    "job_id": "podcast-1",
+                    "reviewer": "test-reviewer",
+                    "decision": "approved",
+                },
+            )
+
+        process.assert_called_once()
+        assert response.status_code == 409
+        assert response.json() == {"error": "review binding conflict"}
+        assert confidential not in response.text
+
     @pytest.mark.parametrize("conflict", [None, "script_sha256", "manifest_sha256"])
     def test_deployed_review_endpoint_binds_exact_staged_content(
         self, reviewed_stage, monkeypatch, conflict

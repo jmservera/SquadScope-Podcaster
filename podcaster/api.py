@@ -651,8 +651,8 @@ class GenerateHandler(BaseHTTPRequestHandler):
             outcome = record_review_skip_outcome(
                 storage, job_id, outcome, reviewed_at, audio_publish_skipped
             )
-        except ReviewBindingError as exc:
-            _json_response(self, HTTPStatus.CONFLICT, {"error": str(exc)})
+        except ReviewBindingError:
+            _json_response(self, HTTPStatus.CONFLICT, {"error": "review binding conflict"})
             return
         except ValueError:
             logger.warning("review decision was rejected", exc_info=True)

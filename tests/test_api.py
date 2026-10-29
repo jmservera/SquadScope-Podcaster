@@ -18,6 +18,7 @@ from podcaster.dispatch_receipts import dispatch_receipt_path
 from podcaster.jobs import ReplayCollisionError
 from podcaster.orchestration import JobPublishOutcome
 from podcaster.publish import PublishResult
+from podcaster.review import ReviewBindingError
 
 
 class FakeRequest:
@@ -665,6 +666,23 @@ class TestReviewEndpoint:
         handler = make_handler("POST", "/api/review", body=body, headers=self._headers(body))
         assert handler.response_code == HTTPStatus.BAD_REQUEST
         assert "job_id is required" in handler.get_response_json()["errors"]
+
+    def test_review_binding_conflict_never_exposes_exception_details(self):
+        confidential = "confidential-review-sentinel: /private/review.json provider-token=hidden"
+        body = json.dumps(
+            {"job_id": "podcast-1", "reviewer": "test-reviewer", "decision": "approved"}
+        ).encode()
+
+        with patch(
+            "podcaster.api.process_review_decision",
+            side_effect=ReviewBindingError(confidential),
+        ) as process:
+            handler = make_handler("POST", "/api/review", body=body, headers=self._headers(body))
+
+        process.assert_called_once()
+        assert handler.response_code == HTTPStatus.CONFLICT
+        assert handler.get_response_json() == {"error": "review binding conflict"}
+        assert confidential not in handler._wfile.getvalue().decode()
 
     @patch("podcaster.api.process_review_decision")
     def test_review_endpoint_returns_manifest_and_publish_status(self, mock_process):

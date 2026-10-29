@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from hashlib import sha256
 from unittest.mock import Mock
@@ -104,6 +105,82 @@ def test_noncanonical_post_audio_review_keeps_legacy_approval_contract(tmp_path)
         "approved_at": "2026-10-29T11:10:00Z",
         "source": "manifest_human_review",
     }
+
+
+@pytest.mark.parametrize("snapshot_state", ["missing", "null", "string", "list"])
+@pytest.mark.parametrize("canonical_marker", ["synthesis_approval", "provider_settings_sha256"])
+def test_malformed_post_audio_snapshot_never_grants_publication_approval(
+    tmp_path, monkeypatch, snapshot_state, canonical_marker
+):
+    storage = LocalStorageBackend(tmp_path / "canonical", "https://example.invalid/artifacts")
+    manifest = _synthesized_manifest()
+    if snapshot_state != "missing":
+        manifest["review"]["snapshot"] = {
+            "null": None,
+            "string": "corrupt",
+            "list": [],
+        }[snapshot_state]
+    if canonical_marker == "synthesis_approval":
+        manifest["review"]["synthesis_approval"] = {"status": "approved"}
+    else:
+        manifest["generation"]["provider_settings_sha256"] = "a" * 64
+    _stage(storage, manifest)
+    publish = Mock(side_effect=AssertionError("unexpected provider publication"))
+    monkeypatch.setattr("podcaster.orchestration.publish_episode", publish)
+
+    outcome = process_review_decision(
+        manifest["job_id"],
+        storage=storage,
+        reviewer="test-audio-reviewer",
+        reviewed_at="2026-10-29T11:10:00Z",
+        decision="approved",
+        publish_on_approval=True,
+        publish_video_on_approval=True,
+    )
+
+    persisted = load_manifest(storage, manifest["job_id"])
+    assert persisted == outcome.manifest
+    assert persisted["review"]["status"] == "pending"
+    assert persisted["review_status"] == "pending"
+    assert persisted["review"]["approved_by"] is None
+    assert persisted["review"]["approved_at"] is None
+    assert persisted["review"]["gate"]["status"] == "blocked"
+    assert persisted["review"]["audio_approval"]["status"] == "approved"
+    assert persisted["publishing"]["eligible"] is False
+    assert "human_review" in persisted["publishing"]["blocked_by"]
+    assert persisted["publishing"]["readiness_checks"]["editorial_review_complete"] is False
+    assert _distribution_human_approval(persisted) == {"approved": False}
+    assert outcome.publish_result is None
+    publish.assert_not_called()
+
+
+@pytest.mark.parametrize("snapshot_state", ["missing", "null", "string", "list"])
+def test_malformed_pre_tts_snapshot_rejects_approval_atomically(
+    reviewed_stage, monkeypatch, snapshot_state
+):
+    storage, result, generator, producer, _script = reviewed_stage
+    manifest = json.loads(json.dumps(result.manifest))
+    if snapshot_state == "missing":
+        manifest["review"].pop("snapshot")
+    else:
+        manifest["review"]["snapshot"] = {
+            "null": None,
+            "string": "corrupt",
+            "list": [],
+        }[snapshot_state]
+    path = f"jobs/{result.response['job_id']}/manifest.json"
+    before = json.dumps(manifest).encode()
+    storage.put_bytes(path, before, "application/json")
+    publish = Mock(side_effect=AssertionError("unexpected provider publication"))
+    monkeypatch.setattr("podcaster.orchestration.publish_episode", publish)
+
+    with pytest.raises(ReviewBindingError):
+        _approve(storage, result)
+
+    assert storage.get_bytes(path) == before
+    assert producer.sent == []
+    publish.assert_not_called()
+    generator.assert_called_once()
 
 
 def test_snapshot_does_not_replace_provider_privacy_or_rai_signoff(reviewed_stage):
