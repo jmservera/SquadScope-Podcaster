@@ -31,6 +31,26 @@ on:
         required: false
         default: ''
         type: string
+      script_sha256:
+        description: 'Digest from review.snapshot of the script YOU reviewed (required for pre-TTS approval)'
+        required: false
+        default: ''
+        type: string
+      manifest_sha256:
+        description: 'Content digest from review.snapshot YOU reviewed (not the upstream manifest hash)'
+        required: false
+        default: ''
+        type: string
+      provider_authorization:
+        description: 'Pre-TTS policy evidence JSON: see docs/integration-contract.md; no secrets or signed URLs'
+        required: false
+        default: '{}'
+        type: string
+      review_checks_confirmed:
+        description: 'I reviewed these digest-bound artifacts, claims, rights, disclosure, pronunciation and spoken Markdown'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -80,6 +100,10 @@ jobs:
           REVIEWED_AT: ${{ steps.reviewed_at.outputs.value }}
           REVIEWER: ${{ github.actor }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SCRIPT_SHA256: ${{ inputs.script_sha256 }}
+          MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+          PROVIDER_AUTHORIZATION: ${{ inputs.provider_authorization }}
+          REVIEW_CHECKS_CONFIRMED: ${{ inputs.review_checks_confirmed }}
         run: |
           set -euo pipefail
           if [ -z "${PODCASTER_API_URL:-}" ]; then
@@ -93,8 +117,21 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import re
           import urllib.request
 
+          script_sha256 = os.environ["SCRIPT_SHA256"].strip()
+          manifest_sha256 = os.environ["MANIFEST_SHA256"].strip()
+          if script_sha256 or manifest_sha256:
+              if not all(re.fullmatch(r"[0-9a-f]{64}", digest)
+                         for digest in (script_sha256, manifest_sha256)):
+                  raise SystemExit("Both reviewed digests must be lowercase SHA-256 values")
+          try:
+              provider_authorization = json.loads(os.environ["PROVIDER_AUTHORIZATION"])
+          except ValueError:
+              raise SystemExit("Provider authorization must be a JSON object") from None
+          if not isinstance(provider_authorization, dict):
+              raise SystemExit("Provider authorization must be a JSON object")
           payload = json.dumps(
               {
                   "job_id": os.environ["JOB_ID"],
@@ -104,6 +141,10 @@ jobs:
                   "reviewed_at": os.environ["REVIEWED_AT"],
                   "run_url": os.environ["RUN_URL"],
                   "publish_on_approval": True,
+                  "script_sha256": script_sha256 or None,
+                  "manifest_sha256": manifest_sha256 or None,
+                  "provider_authorization": provider_authorization,
+                  "review_checks_confirmed": os.environ["REVIEW_CHECKS_CONFIRMED"] == "true",
               }
           ).encode("utf-8")
           request = urllib.request.Request(

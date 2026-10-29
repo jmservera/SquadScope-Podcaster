@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from urllib.request import Request
 
 import pytest
@@ -10,6 +11,7 @@ import pytest
 import podcaster.script_gen as script_gen
 from podcaster.article_validation import ARTICLE_MIN_CHARS, validate_article_inputs
 from podcaster.config import HistoricalContext, PodcastConfig
+from podcaster.generation import generate_artifacts
 from podcaster.sanitization import FENCE_CLOSE, FENCE_OPEN
 from podcaster.script_gen import (
     MAX_ARTICLE_CHARS,
@@ -589,6 +591,75 @@ class TestBuildUserPrompt:
 
 
 class TestFormatScript:
+    @pytest.mark.parametrize(
+        ("host_a", "host_b", "disclosure", "opening", "closing", "section"),
+        [
+            (
+                "Ada",
+                "Bo",
+                "Both presenters use synthetic AI voices.",
+                "Welcome to our weekly engineering report.",
+                "Thank you for listening; see you next week.",
+                "Engineering",
+            ),
+            (
+                "Lucía",
+                "Mateo",
+                "Las dos voces son sintéticas y generadas por inteligencia artificial.",
+                "Bienvenidos al resumen de ingeniería de esta semana.",
+                "Gracias por escuchar; nos vemos la próxima semana.",
+                "Ingeniería",
+            ),
+        ],
+    )
+    def test_opening_disclosure_is_also_the_final_spoken_turn(
+        self, host_a, host_b, disclosure, opening, closing, section
+    ):
+        config = PodcastConfig.from_payload(
+            {
+                "name": "Caller weekly",
+                "host_a": {"name": host_a, "voice": "fable"},
+                "host_b": {"name": host_b, "voice": "alloy"},
+                "ai_voice_disclosure": disclosure,
+            }
+        )
+        dialogue = (
+            f"{host_a}: {opening}\n"
+            f"{host_b}: {disclosure}\n"
+            f"## Section: {section}\n"
+            f"{host_a}: {closing}\n"
+        )
+        created_at = datetime(2026, 10, 29, 11, tzinfo=timezone.utc)
+        script = _format_script(
+            week="2026-W44",
+            article_url="https://example.com/weekly",
+            article_sha256="a" * 64,
+            dialogue=dialogue,
+            podcast_config=config,
+            generated_at=created_at,
+        )
+        body = script.split("---", 1)[1]
+        spoken = [
+            line for line in body.splitlines() if line.startswith((f"{host_a}:", f"{host_b}:"))
+        ]
+        assert spoken[:2] == [f"{host_a}: {opening}", f"{host_b}: {disclosure}"]
+        assert f"## Section: {section}" in body
+        assert f"{host_a}: {closing}" in body
+        assert f"{host_a} = fable" in script
+        assert f"{host_b} = alloy" in script
+        artifacts = generate_artifacts(
+            "podcast-2026-W44-disclosure",
+            {"week": "2026-W44", "article_url": "https://example.com/weekly"},
+            created_at,
+            config=config,
+            script=script,
+        )
+        transcript = next(a for a in artifacts if a.path.endswith("transcript.txt"))
+        assert transcript.content.decode("utf-8").split("---", 1)[1].lstrip("\n") == body.lstrip(
+            "\n"
+        )
+        assert spoken[-1].endswith(disclosure)
+
     def test_produces_valid_header(self):
         config = PodcastConfig()
         script = _format_script(

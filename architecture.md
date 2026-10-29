@@ -28,7 +28,7 @@ Config-driven podcast generation engine. Receives article content and editorial 
   - storage.py — Blob/local storage abstraction
   - validation.py — Request auth + validation
   - publish.py — Spotify for Creators mutation adapter used only by explicit publication orchestration
-  - orchestration.py — approved/manual `process_review_decision` → `publish_staged_job` publication owner
+  - orchestration.py — atomic exact-script approval/dispatch and separate publication review
   - costs.py — Monthly budget/ledger guardrails
   - sanitization.py — Prompt injection neutralization
   - claim_extraction.py — Claim ledger from articles
@@ -48,13 +48,33 @@ Config-driven podcast generation engine. Receives article content and editorial 
 2. validation.py authenticates and validates request
 3. jobs.py stages artifacts, runs budget checks, generates script via LLM
 4. hooks.py generates personality-matched conversational hooks via LLM
-5. Job enqueued to Azure Storage Queue
-6. job_runner.py dequeues, runs TTS synthesis per turn via Azure OpenAI
-7. audio.py stitches segments + mixes intro/outro music (ffmpeg, eval=frame volume expressions)
-8. Validation pass (duration, file size, format checks)
-9. Artifacts stored to Azure Blob Storage
-10. Validated audio remains staged and is never published by synthesis
-11. An explicit approved/manual orchestration request runs `process_review_decision` → `publish_staged_job`; video generation and distribution remain independent
+5. Production pauses with manifest `review_pending`; response remains HTTP 202 `accepted`.
+   Missing production article/LLM configuration fails closed, never accepting a placeholder.
+6. A human reviews staged script/transcript/packet, source claims, rights, provider
+   constraints, configured disclosure, acronym pronunciation and Markdown readiness.
+   `/api/review` requires the exact `review.snapshot.script_sha256` and
+   `review.snapshot.manifest_sha256` for pre-TTS approval. It records the
+   reviewer/time/decision/audit only in `review.synthesis_approval`, leaving shared
+   publication review pending. Explicit artifact checklist confirmation and actual
+   provider-selection/privacy/security/disclosure evidence bound to the effective
+   provider fingerprint are required; configuration readiness is not signoff.
+   Approval atomically consumes a dispatch intent before enqueue.
+7. job_runner.py verifies content/config digests and approval again, then consumes
+   an atomic one-shot provider claim before TTS. Concurrent/duplicate messages
+   cannot repeat TTS; ambiguous dispatch/provider outcomes require reconciliation.
+8. audio.py stitches segments + mixes intro/outro music (ffmpeg, eval=frame volume expressions)
+9. Validation pass (duration, file size, format checks)
+10. Artifacts stored to Azure Blob Storage
+11. Validated audio remains staged and is never published by synthesis
+12. Existing nonsnapshot post-audio approval/manual orchestration can run
+    `process_review_decision` → `publish_staged_job`. For exact-script jobs,
+    generic post-audio decisions are audited under `review.audio_approval` while
+    shared publication review stays pending. Neither script nor audio consent
+    automatically queues legacy live video or authorizes future media.
+    Eventual YouTube delivery requires completed-video digest-bound human outbox
+    review; Spotify video remains operator-only for reviewed video. This change
+    establishes no safe preparation/publication route for those exact-script jobs,
+    so video/provider mutation remains blocked rather than inheriting audio consent.
 
 ## API Contract
 ### Config Contract (received via API payload)
@@ -68,7 +88,8 @@ Required: week, article_url
 Optional: article_content, article_title, article_sha256, source_artifacts, podcast_config, script_directions, music_mix, dry_run, force, callback
 
 ### Response Contract
-Returns: job_id, status, manifest_url, mp3_url, transcript_url, show_notes_url, warnings, errors
+Returns the same eleven keys: job_id, status, manifest_url, mp3_url, wav_url,
+transcript_url, show_notes_url, publishing_packet_url, expires_at, warnings, errors.
 
 ## Audio Mixing Architecture
 - Music track: assets/music/claracle-theme.mp3 (85.4s, used for both intro and outro)

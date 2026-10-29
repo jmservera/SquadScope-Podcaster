@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
-from podcaster.jobs import run_generation_job
-from podcaster.storage import LocalStorageBackend
+from review_support import approval_evidence_for
+
+from podcaster.orchestration import process_review_decision
 from scripts.record_review_approval import apply_review_decision
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,43 +30,53 @@ def test_review_workflow_uses_podcast_review_environment_and_uploads_record() ->
     assert "PACKET_URL:" not in record_step
 
 
-def test_review_approval_records_actor_time_and_preserves_provider_tts_gate(tmp_path: Path) -> None:
-    storage = LocalStorageBackend(tmp_path / "artifacts", "https://example.invalid/artifacts")
-    result = run_generation_job(
-        {"week": "2026-W23", "article_url": "https://example.com/article"},
-        storage=storage,
-        now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
-    )
+def test_review_workflow_supplies_exact_review_digests_to_runtime() -> None:
+    workflow = REVIEW_WORKFLOW.read_text(encoding="utf-8")
+    assert "script_sha256:" in workflow, "review workflow has no reviewed script digest input"
+    assert "manifest_sha256:" in workflow, "review workflow has no reviewed manifest digest input"
+    assert '"script_sha256":' in workflow
+    assert '"manifest_sha256":' in workflow
+    assert "provider_authorization:" in workflow
+    assert "review_checks_confirmed:" in workflow
+    assert '"provider_authorization":' in workflow
+    assert '"review_checks_confirmed":' in workflow
 
-    reviewed = apply_review_decision(
-        result.manifest,
+
+def test_review_approval_records_actor_time_and_exact_binding_before_tts(reviewed_stage) -> None:
+    storage, result, generator, producer, _script = reviewed_stage
+
+    reviewed = process_review_decision(
+        result.response["job_id"],
+        storage=storage,
         reviewer="leela",
-        reviewed_at="2026-06-08T22:00:00Z",
+        reviewed_at="2026-10-29T11:05:00Z",
         decision="approved",
         notes="Approved after checklist review.",
         run_url="https://github.com/jmservera/SquadScope-Podcaster/actions/runs/1",
-    )
+        **approval_evidence_for(result.manifest),
+    ).manifest
 
     assert reviewed["status"] == "review_approved"
-    assert reviewed["review"]["status"] == "approved"
-    assert reviewed["review"]["approved_by"] == "leela"
-    assert reviewed["review"]["approved_at"] == "2026-06-08T22:00:00Z"
-    assert reviewed["review"]["audit_trail"][-1]["actor"] == "leela"
-    assert reviewed["generation"]["tts_synthesis"]["allowed"] is False
-    assert reviewed["generation"]["tts_synthesis"]["status"] == "blocked"
-    assert reviewed["generation"]["tts_synthesis"]["blocked_by"] == [
-        "provider_not_selected",
-        "provider_privacy_review_required",
-        "rai_security_signoff_required",
-    ]
+    assert reviewed["review"]["status"] == "pending"
+    approval = reviewed["review"]["synthesis_approval"]
+    assert approval["status"] == "approved"
+    assert approval["approved_by"] == "leela"
+    assert approval["approved_at"] == "2026-10-29T11:05:00Z"
+    assert any(entry.get("actor") == "leela" for entry in approval["audit_trail"])
+    assert approval["binding"]["reviewer"] == "leela"
+    assert reviewed["generation"]["tts_synthesis"]["allowed"] is True
+    assert reviewed["generation"]["tts_synthesis"]["status"] == "review_approved"
+    assert reviewed["generation"]["tts_synthesis"]["blocked_by"] == []
     assert reviewed["publishing"]["packet_ready"] is False
     assert reviewed["publishing"]["readiness_checks"]["cost_ledger_complete"] is True
-    assert reviewed["publishing"]["readiness_checks"]["editorial_review_complete"] is True
-    assert "human_review" not in reviewed["publishing"]["blocked_by"]
+    assert reviewed["publishing"]["readiness_checks"]["editorial_review_complete"] is False
     assert reviewed["publishing"]["blocked_by"] == [
+        "human_review",
         "synthesis_not_completed",
         "audio_validation_not_passed",
     ]
+    assert len(producer.sent) == 1
+    generator.assert_called_once()
     assert reviewed["publishing"]["eligible"] is False
     assert reviewed["publishing"]["packet_ready"] is False
     assert reviewed["generation"]["audio_mode"] == "placeholder"

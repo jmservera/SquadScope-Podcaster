@@ -67,15 +67,26 @@ def test_script_is_two_voice_with_named_hosts_and_fable_alloy() -> None:
     assert f"{HOST_B_NAME} = {HOST_B_VOICE}" in script
 
 
-def test_ai_voice_disclosure_appears_within_first_60_seconds() -> None:
+def test_ai_voice_disclosure_is_in_opening_minute_dialogue_budget() -> None:
     transcript = _artifact("transcript.txt")
     body = transcript.split("---", 1)[1]
     disclosure_lines = [line for line in body.splitlines() if AI_VOICE_DISCLOSURE in line]
     assert disclosure_lines, "AI-voice disclosure must appear in the transcript body"
-    # Transcript stamps 15s per spoken line; disclosure must land inside the first minute.
-    stamp = disclosure_lines[0].split("]", 1)[0].lstrip("[")
-    minutes, seconds, _ = (int(part) for part in stamp.split(":"))
-    assert minutes * 60 + seconds < 60
+    script_body = _artifact("script.txt").split("---", 1)[1].lstrip("\n")
+    assert body.lstrip("\n") == script_body
+    # Pre-TTS transcripts cannot claim measured timings. At a conservative 120 wpm,
+    # the complete disclosure must fit in the opening minute's spoken word budget.
+    spoken = [
+        line.split(":", 1)[1]
+        for line in body.splitlines()
+        if line.startswith((HOST_A_NAME + ":", HOST_B_NAME + ":"))
+    ]
+    opening = []
+    for turn in spoken:
+        opening.extend(turn.split())
+        if AI_VOICE_DISCLOSURE in turn:
+            break
+    assert len(opening) < 120
 
 
 def test_show_notes_disclose_ai_voices_and_link_claracle() -> None:
