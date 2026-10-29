@@ -363,9 +363,16 @@ def test_real_dispatcher_blocks_unready_youtube_before_public_promotion(
 
     # Even public privacy on a later reconciliation cannot certify playability.
     http.video["status"]["privacyStatus"] = "public"
+    due = state["providers"]["youtube"]["next_reconcile_at"]
+    repository.now = lambda: datetime.fromisoformat(due.replace("Z", "+00:00"))
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.DistributionOutboxRepository", lambda _: repository
+    )
+    readbacks = len(http.readback_parts)
     assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
     state = repository.read(document["outbox_id"])
     assert state["aggregate"]["externally_verified_public"] is False
+    assert len(http.readback_parts) > readbacks
     assert http.mutations == ["upload"]
 
 
