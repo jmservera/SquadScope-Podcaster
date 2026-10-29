@@ -11,6 +11,7 @@ import pytest
 import podcaster.script_gen as script_gen
 from podcaster.article_validation import ARTICLE_MIN_CHARS, validate_article_inputs
 from podcaster.config import HistoricalContext, PodcastConfig
+from podcaster.episode import parse_script_segments
 from podcaster.generation import generate_artifacts
 from podcaster.sanitization import FENCE_CLOSE, FENCE_OPEN
 from podcaster.script_gen import (
@@ -591,6 +592,115 @@ class TestBuildUserPrompt:
 
 
 class TestFormatScript:
+    @pytest.mark.parametrize(
+        ("dialogue_text", "expected_text"),
+        [
+            pytest.param(
+                "Use `a*b*c` and `foo ** bar` literally.",
+                "Use a*b*c and foo ** bar literally.",
+                id="literal-operators",
+            ),
+            pytest.param(
+                "Keep `__pipeline_id__` and `model_name_v2` unchanged.",
+                "Keep __pipeline_id__ and model_name_v2 unchanged.",
+                id="underscored-identifiers",
+            ),
+            pytest.param(
+                "Print `[model](https://example.com/model)` and `![plot](chart.png)`.",
+                "Print [model](https://example.com/model) and ![plot](chart.png).",
+                id="literal-links",
+            ),
+            pytest.param(
+                "Use ``a*b*c `debug` foo ** bar`` literally.",
+                "Use a*b*c `debug` foo ** bar literally.",
+                id="double-backtick-span",
+            ),
+            pytest.param(
+                "Use ```a*b*c ``debug`` foo ** bar``` literally.",
+                "Use a*b*c ``debug`` foo ** bar literally.",
+                id="triple-backtick-span",
+            ),
+            pytest.param(
+                "Use `a*b*c`, then **check** [the docs](https://example.com/docs).",
+                "Use a*b*c, then check the docs.",
+                id="adjacent-editorial-formatting",
+            ),
+            pytest.param(
+                "Use **`a*b*c`** and __`model_name_v2`__ literally.",
+                "Use a*b*c and model_name_v2 literally.",
+                id="emphasis-around-code",
+            ),
+            pytest.param(
+                "Read **the `pipeline_id` field** carefully.",
+                "Read the pipeline_id field carefully.",
+                id="emphasis-spanning-code",
+            ),
+            pytest.param(
+                "Read [`pipeline_id`](https://example.com/docs) carefully.",
+                "Read pipeline_id carefully.",
+                id="link-around-code",
+            ),
+            pytest.param(
+                "Keep **important** and _clear_ prose with [docs](https://example.com).",
+                "Keep important and clear prose with docs.",
+                id="ordinary-editorial-formatting",
+            ),
+            pytest.param(
+                "Use model_name_v2, x*y, C++, and [batch_size] as raw technical prose.",
+                "Use model_name_v2, x*y, C++, and [batch_size] as raw technical prose.",
+                id="raw-technical-prose",
+            ),
+        ],
+    )
+    def test_literal_content_survives_script_speech_and_transcript(
+        self, dialogue_text, expected_text
+    ):
+        config = PodcastConfig.from_payload(
+            {
+                "name": "Engineering weekly",
+                "host_a": {"name": "Ada", "voice": "fable"},
+                "host_b": {"name": "Bo", "voice": "alloy"},
+                "ai_voice_disclosure": "Both presenters use synthetic AI voices.",
+            }
+        )
+        created_at = datetime(2026, 10, 29, 11, tzinfo=timezone.utc)
+        script = _format_script(
+            week="2026-W44",
+            article_url="https://example.com/weekly",
+            article_sha256="a" * 64,
+            dialogue=(
+                f"Bo: {config.ai_voice_disclosure}\n"
+                "## Section: Engineering\n"
+                f"Ada: {dialogue_text}\n"
+                "Bo: **Review** the [documentation](https://example.com/docs) and _verify_."
+            ),
+            podcast_config=config,
+            generated_at=created_at,
+        )
+        expected_segments = [
+            ("host_b", config.ai_voice_disclosure),
+            ("host_a", expected_text),
+            ("host_b", "Review the documentation and verify."),
+            ("host_b", config.ai_voice_disclosure),
+        ]
+        assert f"Ada: {expected_text}\n" in script
+        assert parse_script_segments(script, config) == expected_segments
+        artifacts = generate_artifacts(
+            "podcast-2026-W44-literals",
+            {"week": "2026-W44", "article_url": "https://example.com/weekly"},
+            created_at,
+            config=config,
+            script=script,
+        )
+        staged_script = next(a for a in artifacts if a.path.endswith("/script.txt"))
+        transcript = next(a for a in artifacts if a.path.endswith("/transcript.txt"))
+        assert staged_script.content.decode("utf-8") == script
+        transcript_text = transcript.content.decode("utf-8")
+        assert transcript_text.split("---", 1)[1].lstrip("\n") == script.split("---", 1)[1].lstrip(
+            "\n"
+        )
+        assert parse_script_segments(transcript_text, config) == expected_segments
+
     @pytest.mark.parametrize(
         ("host_a", "host_b", "disclosure", "opening", "closing", "section"),
         [

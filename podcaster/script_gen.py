@@ -1348,6 +1348,26 @@ def generate_script(
     return script
 
 
+def _normalize_spoken_markdown(text: str) -> str:
+    """Remove editorial Markdown without interpreting inline code contents."""
+
+    marker = "\x00"
+    while marker in text:
+        marker += marker
+    literals: list[str] = []
+
+    def protect_code(match: re.Match[str]) -> str:
+        literals.append(match.group(2))
+        return f"{marker}{len(literals) - 1}{marker}"
+
+    # Opaque tokens let surrounding emphasis and link labels normalize together.
+    text = re.sub(r"(?<!`)(`+)(?!`)(.*?)(?<!`)\1(?!`)", protect_code, text)
+    text = re.sub(r"!?\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"(\*{1,3})(\S(?:.*?\S)?)\1", r"\2", text)
+    text = re.sub(r"(?<!\w)(_{1,3})(\S(?:.*?\S)?)\1(?!\w)", r"\2", text)
+    return re.sub(f"{marker}(\\d+){marker}", lambda match: literals[int(match.group(1))], text)
+
+
 def _format_script(
     *,
     week: str,
@@ -1367,10 +1387,7 @@ def _format_script(
             podcast_config.host_a.name,
             podcast_config.host_b.name,
         }:
-            text = re.sub(r"!?\[([^\]]+)\]\([^)]+\)", r"\1", text)
-            text = re.sub(r"(`+)(.*?)\1", r"\2", text)
-            text = re.sub(r"(\*{1,3})(\S(?:.*?\S)?)\1", r"\2", text)
-            text = re.sub(r"(?<!\w)(_{1,3})(\S(?:.*?\S)?)\1(?!\w)", r"\2", text)
+            text = _normalize_spoken_markdown(text)
             line = f"{speaker.strip()}: {text.strip()}"
             spoken_lines.append(text)
         formatted_lines.append(line)
