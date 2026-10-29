@@ -649,6 +649,7 @@ async def api_review(request: Request):
             manifest_sha256=payload.get("manifest_sha256"),
             provider_authorization=payload.get("provider_authorization"),
             review_checks_confirmed=payload.get("review_checks_confirmed") is True,
+            media_review=payload.get("media_review"),
             storage=storage,
         )
         outcome = record_review_skip_outcome(

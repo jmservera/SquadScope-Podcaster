@@ -16,6 +16,7 @@ Security:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -188,6 +189,50 @@ class VideoDistributionConfig:
             blob_archive_enabled=bool(payload.get("blob_archive_enabled", True)),
             dry_run=bool(payload.get("dry_run", False)),
         )
+
+
+def provider_runtime_sha256(provider: str, config: VideoDistributionConfig, language: str) -> str:
+    """Bind prepared media to the effective destination and publication policy."""
+    from podcaster.spotify_shows import resolve_show_target
+
+    if provider == "youtube":
+        settings = {
+            "enabled": youtube_enabled_for_language(config, language),
+            "playlist": _resolve_playlist_id(config, language),
+            "category": config.youtube_category_id,
+            "privacy": config.youtube_privacy,
+            "client": config.youtube_client_id,
+            "account": config.youtube_refresh_token,
+        }
+    elif provider == "spotify":
+        settings = {
+            "enabled": config.spotify_upload_enabled,
+            "show": resolve_show_target(language).show_id,
+            "mode": config.spotify_video_publish_mode,
+            "live": os.environ.get("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "false"),
+            "reconcile": os.environ.get("PODCASTER_SPOTIFY_RECONCILE", "true"),
+            "unreconciled_create": os.environ.get(
+                "PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE", "false"
+            ),
+        }
+    else:
+        settings = {
+            "enabled": config.spotify_rss_enabled,
+            "feed": config.spotify_rss_feed_path,
+            "origin": config.spotify_rss_public_media_origin,
+            "public_feed": config.spotify_rss_public_feed_url,
+        }
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "provider": provider,
+                "language": language,
+                "settings": settings,
+                "dry_run": config.dry_run,
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
 
 
 @dataclass
@@ -735,6 +780,16 @@ def _reconcile_unknown_youtube_upload(
     return True, None
 
 
+def youtube_publication_metadata(
+    title: str, description: str, *, publication_marker: str = ""
+) -> dict[str, str]:
+    """Apply adapter limits while retaining an optional identity marker intact."""
+    suffix = f"\n\n{publication_marker}" if publication_marker else ""
+    if len(suffix) > 5000:
+        raise ValueError("YouTube publication marker exceeds the description limit")
+    return {"title": title[:100], "description": description[: 5000 - len(suffix)] + suffix}
+
+
 def upload_to_youtube(
     video_path: Path,
     title: str,
@@ -812,8 +867,7 @@ def upload_to_youtube(
 
     metadata = {
         "snippet": {
-            "title": title[:100],
-            "description": description[:5000],
+            **youtube_publication_metadata(title, description),
             "tags": tags_with_identity(tags or ["podcast", "tech", "open-source"], identity_tag),
             "categoryId": config.youtube_category_id,
         },

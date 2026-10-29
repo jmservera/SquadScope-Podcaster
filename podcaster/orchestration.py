@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from podcaster.config import SpotifyPublishConfig
 from podcaster.costs import cost_gate_blockers
+from podcaster.distribution_outbox import DistributionOutboxError, DistributionOutboxRepository
 from podcaster.generation import manifest_bytes
 from podcaster.music import TRACK_ATTRIBUTION
 from podcaster.publication_state import (
@@ -31,6 +32,8 @@ from podcaster.review import (
     APPROVED,
     ReviewBindingError,
     apply_review_decision,
+    is_exact_script_job,
+    validate_private_media_inputs,
     validate_review_binding,
     validate_review_snapshot,
 )
@@ -78,12 +81,46 @@ def process_review_decision(
     provider_authorization: dict[str, Any] | None = None,
     review_checks_confirmed: bool = False,
     enqueue: Callable[[str], bool] | None = None,
+    media_review: dict[str, Any] | None = None,
 ) -> JobPublishOutcome:
     """Record review atomically; pre-TTS approval dispatches only the staged script.
 
     ``publish_video_on_approval`` is compatibility-only and never authorizes video.
     """
     backend = storage or create_storage_backend()
+    if media_review is not None:
+        # This is the same authenticated review interface, but a separate
+        # decision over an existing private MP4/outbox digest. It must not
+        # dispatch TTS, synthesize again, approve audio, or render new bytes.
+        manifest = load_manifest(backend, job_id)
+        if not is_exact_script_job(manifest) or not isinstance(media_review, dict):
+            raise ReviewBindingError("media review requires an exact-script job")
+        validate_private_media_inputs(manifest, backend, job_id)
+        prepared_id = (
+            manifest.get("generation", {})
+            .get("video_runner", {})
+            .get("distribution", {})
+            .get("outbox_id")
+        )
+        if not prepared_id or media_review.get("outbox_id") != prepared_id:
+            raise ReviewBindingError("media review must name this job's prepared outbox")
+        try:
+            DistributionOutboxRepository(backend).record_media_review(
+                prepared_id,
+                accepted_job_id=job_id,
+                publication_digest=media_review.get("publication_digest"),
+                artifact_sha256=media_review.get("artifact_sha256"),
+                reviewer=reviewer,
+                reviewed_at=reviewed_at,
+                decision=decision,
+                checks_confirmed=review_checks_confirmed,
+                notes=notes,
+            )
+        except (DistributionOutboxError, ValueError, TypeError) as exc:
+            raise ReviewBindingError("prepared-media review binding conflict") from exc
+        # Existing scheduler repairs initial notification after this atomic
+        # decision. There is no second queue-send/dedup implementation here.
+        return JobPublishOutcome(manifest)
     dispatch_id = uuid4().hex
 
     def record(content: bytes | None) -> bytes:

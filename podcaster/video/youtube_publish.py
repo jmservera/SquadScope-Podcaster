@@ -397,6 +397,29 @@ def get_video_snippet(
     }
 
 
+def video_readiness_problems(
+    metadata: dict[str, object], *, allow_public: bool = False
+) -> list[str]:
+    """Apply the same upload/processing readiness contract before and after promotion."""
+    problems: list[str] = []
+    if not (metadata.get("title") or "").strip():
+        problems.append("video title is empty")
+    if not (metadata.get("description") or "").strip():
+        problems.append("video description is empty")
+    if not allow_public and metadata.get("privacyStatus") == PRIVACY_PUBLIC:
+        problems.append("video is already public — promotion would be a no-op")
+    upload_status = str(metadata.get("uploadStatus") or "").strip().lower()
+    if upload_status not in ("uploaded", "processed"):
+        problems.append(f"video upload is not complete (uploadStatus={upload_status or 'missing'})")
+    processing_status = str(metadata.get("processingStatus") or "").strip().lower()
+    if processing_status != "succeeded":
+        problems.append(
+            "video processing is not successful "
+            f"(processingStatus={processing_status or 'missing'})"
+        )
+    return problems
+
+
 def verify_draft_ready(
     video_id: str,
     access_token: str,
@@ -416,26 +439,10 @@ def verify_draft_ready(
     """
     from podcaster.video.youtube_playlist import playlist_contains_video
 
-    problems: list[str] = []
     snippet = get_video_snippet(video_id, access_token, transport=transport)
     if snippet is None:
-        problems.append(f"could not read metadata for video {video_id!r}")
-        return problems
-    if not (snippet.get("title") or "").strip():
-        problems.append("video title is empty")
-    if not (snippet.get("description") or "").strip():
-        problems.append("video description is empty")
-    if snippet.get("privacyStatus") == PRIVACY_PUBLIC:
-        problems.append("video is already public — promotion would be a no-op")
-    upload_status = str(snippet.get("uploadStatus") or "").strip().lower()
-    if upload_status not in ("uploaded", "processed"):
-        problems.append(f"video upload is not complete (uploadStatus={upload_status or 'missing'})")
-    processing_status = str(snippet.get("processingStatus") or "").strip().lower()
-    if processing_status != "succeeded":
-        problems.append(
-            "video processing is not successful "
-            f"(processingStatus={processing_status or 'missing'})"
-        )
+        return [f"could not read metadata for video {video_id!r}"]
+    problems = video_readiness_problems(snippet)
     if playlist_id:
         try:
             is_member = playlist_contains_video(

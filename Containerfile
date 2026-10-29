@@ -33,7 +33,10 @@ WORKDIR /app
 
 # Non-root runtime user.
 RUN groupadd --system synth \
-    && useradd --system --gid synth --home-dir /app --shell /usr/sbin/nologin synth
+    && useradd --system --gid synth --home-dir /app --shell /usr/sbin/nologin synth \
+    && install -d -o synth -g synth -m 700 /app/.scratch
+
+ENV TMPDIR=/app/.scratch
 
 # Install Python deps first for better layer caching. pyproject.toml is the
 # single source of dependency truth; requirements.lock pins the fully-resolved

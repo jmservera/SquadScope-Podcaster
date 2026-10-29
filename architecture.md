@@ -75,13 +75,27 @@ Config-driven podcast generation engine. Receives article content and editorial 
     `process_review_decision` → `publish_staged_job`. For exact-script jobs,
     generic post-audio decisions are audited under `review.audio_approval` while
     shared publication review stays pending. Neither script nor audio consent
-    automatically queues legacy live video or authorizes future media.
-    Eventual YouTube delivery requires completed-video digest-bound human outbox
-    review; Spotify video remains operator-only for reviewed video. This change
-    establishes no safe preparation/publication route for those exact-script jobs,
-    so video/provider mutation remains blocked rather than inheriting audio consent.
-    Manual video enqueue and direct worker invocation both enforce this block,
-    including malformed canonical snapshot records, before video-side mutation.
+    authorizes future media. Exact-script jobs may queue private video
+    preparation only from complete verified synthesis proof; the renderer consumes
+    that verified MP3, never a separate first-match selection.
+13. Private immutable video/outbox artifacts require a separate actual
+    MP4/digest/job/destination-bound human media decision. The existing scheduler
+    notifies only approved media. The distribution worker revalidates proof and
+    runtime destination bindings and consumes fenced operation-specific intents
+    before the existing YouTube/Spotify video adapters. Unknown mutations are
+    never replayed. YouTube starts private/unlisted; separate media consent
+    permits promotion, not script consent. Spotify retains its operator live
+    flags; audio publishing is not called. Provider public readback must prove
+    exact identity/media before terminal success. Mutation stays disabled by
+    default and legacy outboxes are not blanket enabled.
+    YouTube upload and identity readback share bounded metadata (100-character
+    title, 5,000-character description with the publication marker retained).
+    Each readback consumes one verification attempt; exhausted polling persists
+    a manual handoff and clears scheduling before the worker releases its claim.
+    Binding/fencing checks still cover completed legs, but polling limits admit
+    only new provider I/O: terminal legs do not block duplicates or other pending
+    destinations. Delayed pending deliveries past their horizon hand off without
+    provider I/O.
 
 ## API Contract
 ### Config Contract (received via API payload)

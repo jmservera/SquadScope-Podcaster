@@ -95,6 +95,8 @@ resource ttsDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10
     capacity: ttsModelCapacity
   }
   properties: {
+    raiPolicyName: 'Microsoft.DefaultV2'
+    versionUpgradeOption: 'OnceNewDefaultVersionAvailable'
     model: {
       format: 'OpenAI'
       name: ttsModelName
@@ -111,6 +113,8 @@ resource chatDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-1
     capacity: chatModelCapacity
   }
   properties: {
+    raiPolicyName: 'Microsoft.DefaultV2'
+    versionUpgradeOption: 'OnceNewDefaultVersionAvailable'
     model: {
       format: 'OpenAI'
       name: chatModelName

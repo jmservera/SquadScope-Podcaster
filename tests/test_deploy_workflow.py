@@ -15,6 +15,43 @@ ALERTS_BICEP = ROOT / "infra/modules/distribution-alerts.bicep"
 ACA_DISTRIBUTION_BICEP = ROOT / "infra/modules/aca-distribution.bicep"
 
 
+@pytest.mark.parametrize("base_length", [2, 22, 35])
+def test_distribution_default_names_fit_aca_and_preserve_parameter_consumers(base_length):
+    source = BICEP.read_text()
+    base = "p" * base_length
+    for parameter, limit, suffix in (
+        ("distributionJobName", 27, "-dist"),
+        ("distributionSchedulerJobName", 25, "-dsched"),
+    ):
+        assert f"param {parameter} string = '${{take(baseName, {limit})}}{suffix}'" in source
+        assert 2 <= len(base[:limit] + suffix) <= 32
+        assert f"output {parameter} string = " in source
+    assert "distributionJobName: distributionJobName" in source
+    assert "schedulerJobName: distributionSchedulerJobName" in source
+
+
+def test_redeployment_preserves_existing_aca_subnet_nsg_and_security_defaults():
+    source = BICEP.read_text()
+    network = (ROOT / "infra/modules/network.bicep").read_text()
+    workflow = REUSABLE_WORKFLOW.read_text()
+    assert "param acaSubnetNetworkSecurityGroupId string = ''" in source
+    assert "acaSubnetNetworkSecurityGroupId: acaSubnetNetworkSecurityGroupId" in source
+    assert "networkSecurityGroup: {\n            id: acaSubnetNetworkSecurityGroupId" in network
+    assert "empty(acaSubnetNetworkSecurityGroupId) ? {}" in network
+    assert "peSubnetNetworkSecurityGroupId: peSubnetNetworkSecurityGroupId" in source
+    assert "networkSecurityGroup: {\n            id: peSubnetNetworkSecurityGroupId" in network
+    assert 'peSubnetNetworkSecurityGroupId="$pe_subnet_nsg_id"' in workflow
+    assert "Microsoft.Network/networkSecurityGroups@" not in network  # external NSG ownership
+    assert "az network vnet subnet show" in workflow
+    assert 'acaSubnetNetworkSecurityGroupId="$aca_subnet_nsg_id"' in workflow
+    assert workflow.index("az network vnet subnet show") < workflow.index(
+        "az deployment group create"
+    )
+    openai = (ROOT / "infra/modules/openai.bicep").read_text()
+    assert openai.count("raiPolicyName: 'Microsoft.DefaultV2'") == 2
+    assert "azureADAuthenticationAsArmPolicy:" in (ROOT / "infra/modules/acr.bicep").read_text()
+
+
 @pytest.mark.parametrize("custom_policy", [False, True])
 def test_deployed_api_and_worker_have_identical_effective_review_provider_fingerprint(
     monkeypatch, custom_policy
@@ -191,6 +228,36 @@ def test_distribution_worker_infra_is_wired_but_provider_mutation_defaults_off()
     assert "DISTRIBUTION_WORKER_PROVIDER_MUTATION_ENABLED" in worker
     assert "param providerMutationEnabled string = 'false'" in worker
     assert "PODCAST_AUTO_PUBLISH" not in worker
+    distribution_params = main.split("module acaDistribution '", 1)[1].split(
+        "module acaDistributionScheduler '", 1
+    )[0]
+    for parameter in (
+        "spotifySessionCookieDc",
+        "spotifySessionCookieKey",
+        "spotifyShowId",
+        "spotifyVideoAllowLivePublish",
+        "spotifyVideoPublishMode",
+        "videoYoutubeEnabled",
+        "videoYoutubeCategoryId",
+        "videoYoutubePrivacy",
+        "videoYoutubePlaylistId",
+        "videoYoutubeClientId",
+        "videoYoutubeClientSecret",
+        "videoYoutubeRefreshToken",
+    ):
+        assert f"{parameter}: {parameter}" in distribution_params
+        assert f"param {parameter} string" in worker
+    for name in (
+        "youtube-client-id",
+        "youtube-client-secret",
+        "youtube-refresh-token",
+        "spotify-sp-dc",
+        "spotify-sp-key",
+    ):
+        assert f"secretRef: '{name}'" in worker
+    assert "secrets: concat(youtubeSecrets, spotifySecrets)" in worker
+    assert "spotifyConfigured ? [" in worker
+    assert "youtubeConfigured ? [" in worker
 
     assert "triggerType: 'Schedule'" in scheduler
     assert "'podcaster.distribution_scheduler'" in scheduler

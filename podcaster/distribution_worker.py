@@ -15,6 +15,7 @@ from podcaster.distribution_outbox import (
     Claim,
     DistributionOutboxError,
     DistributionOutboxRepository,
+    MediaReviewRequiredError,
     StaleClaimError,
 )
 from podcaster.queue import (
@@ -66,11 +67,13 @@ def provider_mutation_enabled(env: dict[str, str] | None = None) -> bool:
 
 
 def _default_dispatcher(
-    _repository: DistributionOutboxRepository,
-    _claim: Claim,
-    _document: dict[str, object],
+    repository: DistributionOutboxRepository,
+    claim: Claim,
+    document: dict[str, object],
 ) -> str:
-    raise DistributionOutboxError("provider mutation dispatcher is not implemented")
+    from podcaster.distribution_dispatch import dispatch_reviewed_video
+
+    return dispatch_reviewed_video(repository, claim, document)
 
 
 def _execution_id_for_message(message: QueueMessage) -> str:
@@ -154,6 +157,9 @@ def process_message(
             execution_id=execution_value,
             lease_seconds=lease_seconds,
         )
+    except MediaReviewRequiredError:
+        queue.delete_message(message)
+        return DistributionWorkerOutcome(outbox_id, "handled", "media_review_required")
     except StaleClaimError:
         logger.info(
             "distribution outbox already claimed outbox_id=%s message_id=%s dequeue_count=%s",

@@ -718,6 +718,11 @@ class TestReviewEndpoint:
                     "provider_settings_sha256": "c" * 64,
                 },
                 "review_checks_confirmed": True,
+                "media_review": {
+                    "outbox_id": "d" * 64,
+                    "publication_digest": "e" * 64,
+                    "artifact_sha256": "f" * 64,
+                },
             }
         ).encode()
         handler = make_handler("POST", "/api/review", body=body, headers=self._headers(body))
@@ -731,6 +736,11 @@ class TestReviewEndpoint:
             "provider_settings_sha256": "c" * 64,
         }
         assert mock_process.call_args.kwargs["review_checks_confirmed"] is True
+        assert mock_process.call_args.kwargs["media_review"] == {
+            "outbox_id": "d" * 64,
+            "publication_digest": "e" * 64,
+            "artifact_sha256": "f" * 64,
+        }
 
     @patch("podcaster.api.process_review_decision", side_effect=ValueError("secret missing job"))
     def test_review_endpoint_sanitizes_missing_job_error(self, _mock_process, caplog):

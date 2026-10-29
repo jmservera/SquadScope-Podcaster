@@ -361,6 +361,25 @@ jobs:
           if [ "$DEPLOY_VNET" = "true" ] && [ "$STORAGE_PUBLIC_NETWORK_ACCESS" = "Enabled" ]; then
             echo "ERROR: storagePublicNetworkAccess=Enabled is incompatible with deployVnet=true — Storage must be private when VNet is deployed (#675)"; exit 1
           fi
+          # ARM replaces inline subnet properties. Preserve an externally managed
+          # NSG instead of silently detaching it during an application release.
+          aca_subnet_nsg_id=''
+          pe_subnet_nsg_id=''
+          if [ "$DEPLOY_VNET" = "true" ]; then
+            existing_base=$(az deployment group list --resource-group "$AZURE_RESOURCE_GROUP" \
+              --query "[?name == 'main'].properties.parameters.baseName.value | [0]" -o tsv)
+            if [ -n "$existing_base" ]; then
+              aca_subnet_nsg_id=$(az network vnet subnet show \
+                --resource-group "$AZURE_RESOURCE_GROUP" --vnet-name "${existing_base}-vnet" \
+                --name snet-aca --query networkSecurityGroup.id -o tsv)
+              pe_subnet_nsg_id=$(az network vnet subnet show \
+                --resource-group "$AZURE_RESOURCE_GROUP" --vnet-name "${existing_base}-vnet" \
+                --name snet-private-endpoints --query networkSecurityGroup.id -o tsv)
+            elif [ "$(az network vnet list --resource-group "$AZURE_RESOURCE_GROUP" --query 'length(@)' -o tsv)" != "0" ]; then
+              echo "::error::Existing network without deployment identity; refusing to guess its NSG binding."
+              exit 1
+            fi
+          fi
           az deployment group create \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --name main \
@@ -389,6 +408,8 @@ jobs:
             --parameters videoYoutubeClientSecret="${VIDEO_YOUTUBE_CLIENT_SECRET:-}" \
             --parameters videoYoutubeRefreshToken="${VIDEO_YOUTUBE_REFRESH_TOKEN:-}" \
             --parameters deployVnet="${DEPLOY_VNET}" \
+            --parameters acaSubnetNetworkSecurityGroupId="$aca_subnet_nsg_id" \
+            --parameters peSubnetNetworkSecurityGroupId="$pe_subnet_nsg_id" \
             --parameters storagePublicNetworkAccess="${STORAGE_PUBLIC_NETWORK_ACCESS}" \
             --parameters deployUiApp=true \
             --parameters uiImage="${UI_IMAGE}" \
