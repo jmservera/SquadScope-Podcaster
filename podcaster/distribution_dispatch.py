@@ -53,6 +53,7 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
         manifest, job_id, document["publication_identity"]["publish_run_id"]
     )
     artifact = ArtifactReference(**document["artifact"])
+    path = None
 
     def validate(provider, operation=None):
         if provider == "spotify" and not publish._spotify_reconcile_enabled():
@@ -83,13 +84,15 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
             <= repository.now()
         ):
             raise DistributionOutboxError("reviewed video or provider binding changed")
+        verify_artifact(repository.storage, artifact)
+        if path is not None and _file_digest(path) != artifact.sha256:
+            raise DistributionOutboxError("local reviewed MP4 changed")
         return current
 
     # Validate *all* destinations before the first provider call, not midway
     # through a multi-provider publication.
     for provider in document["providers"]:
         validate(provider)
-    verify_artifact(repository.storage, artifact)
     root = Path(".scratch") / "distribution" / claim.claim_id
     root.mkdir(parents=True, mode=0o700)
     path = root / "reviewed.mp4"
@@ -116,9 +119,6 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
                 return accepted[-1]["provider_item_id"]
             if claim.read_only:
                 raise DistributionOutboxError("ambiguous dispatch is reconciliation-only")
-            verify_artifact(repository.storage, artifact)
-            if _file_digest(path) != artifact.sha256:
-                raise DistributionOutboxError("local reviewed MP4 changed")
             repository.persist_intent(
                 claim,
                 provider=provider,

@@ -370,6 +370,39 @@ def test_real_dispatcher_rejects_changed_bindings_before_provider_io(
     external.assert_not_called()
 
 
+@pytest.mark.parametrize("drift", ["local", "stored"])
+def test_real_dispatcher_rechecks_actual_mp4_at_adapter_boundary(
+    prepared_exact_video, monkeypatch, drift
+):
+    from podcaster.distribution_outbox import DistributionOutboxError
+    from podcaster.video import distribution
+
+    storage, job_id, _repository, document, config, _ = prepared_exact_video
+    _video_decision(storage, job_id, document)
+    http = _ReviewedYouTubeTransport()
+    monkeypatch.setattr(distribution.VideoDistributionConfig, "from_env", lambda: config)
+    monkeypatch.setattr(distribution, "_DefaultTransport", lambda: http)
+    monkeypatch.setattr(distribution, "_get_youtube_access_token", lambda *_: "offline")
+    upload = distribution.upload_to_youtube
+
+    def replace_before_adapter(path, *args, **kwargs):
+        if drift == "local":
+            path.write_bytes(b"X" * document["artifact"]["size_bytes"])
+        else:
+            storage.put_bytes(
+                document["artifact"]["path"],
+                b"X" * document["artifact"]["size_bytes"],
+                "video/mp4",
+            )
+        return upload(path, *args, **kwargs)
+
+    monkeypatch.setattr(distribution, "upload_to_youtube", replace_before_adapter)
+    with pytest.raises(DistributionOutboxError):
+        _run_reviewed_worker(storage, document)
+    assert http.mutations == []
+    assert http.bytes_uploaded is None
+
+
 def test_real_dispatcher_ambiguous_upload_is_never_repeated(prepared_exact_video, monkeypatch):
     from podcaster.video.distribution import VideoDistributionConfig
 
