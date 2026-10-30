@@ -48,6 +48,18 @@ Config-driven podcast generation engine. Receives article content and editorial 
 2. validation.py authenticates and validates request
 3. jobs.py stages artifacts, runs budget checks, generates script via LLM
 4. hooks.py generates personality-matched conversational hooks via LLM
+   Script generation enforces explicit requested spoken-word ranges against the
+   final TTS-parser output, including formatter disclosures, with bounded repairs.
+   Complete replacements preserve original section identities/order and minimum
+   host turns. Repair diagnostics are capped, fenced untrusted data; public
+   quality failures expose only fixed messages and numeric constraints.
+   Production claim alignment accounts for every exact final spoken turn.
+   Literal evidence is bound to either the article or separately supplied
+   breaking news (`source_kind`); supplemental material has no invented article
+   URL. Known empirical/novelty/absence formulations are conservatively rejected
+   even with caveats; repairs should retain attributed scoped observations.
+   Quotes and model alignment are triage, not entailment, factual verification,
+   or human approval; all extracted claims remain `verified=false`.
 5. Production pauses with manifest `review_pending`; response remains HTTP 202 `accepted`.
    Missing production article/LLM configuration fails closed, never accepting a placeholder.
 6. A human reviews staged script/transcript/packet, source claims, rights, provider

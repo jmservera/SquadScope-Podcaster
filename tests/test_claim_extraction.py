@@ -7,6 +7,7 @@ from urllib.request import Request
 
 import pytest
 
+import podcaster.claim_extraction as claim_extraction
 from podcaster.claim_extraction import (
     Claim,
     _build_claim_extraction_prompt,
@@ -69,6 +70,168 @@ SAMPLE_CLAIMS = [
         "editor_notes": "Verify benchmark methodology",
     },
 ]
+
+
+class TestCanonicalGrounding:
+    source = (
+        "The sample lists a PHP proof of concept and scanner. "
+        "Bridgeplay brings Windows Steam games into Mac Steam. "
+        "The records do not measure weekly adoption or exploitation."
+    )
+    turns = [
+        "The sample lists a PHP proof of concept and scanner.",
+        "Bridgeplay brings Windows Steam games into Mac Steam.",
+    ]
+
+    def _rows(self, turns=None):
+        return [
+            {"script_excerpt": turn, "grounding": "supported", "source_quote": self.source}
+            for turn in (self.turns if turns is None else turns)
+        ]
+
+    def _extract(self, rows, *, turns=None, finish_reason="stop"):
+        turns = self.turns if turns is None else turns
+        script = "Title: Unspoken metadata\n---\n" + "\n".join(
+            f"{'Theo' if index % 2 == 0 else 'Vera'}: {turn}" for index, turn in enumerate(turns)
+        )
+
+        def transport(request):
+            body = json.loads(request.data)
+            prompt = json.dumps(body["messages"])
+            assert "CANONICAL SPOKEN TURNS" in prompt
+            assert all(turn in prompt for turn in turns)
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {"content": json.dumps({"claims": rows})},
+                            "finish_reason": finish_reason,
+                        }
+                    ]
+                }
+            ).encode()
+
+        return extract_claims(
+            article_content=self.source,
+            article_url="https://example.com/trusted",
+            config=_mock_config(),
+            script=script,
+            token_provider=_fake_token_provider,
+            transport=transport,
+        )
+
+    def test_exact_final_turn_ledger_is_not_truncated_or_human_approved(self):
+        turns = [self.turns[index % 2] for index in range(17)]
+        rows = self._rows(turns)
+        for row in rows:
+            row.update(verified=True, source_url="https://untrusted.invalid")
+        claims = self._extract(rows, turns=turns)
+        assert [claim.script_excerpt for claim in claims] == turns
+        assert all(not claim.verified for claim in claims)
+        assert all(claim.source_quote == self.source for claim in claims)
+        assert all(claim.source_url == "https://example.com/trusted" for claim in claims)
+        assert all("not factual verification or human approval" in c.editor_notes for c in claims)
+
+    @pytest.mark.parametrize(
+        "defect", ["missing", "extra", "reordered", "paraphrased", "nonliteral", "unsupported"]
+    )
+    def test_rejects_noncanonical_or_unsupported_ledger(self, defect):
+        rows = self._rows()
+        if defect == "missing":
+            rows.pop()
+        elif defect == "extra":
+            rows.append(rows[0].copy())
+        elif defect == "reordered":
+            rows.reverse()
+        elif defect == "paraphrased":
+            rows[0]["script_excerpt"] = "Some PHP tools exist."
+        elif defect == "nonliteral":
+            rows[0]["source_quote"] = "The article proves a weekly exploitation surge."
+        else:
+            rows[0]["grounding"] = "unsupported"
+        with pytest.raises(claim_extraction.ClaimGroundingError):
+            self._extract(rows)
+
+    @pytest.mark.parametrize(
+        "turn",
+        [
+            "We witnessed a surge of exploit repositories following a PHP vulnerability.",
+            "Bridgeplay bridges platforms in a way we've never seen before!",
+            "Device reclamation lacks a shared safety model.",
+            "We witnessed a surge of exploit repositories following a PHP vulnerability. "
+            "The article does not show which licenses those repositories use.",
+            "Bridgeplay bridges platforms in a way we've never seen before! "
+            "The article does not show whether every game is compatible.",
+            "According to the article, the sample describes a surge of PHP projects. "
+            "This does not establish exploitation rates.",
+        ],
+    )
+    @pytest.mark.parametrize("model_disposition", ["supported", "nonfactual"])
+    def test_model_blanket_approval_cannot_excuse_empirical_or_novelty_assertions(
+        self, turn, model_disposition
+    ):
+        rows = self._rows([turn])
+        rows[0]["grounding"] = model_disposition
+        if model_disposition == "nonfactual":
+            rows[0]["source_quote"] = None
+        with pytest.raises(claim_extraction.ClaimGroundingError, match="empirical/novelty/absence"):
+            self._extract(rows, turns=[turn])
+
+    def test_genuinely_attributed_scoped_observation_can_remain_qualified(self):
+        turn = (
+            "According to the article, the PHP sample lists exploit repositories; "
+            "it does not establish exploitation rates."
+        )
+        rows = self._rows([turn])
+        rows[0]["grounding"] = "qualified"
+        claims = self._extract(rows, turns=[turn])
+        assert claims[0].script_excerpt == turn
+        assert claims[0].verified is False
+
+    @pytest.mark.parametrize("source_kind", ["breaking_news", "article", "invented"])
+    def test_supplemental_evidence_retains_distinct_provenance(self, source_kind):
+        turn = "Orion released version 4 today."
+        rows = [
+            {
+                "script_excerpt": turn,
+                "grounding": "supported",
+                "source_quote": turn,
+                "source_kind": source_kind,
+                "verified": True,
+                "source_url": "https://invented.invalid",
+            }
+        ]
+
+        def extract():
+            return extract_claims(
+                article_content=self.source,
+                article_url="https://example.com/article",
+                breaking_news=turn,
+                config=_mock_config(),
+                script=f"Theo: {turn}",
+                token_provider=_fake_token_provider,
+                transport=_make_transport(json.dumps({"claims": rows})),
+            )
+
+        if source_kind != "breaking_news":
+            with pytest.raises(claim_extraction.ClaimGroundingError):
+                extract()
+        else:
+            ledger = json.loads(claims_to_ledger_json(extract()))
+            assert ledger[0]["source_kind"] == "breaking_news"
+            assert ledger[0]["source_url"] == ""
+            assert ledger[0]["source_quote"] == turn
+            assert ledger[0]["verified"] is False
+
+    def test_editor_notes_do_not_substitute_for_actual_spoken_qualification(self):
+        rows = self._rows()
+        rows[0].update(grounding="qualified", editor_notes="According to the article; not proof.")
+        with pytest.raises(claim_extraction.ClaimGroundingError, match="actual spoken text"):
+            self._extract(rows)
+
+    def test_truncated_grounding_completion_cannot_stage_partial_evidence(self):
+        with pytest.raises(claim_extraction.ClaimGroundingError, match="incomplete"):
+            self._extract(self._rows(), finish_reason="length")
 
 
 class TestExtractClaims:

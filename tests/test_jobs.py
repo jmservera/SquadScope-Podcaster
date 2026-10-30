@@ -7,6 +7,7 @@ import shutil
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import Mock
 from urllib.error import HTTPError
 from urllib.parse import urlparse
 from zipfile import ZipFile
@@ -38,6 +39,159 @@ VALID_ARTICLE_CONTENT = (
 )
 
 pytestmark = pytest.mark.usefixtures("offline_script_generation")
+
+
+@pytest.mark.parametrize("repair_succeeds", [True, False])
+def test_grounding_repair_stages_only_exact_corrected_script_or_fails_closed(
+    tmp_path, monkeypatch, repair_succeeds
+):
+    from podcaster import claim_extraction, jobs
+    from podcaster.episode import parse_script_segments
+
+    payload = {
+        "week": "2026-W44",
+        "article_url": "https://example.com/w44",
+        "article_title": "Source-grounded review",
+        "article_content": VALID_ARTICLE_CONTENT,
+    }
+    original = (
+        "Title: Original\n---\n"
+        "Theo: We witnessed a surge of exploit repositories.\n"
+        "Vera: Both voices are synthetic.\n"
+    )
+    corrected = (
+        "Title: Corrected\n---\n"
+        "Theo: The article explains a real product rollout and its engineering tradeoffs.\n"
+        "Vera: Both voices are synthetic.\n"
+    )
+    final = corrected if repair_succeeds else original
+    generator = Mock(side_effect=[original, final])
+    artifacts = Mock(wraps=jobs.generate_artifacts)
+    audits = []
+
+    def audit_transport(request):
+        body = json.loads(request.data)
+        audits.append(body)
+        script = original if len(audits) == 1 else final
+        turns = parse_script_segments(script, jobs.PodcastConfig())
+        rows = [
+            {
+                "script_excerpt": text,
+                "grounding": "supported" if index == 0 else "nonfactual",
+                "source_quote": VALID_ARTICLE_CONTENT if index == 0 else None,
+                "verified": True,
+            }
+            for index, (_, text) in enumerate(turns)
+        ]
+        return json.dumps(
+            {"choices": [{"message": {"content": json.dumps({"claims": rows})}}]}
+        ).encode()
+
+    monkeypatch.setattr(jobs, "generate_script", generator)
+    monkeypatch.setattr(jobs, "generate_artifacts", artifacts)
+    monkeypatch.setattr(jobs, "extract_claims", claim_extraction.extract_claims)
+    monkeypatch.setattr(claim_extraction, "_default_transport", audit_transport)
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    now = datetime(2026, 10, 30, 10, tzinfo=timezone.utc)
+    job_id = build_job_id(payload)
+    if repair_succeeds:
+        result = run_generation_job(payload, storage=storage, now=now)
+        assert storage.get_bytes(f"jobs/{job_id}/script.txt") == corrected.encode()
+        ledger = json.loads(storage.get_bytes(f"jobs/{job_id}/claim-ledger.json"))
+        assert [row["script_excerpt"] for row in ledger] == [
+            text for _, text in parse_script_segments(corrected, jobs.PodcastConfig())
+        ]
+        assert all(not row["verified"] for row in ledger)
+        assert result.manifest["status"] == "review_pending"
+        assert result.manifest["review"]["approved_by"] is None
+        assert result.manifest["review"]["gate"]["status"] == "blocked"
+        assert "rights_attribution" in result.manifest["review"]["gate"]["checks"]
+        assert result.manifest["generation"]["tts_synthesis"]["allowed"] is False
+        assert result.manifest["publishing"]["eligible"] is False
+        artifacts.assert_called_once()
+    else:
+        with pytest.raises(ScriptGenerationFailed, match="evidence limit.*exhausted 1") as caught:
+            run_generation_job(payload, storage=storage, now=now)
+        assert "turn 1" in caught.value.quality_reason
+        artifacts.assert_not_called()
+        assert storage.get_bytes(f"jobs/{job_id}/manifest.json") is None
+        assert storage.get_bytes(f"jobs/{job_id}/script.txt") is None
+        assert storage.get_bytes(f"jobs/{job_id}/packets/{job_id}.zip") is None
+        monthly = json.loads(storage.get_bytes(monthly_ledger_path("2026-10")))
+        assert not any(
+            row["job_id"] == job_id and row.get("state") == "reserved"
+            for row in monthly["episodes"]
+        )
+    assert generator.call_count == len(audits) == 2
+    first, second = [call.kwargs for call in generator.call_args_list]
+    assert "previous_script" not in first
+    assert second["previous_script"] == original
+    assert "turn 1" in second["repair_feedback"]
+
+
+def test_disjoint_breaking_news_survives_production_generation_and_alignment(tmp_path, monkeypatch):
+    from podcaster import claim_extraction, jobs, script_gen
+
+    news = "Orion released version 4 today."
+    article = VALID_ARTICLE_CONTENT.replace(
+        "This article explains", "The deployment report explains"
+    )
+    dialogue = (
+        "## Section: Hot off the press\n"
+        + "\n".join(f"{host}: {news}" for host in ("Theo", "Vera", "Theo", "Vera"))
+        + "\n## Section: Deployment details\n"
+        + "\n".join(f"{host}: {article}" for host in ("Theo", "Vera", "Theo", "Vera"))
+    )
+    prompts = []
+
+    def transport(request):
+        body = json.loads(request.data)
+        prompts.append(body)
+        if body.get("response_format"):
+            assert "BREAKING NEWS EVIDENCE" in body["messages"][1]["content"]
+            turns = script_gen.spoken_turns(generated[0], jobs.PodcastConfig())
+            rows = [
+                {
+                    "script_excerpt": turn,
+                    "grounding": "supported" if turn in (news, article) else "nonfactual",
+                    "source_quote": turn if turn in (news, article) else None,
+                    "source_kind": "breaking_news" if turn == news else "article",
+                }
+                for turn in turns
+            ]
+            content = json.dumps({"claims": rows})
+        else:
+            content = dialogue
+        return json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+
+    generated = []
+
+    def generate(**kwargs):
+        script = script_gen.generate_script(**kwargs, transport=transport)
+        generated.append(script)
+        return script
+
+    monkeypatch.setattr(jobs, "generate_script", generate)
+    monkeypatch.setattr(jobs, "extract_claims", claim_extraction.extract_claims)
+    monkeypatch.setattr(claim_extraction, "_default_transport", transport)
+    payload = {
+        "week": "2026-W44",
+        "article_url": "https://example.com/article",
+        "article_title": "Deployment report",
+        "article_content": article,
+        "breaking_news": news,
+    }
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    result = run_generation_job(payload, storage=storage)
+    ledger = json.loads(storage.get_bytes(f"jobs/{result.response['job_id']}/claim-ledger.json"))
+    supplemental = [row for row in ledger if row["source_kind"] == "breaking_news"]
+    assert len(prompts) == 2
+    assert len(supplemental) == 4
+    assert all(row["source_quote"] == news and row["source_url"] == "" for row in supplemental)
+    assert all(not row["verified"] for row in ledger)
+    assert result.manifest["status"] == "review_pending"
+    assert result.manifest["generation"]["tts_synthesis"]["allowed"] is False
+    assert result.manifest["publishing"]["eligible"] is False
 
 
 def test_publication_identity_is_persisted_without_changing_legacy_job_id(tmp_path) -> None:

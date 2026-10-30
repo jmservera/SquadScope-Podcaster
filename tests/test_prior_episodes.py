@@ -328,7 +328,9 @@ def test_prior_selection_excludes_newer_week_and_uses_same_week_creation_time() 
     assert "jobs/podcast-2026-W26-aaaaaaaaaaaa/script.txt" not in storage.read_paths
 
 
-def test_run_generation_job_threads_auto_prior_episode_themes(monkeypatch, tmp_path: Path) -> None:
+def test_run_generation_job_threads_auto_prior_episode_themes(
+    monkeypatch, tmp_path: Path, offline_script_generation
+) -> None:
     storage = LocalStorageBackend(tmp_path / "artifacts", "https://example.invalid/artifacts")
     captured: dict[str, object] = {}
 

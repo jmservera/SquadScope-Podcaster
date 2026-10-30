@@ -588,6 +588,98 @@ class TestSuccessfulGeneration:
         assert handler.get_response_json()["errors"] == ["internal server error"]
         mock_report.assert_called_once()
 
+    @pytest.mark.parametrize("safe_quality_reason", [True, False])
+    @patch("podcaster.api.report_failure")
+    @patch("podcaster.api.run_generation_job")
+    def test_script_quality_contract_502_is_actionable_without_provider_detail_leak(
+        self, mock_run, mock_report, safe_quality_reason
+    ):
+        from podcaster.jobs import ScriptGenerationFailed
+        from podcaster.validation import RESPONSE_KEYS
+
+        reason = (
+            "final canonical script has 751 spoken words; requested 1200-1700 inclusive; "
+            "exhausted 2 length repairs"
+        )
+        mock_run.side_effect = ScriptGenerationFailed(
+            "private-provider-token-and-endpoint",
+            quality_reason=reason if safe_quality_reason else None,
+        )
+        body = json.dumps(
+            {"week": "2026-W44", "article_url": "https://example.com/article"}
+        ).encode()
+        handler = make_handler("POST", "/api/generate", body=body, headers=self._headers(body))
+        assert handler.response_code == HTTPStatus.BAD_GATEWAY
+        response = handler.get_response_json()
+        assert set(response) == set(RESPONSE_KEYS)
+        assert response["status"] == "failed"
+        assert (reason in response["errors"][0]) is safe_quality_reason
+        assert "no episode was produced" in response["errors"][0]
+        assert "private-provider" not in json.dumps(response)
+        mock_report.assert_called_once()
+
+    @pytest.mark.parametrize("failure", ["provider", "section"])
+    @patch("podcaster.api.report_failure")
+    def test_real_generation_quality_errors_do_not_echo_upstream_text(
+        self, mock_report, tmp_path, monkeypatch, offline_script_generation, failure
+    ):
+        from podcaster.costs import monthly_ledger_path
+        from podcaster.storage import LocalStorageBackend
+        from podcaster.validation import RESPONSE_KEYS
+
+        calls = []
+
+        def transport(request):
+            calls.append(request)
+            if len(calls) == 1:
+                dialogue = "\n".join(
+                    f"## Section: {title}\n"
+                    + "\n".join(f"{host}: Brief." for host in ("Theo", "Vera", "Theo", "Vera"))
+                    for title in ("PRIVATE_TITLE_CANARY", "Second")
+                )
+            else:
+                dialogue = "Theo: " + "word " * 1200 + "\nVera: Indeed."
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {"content": dialogue},
+                            "finish_reason": "PRIVATE_PROVIDER_CANARY"
+                            if failure == "provider"
+                            else "stop",
+                        }
+                    ]
+                }
+            ).encode()
+
+        monkeypatch.setattr("podcaster.script_gen._default_transport", transport)
+        monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
+        monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(tmp_path))
+        body = json.dumps(
+            {
+                "week": "2026-W44",
+                "article_url": "https://example.com/article",
+                "article_title": "Deployment evidence",
+                "article_content": "The source describes a product rollout, engineering tradeoffs, "
+                "customer impact, and competitive context in enough detail for a substantive "
+                "weekly discussion of the deployment evidence.",
+                "script_directions": {"episode_style": {"format": "1200-1700 words"}},
+            }
+        ).encode()
+        handler = make_handler("POST", "/api/generate", body=body, headers=self._headers(body))
+        response = handler.get_response_json()
+        assert handler.response_code == HTTPStatus.BAD_GATEWAY
+        assert set(response) == set(RESPONSE_KEYS)
+        assert "PRIVATE_" not in json.dumps(response)
+        assert ("completion incomplete" if failure == "provider" else "section validation") in (
+            response["errors"][0]
+        )
+        assert len(calls) == (1 if failure == "provider" else 3)
+        storage = LocalStorageBackend(tmp_path, "https://test.example")
+        monthly = json.loads(storage.get_bytes(monthly_ledger_path("2026-10")))
+        assert not any(row.get("state") == "reserved" for row in monthly["episodes"])
+        mock_report.assert_called_once()
+
     def test_wrong_path_returns_404(self):
         body = json.dumps({"week": "2026-W24", "article_url": "https://example.com/a"}).encode()
         handler = make_handler("POST", "/api/wrong", body=body, headers=self._headers(body))

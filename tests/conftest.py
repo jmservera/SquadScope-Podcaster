@@ -18,6 +18,24 @@ from unittest.mock import Mock
 import pytest
 
 
+def _offline_script_claims(*, script, podcast_config, article_content, article_url, **kwargs):
+    from podcaster.claim_extraction import Claim
+    from podcaster.episode import parse_script_segments
+
+    return [
+        Claim(
+            claim_id=f"claim_{index:03d}",
+            script_excerpt=text,
+            source_url=article_url,
+            source_quote=article_content,
+            source_paragraph=1,
+            verified=False,
+            editor_notes="Offline fixture source alignment only; human review still required.",
+        )
+        for index, (_, text) in enumerate(parse_script_segments(script, podcast_config), 1)
+    ]
+
+
 @pytest.fixture
 def offline_script_generation(monkeypatch):
     """Provide configured production generation with only an offline LLM transport."""
@@ -54,7 +72,7 @@ def offline_script_generation(monkeypatch):
         "podcaster.script_gen.ManagedIdentityTokenCredential.get_token",
         staticmethod(lambda scope: "offline-test-token"),
     )
-    monkeypatch.setattr("podcaster.jobs.extract_claims", lambda **kwargs: [])
+    monkeypatch.setattr("podcaster.jobs.extract_claims", _offline_script_claims)
 
 
 @pytest.fixture(autouse=True)
@@ -94,7 +112,7 @@ def reviewed_stage(tmp_path, monkeypatch):
     )
     generator = Mock(return_value=script)
     monkeypatch.setattr("podcaster.jobs.generate_script", generator)
-    monkeypatch.setattr("podcaster.jobs.extract_claims", lambda **kwargs: [])
+    monkeypatch.setattr("podcaster.jobs.extract_claims", _offline_script_claims)
 
     class Producer:
         def __init__(self):
