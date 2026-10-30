@@ -9,9 +9,10 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 
 from podcaster.distribution_outbox import (
-    RECOVERY_MUTATION_OPERATION_TYPES,
     DistributionOutboxError,
     DistributionOutboxRepository,
+    _bound_outbox_receipts,
+    _bound_recovery_readback,
     aggregate_exit_code,
     outbox_id_for,
     weekly_state_from_attempts,
@@ -116,113 +117,6 @@ def _stage(state: Any, *, synthesis: bool = False) -> str:
 
 def _outbox_token(value: Any) -> bool:
     return isinstance(value, str) and _CORRELATION.fullmatch(value) is not None
-
-
-def _bound_outbox_operation(record: Mapping[str, Any], provider: str) -> bool:
-    operation = record.get("operation")
-    operation_type = record.get("operation_type")
-    return (
-        isinstance(operation, str)
-        and isinstance(operation_type, str)
-        and bool(operation_type)
-        and RECOVERY_MUTATION_OPERATION_TYPES.get(provider, {}).get(operation) == operation_type
-    )
-
-
-def _bound_outbox_receipts(leg: Mapping[str, Any], provider: str, attempt_ids: set[str]) -> bool:
-    receipts = leg.get("receipts")
-    verification = leg.get("verification")
-    history = leg.get("intent_history", [])
-    if (
-        not isinstance(receipts, list)
-        or not receipts
-        or not isinstance(verification, dict)
-        or not isinstance(history, list)
-    ):
-        return False
-    intents = [*history, leg.get("intent")]
-    if any(
-        not isinstance(intent, dict)
-        or not _outbox_token(intent.get("intent_id"))
-        or not _bound_outbox_operation(intent, provider)
-        for intent in intents
-    ):
-        return False
-    by_id = {intent.get("intent_id"): intent for intent in intents}
-    if len(by_id) != len(intents) or None in by_id:
-        return False
-    receipt_ids = set()
-    seen_intents = set()
-    for receipt in receipts:
-        if (
-            not isinstance(receipt, dict)
-            or not all(
-                _outbox_token(receipt.get(field))
-                for field in ("receipt_id", "intent_id", "attempt_id", "provider_item_id")
-            )
-            or not _bound_outbox_operation(receipt, provider)
-        ):
-            return False
-        intent = by_id.get(receipt.get("intent_id"))
-        if (
-            intent is None
-            or not intent.get("consumed_at")
-            or not isinstance(intent.get("consumed_owner"), str)
-            or not _CORRELATION.fullmatch(intent["consumed_owner"])
-            or not isinstance(receipt.get("consumed_owner"), str)
-            or not _CORRELATION.fullmatch(receipt["consumed_owner"])
-            or type(intent.get("consumed_fence")) is not int
-            or intent["consumed_fence"] < 1
-            or type(receipt.get("fencing_token")) is not int
-            or receipt["fencing_token"] < 1
-            or receipt.get("receipt_id") in receipt_ids
-            or not receipt.get("receipt_id")
-            or receipt.get("intent_id") in seen_intents
-            or any(
-                receipt.get(field) != intent.get(field)
-                for field in ("operation", "operation_type", "consumed_owner")
-            )
-            or receipt.get("attempt_id") != intent.get("consumed_attempt_id")
-            or receipt.get("attempt_id") not in attempt_ids
-            or receipt.get("fencing_token") != intent.get("consumed_fence")
-            or receipt.get("provider") != provider
-            or intent.get("provider") != provider
-            or receipt.get("ambiguous") is not False
-            or receipt.get("transport_class") != "accepted"
-            or not receipt.get("provider_item_id")
-            or receipt["provider_item_id"] != verification.get("provider_item_id")
-            or _timestamp(receipt.get("at")) is None
-            or _timestamp(intent["consumed_at"]) is None
-            or _timestamp(receipt["at"]) < _timestamp(intent["consumed_at"])
-        ):
-            return False
-        receipt_ids.add(receipt["receipt_id"])
-        seen_intents.add(receipt["intent_id"])
-    return seen_intents == set(by_id) and _timestamp(verification.get("at")) is not None
-
-
-def _bound_recovery_readback(leg: Mapping[str, Any], provider: str) -> bool:
-    intent = leg.get("intent")
-    verification = leg.get("verification")
-    return (
-        leg.get("receipts") == []
-        and leg.get("intent_history", []) == []
-        and isinstance(intent, dict)
-        and _outbox_token(intent.get("intent_id"))
-        and intent.get("provider") == provider
-        and intent.get("operation") == "recovery_readback"
-        and intent.get("operation_type") == "readback"
-        and isinstance(verification, dict)
-        and leg.get("result") == "externally_verified_public"
-        and verification.get("result") == leg["result"]
-        and _outbox_token(intent.get("expected_provider_item_id"))
-        and intent["expected_provider_item_id"] == verification.get("provider_item_id")
-        and _timestamp(verification.get("at")) is not None
-        and all(
-            intent.get(field) is None
-            for field in ("consumed_at", "consumed_owner", "consumed_fence", "consumed_attempt_id")
-        )
-    )
 
 
 def _outbox_provider_status(

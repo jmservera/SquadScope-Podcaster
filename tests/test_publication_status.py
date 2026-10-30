@@ -19,6 +19,7 @@ from podcaster.distribution_outbox import (
     exact_recovery_authorization_evidence,
     exact_verification_proof,
     outbox_path,
+    weekly_state_from_attempts,
 )
 from podcaster.publication_state import (
     append_evidence,
@@ -311,6 +312,173 @@ def test_authorized_read_only_recovery_preserves_failed_attempt_and_weekly_truth
         else:
             assert result["state"] != "published"
             assert result["external_verified"] is False
+
+
+@pytest.fixture(params=["canonical", "recovered"])
+def terminal_publication(request):
+    fixture = request.getfixturevalue(request.param)
+    storage, query, document = fixture[0], fixture[-2], fixture[-1]
+    return storage, query, DistributionOutboxRepository(storage).read(document["outbox_id"])
+
+
+def _assert_terminal_evidence_rejected(terminal_publication, monkeypatch):
+    storage, query, document = terminal_publication
+    storage.data[outbox_path(document["outbox_id"])] = json.dumps(document).encode()
+    before = copy.deepcopy(storage.data)
+    monkeypatch.setattr(storage, "update_bytes", MagicMock(side_effect=AssertionError))
+    assert aggregate_exit_code([document]) == 1
+    assert weekly_state_from_attempts(document["attempts"], weekly_record=document) not in {
+        "published_verified",
+        "published_verified_recovered",
+    }
+    result = publication_status(
+        storage, query, now=NOW, youtube_readback=MagicMock(side_effect=AssertionError)
+    )["provider"]
+    assert result["state"] != "published"
+    assert result["external_verified"] is False
+    assert all(leg["state"] != "published" for leg in result["providers"].values())
+    assert storage.data == before
+
+
+@pytest.mark.parametrize("provider", ["youtube", "spotify"])
+@pytest.mark.parametrize("fence", ["absent", None, 0, "1", True, 999999])
+def test_terminal_verification_requires_bound_typed_fence(
+    terminal_publication, monkeypatch, provider, fence
+):
+    _, _, document = terminal_publication
+    verification = document["providers"][provider]["verification"]
+    if fence == "absent":
+        verification.pop("fencing_token")
+    else:
+        verification["fencing_token"] = fence
+    _assert_terminal_evidence_rejected(terminal_publication, monkeypatch)
+
+
+@pytest.mark.parametrize("provider", ["youtube", "spotify"])
+@pytest.mark.parametrize("receipts", ["absent", None, {}, "", 1, True, [None], ["receipt"]])
+def test_terminal_proof_fails_closed_for_malformed_receipt_collection(
+    terminal_publication, monkeypatch, provider, receipts
+):
+    _, _, document = terminal_publication
+    if receipts == "absent":
+        document["providers"][provider].pop("receipts")
+    else:
+        document["providers"][provider]["receipts"] = receipts
+    _assert_terminal_evidence_rejected(terminal_publication, monkeypatch)
+
+
+@pytest.mark.parametrize("provider", ["youtube", "spotify"])
+def test_terminal_mutation_requires_nonempty_receipts(canonical, monkeypatch, provider):
+    storage, _, query, document = canonical
+    document["providers"][provider]["receipts"] = []
+    _assert_terminal_evidence_rejected((storage, query, document), monkeypatch)
+
+
+@pytest.mark.parametrize("provider", ["youtube", "spotify"])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "snapshot",
+        "claim_fence",
+        "document_fence",
+        "owner",
+        "claim_id",
+        "execution_id",
+        "event_time",
+    ],
+)
+def test_terminal_proof_requires_immutable_attempt_and_typed_claim_identity(
+    terminal_publication, monkeypatch, provider, fault
+):
+    _, _, document = terminal_publication
+    attempt = document["attempts"][-1]
+    if fault == "snapshot":
+        attempt["provider_evidence"][provider]["verification"]["source"] = "other_readback"
+    else:
+        claim_event = next(
+            event for event in attempt["events"] if event["state"] in {"claimed", "reconciling"}
+        )
+        if fault == "claim_fence":
+            # Even symmetrical top-level/snapshot corruption cannot invent a claim.
+            document["fencing_token"] = 999999
+            document["providers"][provider]["verification"]["fencing_token"] = 999999
+            attempt["provider_evidence"][provider]["verification"]["fencing_token"] = 999999
+        elif fault == "event_time":
+            claim_event["at"] = None
+        elif fault == "document_fence":
+            document["fencing_token"] += 1
+        else:
+            claim_event[fault] = True
+    _assert_terminal_evidence_rejected(terminal_publication, monkeypatch)
+
+
+def test_later_readback_uses_its_claim_not_mutation_fence_and_preserves_history(
+    terminal_publication, monkeypatch
+):
+    storage, query, document = terminal_publication
+    original = copy.deepcopy(document["attempts"][-1]["provider_evidence"])
+    repository = DistributionOutboxRepository(storage, now=lambda: NOW + timedelta(minutes=10))
+    claim = repository.claim(
+        document["outbox_id"], owner="reconciler", execution_id="later", lease_seconds=300
+    )
+    assert claim.read_only is True
+    assert claim.fencing_token > document["fencing_token"]
+    for provider in ("youtube", "spotify"):
+        leg = document["providers"][provider]
+        repository.record_verification(
+            claim,
+            provider=provider,
+            result="externally_verified_public",
+            source="provider_readback",
+            provider_item_id=leg["verification"]["provider_item_id"],
+            native_state="public",
+            proof=exact_verification_proof(
+                document, provider_item_id=leg["verification"]["provider_item_id"]
+            ),
+        )
+        in_flight = repository.read(document["outbox_id"])
+        assert aggregate_exit_code([in_flight]) == 0
+    released = repository.release(claim)
+    assert released["attempts"][-1]["provider_evidence"] == original
+    assert released["attempts"][:-1] == document["attempts"][:-1]
+    assert all(
+        receipt["fencing_token"] < leg["verification"]["fencing_token"]
+        for leg in released["providers"].values()
+        for receipt in leg["receipts"]
+    )
+    before = copy.deepcopy(storage.data)
+    monkeypatch.setattr(storage, "update_bytes", MagicMock(side_effect=AssertionError))
+    result = publication_status(
+        storage, query, now=NOW, youtube_readback=MagicMock(side_effect=AssertionError)
+    )["provider"]
+    assert aggregate_exit_code([released]) == 0
+    assert result["state"] == "published"
+    assert result["external_verified"] is True
+    assert storage.data == before
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("owner", "other-owner"),
+        ("claim_id", "other-claim"),
+        ("execution_id", "other-execution"),
+        ("attempt_id", "other-attempt"),
+        ("fencing_token", True),
+        ("fencing_token", "2"),
+    ],
+)
+def test_current_claim_identity_must_match_durable_winning_attempt(
+    canonical, monkeypatch, field, value
+):
+    storage, _, query, document = canonical
+    repository = DistributionOutboxRepository(storage, now=lambda: NOW)
+    repository.claim(
+        document["outbox_id"], owner="reconciler", execution_id="later", lease_seconds=300
+    )
+    document = repository.read(document["outbox_id"])
+    document["claim"][field] = value
+    _assert_terminal_evidence_rejected((storage, query, document), monkeypatch)
 
 
 @pytest.mark.parametrize("provider", ["youtube", "spotify"])

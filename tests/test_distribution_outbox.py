@@ -337,6 +337,7 @@ def test_receipt_and_external_readback_are_required_for_public_success(setup):
             native_state="public",
             proof=exact_verification_proof(document, provider_item_id=f"{provider}-id"),
         )
+    assert aggregate_exit_code([repository.read(document["outbox_id"])]) == 0
     state = repository.release(claim)
     assert state["state"] == "completed_public"
     assert state["aggregate"]["externally_verified_public"] is True
@@ -2458,8 +2459,8 @@ def test_weekly_attempt_precedence_is_deterministic():
     )
 
 
-def test_four_cycle_acceptance_requires_complete_authoritative_envelopes():
-    green = [_authoritative_cycle(f"2026-W{week}") for week in range(35, 39)]
+def test_four_cycle_acceptance_requires_complete_authoritative_envelopes(setup):
+    green = [_authoritative_cycle(f"2026-W{week}", setup) for week in range(35, 39)]
     assert four_cycle_acceptance(green) is True
     green[2]["providers"]["youtube"]["verification"]["proof"]["green"] = False
     assert four_cycle_acceptance(green) is False
@@ -2470,11 +2471,11 @@ def test_four_cycle_acceptance_requires_complete_authoritative_envelopes():
         )
         is False
     )
-    tampered = [_authoritative_cycle(f"2026-W{week}") for week in range(35, 39)]
+    tampered = [_authoritative_cycle(f"2026-W{week}", setup) for week in range(35, 39)]
     tampered[2]["publication_identity"]["accepted_job_id"] = "tampered-job"
     assert four_cycle_acceptance(tampered) is False
     recovered_without_authorization = [
-        _authoritative_cycle(f"2026-W{week}") for week in range(35, 39)
+        _authoritative_cycle(f"2026-W{week}", setup) for week in range(35, 39)
     ]
     recovered_without_authorization[2]["weekly_aggregation"]["state"] = (
         "published_verified_recovered"
@@ -2500,8 +2501,8 @@ def test_four_cycle_acceptance_requires_complete_authoritative_envelopes():
         ].__setitem__("duplicate_ambiguity_resolved", False),
     ],
 )
-def test_four_cycle_acceptance_rejects_identity_tampering(mutate):
-    cycles = [_authoritative_cycle(f"2026-W{week}") for week in range(35, 39)]
+def test_four_cycle_acceptance_rejects_identity_tampering(setup, mutate):
+    cycles = [_authoritative_cycle(f"2026-W{week}", setup) for week in range(35, 39)]
     mutate(cycles[1])
     assert four_cycle_acceptance(cycles) is False
 
@@ -2762,80 +2763,49 @@ def test_cleanup_fails_closed_while_legacy_reference_scan_is_incomplete(tmp_path
     assert storage.blob_exists(artifact.path)
 
 
-def _authoritative_cycle(week):
-    attempt_id = f"attempt-{week}"
-    provider_ids = ["youtube-id", "spotify-id"]
-    identity = {
-        "week": week,
-        "accepted_job_id": f"job-{week}",
-        "publish_run_id": f"run-{week}",
-        "article_sha256": "b" * 64,
-        "manifest_sha256": "c" * 64,
-    }
-    artifact = {"sha256": "a" * 64, "media_kind": "video"}
-    publication_digest = hashlib.sha256(
-        "|".join(
-            (
-                identity["accepted_job_id"],
-                identity["week"],
-                identity["publish_run_id"],
-                identity["article_sha256"],
-                identity["manifest_sha256"],
-                artifact["sha256"],
-                artifact["media_kind"],
-            )
-        ).encode()
-    ).hexdigest()
-    document = {
-        "outbox_id": f"outbox-{week}",
-        "publication_identity": {
-            **identity,
-        },
-        "publication_digest": publication_digest,
-        "artifact": artifact,
-        "canonical_artifact": {
-            "artifact_id": "a" * 64,
-            "selected": True,
-            "selection_version": "v1",
-        },
-        "attempts": [{"attempt_id": attempt_id, "terminal_outcome": "published_verified"}],
-        "recovery_authz": [],
-        "providers": {
-            provider: {
-                "result": "externally_verified_public",
-                "intent": {"expected_provider_item_id": provider_id},
-                "verification": {
-                    "provider_item_id": provider_id,
-                    "source": f"{provider}_readback",
-                    "native_state": "public" if provider == "youtube" else "published",
-                },
-            }
-            for provider, provider_id in zip(("youtube", "spotify"), provider_ids, strict=True)
-        },
-        "weekly_aggregation": {
-            "state": "published_verified",
-            "decision_id": f"decision-{week}",
-            "rule_version": "weekly-publication-truth-v1",
-            "evaluated_attempt_ids": [attempt_id],
-            "winning_attempt_id": attempt_id,
-            "proof_references": provider_ids,
-            "unresolved_conditions": [],
-            "worker_exit_class": "zero",
-        },
-        "aggregate": {"externally_verified_public": True},
-    }
-    for provider, provider_id in zip(("youtube", "spotify"), provider_ids, strict=True):
-        proof_evidence = exact_verification_proof(document, provider_item_id=provider_id)
-        leg = document["providers"][provider]
-        leg["verification"]["proof"] = DistributionOutboxRepository._verification_proof(
-            document,
-            leg,
-            provider_item_id=provider_id,
-            native_state=leg["verification"]["native_state"],
-            source=leg["verification"]["source"],
-            proof=proof_evidence,
+def _authoritative_cycle(week, setup):
+    _storage, repository, _clock, initial, _created = setup
+    identity = PublicationIdentity(
+        accepted_job_id=f"job-{week}",
+        week=week,
+        publish_run_id=f"run-{week}",
+        article_sha256="b" * 64,
+        manifest_sha256="c" * 64,
+    )
+    document, created = repository.enqueue(
+        identity,
+        _artifact(initial),
+        provider_objectives={"youtube": "public", "spotify": "public"},
+        enqueue_source="test",
+        enqueue_version="v1",
+    )
+    if not created:
+        return document
+    claim = repository.claim(
+        document["outbox_id"], owner="worker", execution_id=week, lease_seconds=300
+    )
+    for provider, operation in (("youtube", "upload"), ("spotify", "create")):
+        repository.persist_intent(claim, provider=provider, operation=operation)
+        repository.consume_intent(
+            claim, provider=provider, provider_timeout_seconds=30, receipt_margin_seconds=10
         )
-    return document
+        repository.record_receipt(
+            claim,
+            provider=provider,
+            transport_class="accepted",
+            provider_item_id=f"{provider}-id",
+            native_state="public",
+        )
+        repository.record_verification(
+            claim,
+            provider=provider,
+            result="externally_verified_public",
+            source=f"{provider}_readback",
+            provider_item_id=f"{provider}-id",
+            native_state="public",
+            proof=exact_verification_proof(document, provider_item_id=f"{provider}-id"),
+        )
+    return repository.release(claim)
 
 
 def _artifact(document):
