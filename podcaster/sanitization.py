@@ -16,6 +16,7 @@ detected injection markers for observability.
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 
@@ -156,6 +157,15 @@ def fence(value: object, *, limit: int = FIELD_LIMITS["text"]) -> str:
     text = neutralize(value, limit=limit)
     text = text.replace(FENCE_OPEN, "U+300A").replace(FENCE_CLOSE, "U+300A")
     return f"{FENCE_OPEN}{text}{FENCE_CLOSE}"
+
+
+def fence_json(value: object) -> str:
+    """Losslessly fence JSON data; callers bound raw evidence before serialization.
+
+    ASCII escaping preserves Unicode/control characters without allowing literal
+    fence delimiters or new structural lines inside the serialized data.
+    """
+    return f"{FENCE_OPEN}{json.dumps(value, ensure_ascii=True)}{FENCE_CLOSE}"
 
 
 # Source-artifact object fields that may be echoed into human/LLM-readable

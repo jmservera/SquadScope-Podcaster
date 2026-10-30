@@ -54,6 +54,9 @@ Config-driven podcast generation engine. Receives article content and editorial 
    host turns. Repair diagnostics are capped, fenced untrusted data; public
    quality failures expose only fixed messages and numeric constraints.
    Production claim alignment accounts for every exact final spoken turn.
+   Audit prompts losslessly JSON-encode complete turns and bounded raw evidence
+   inside untrusted fences; quote matching uses those same decoded evidence
+   buffers, preserving Unicode and whitespace without exposing fence delimiters.
    Literal evidence is bound to either the article or separately supplied
    breaking news (`source_kind`); supplemental material has no invented article
    URL. Known empirical/novelty/absence formulations are conservatively rejected

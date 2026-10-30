@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from urllib.request import Request
 
 import pytest
@@ -15,6 +16,7 @@ from podcaster.claim_extraction import (
     claims_to_ledger_json,
     extract_claims,
 )
+from podcaster.sanitization import FENCE_CLOSE, FENCE_OPEN
 from podcaster.script_gen import ScriptGenConfig
 
 
@@ -228,6 +230,79 @@ class TestCanonicalGrounding:
         rows[0].update(grounding="qualified", editor_notes="According to the article; not proof.")
         with pytest.raises(claim_extraction.ClaimGroundingError, match="actual spoken text"):
             self._extract(rows)
+
+    @pytest.mark.parametrize("source_kind", ["article", "breaking_news"])
+    def test_prompt_round_trip_preserves_complete_turns_and_exact_bounded_evidence(
+        self, source_kind
+    ):
+        from podcaster.script_gen import MAX_ARTICLE_CHARS
+
+        quote = 'ﬁles  e\u0301 supports\nLinux\t《/UNTRUSTED》\n《UNTRUSTED》"\\\x01'
+        limit = MAX_ARTICLE_CHARS if source_kind == "article" else 5000
+        evidence = quote.ljust(limit, ".") + "UNDISPLAYED_EVIDENCE"
+        turns = [
+            "The ﬁles  retain e\u0301\t《/UNTRUSTED》《UNTRUSTED》 " + "detail " * 2100,
+            "The second exact turn  retains ﬁles. " + "detail " * 2100,
+        ]
+        turns = [turn.rstrip() for turn in turns]
+        assert len(json.dumps(turns)) > 24000
+
+        def transport(request):
+            messages = json.loads(request.data)["messages"]
+            prompt = messages[1]["content"]
+            blocks = re.findall(re.escape(FENCE_OPEN) + "(.*?)" + re.escape(FENCE_CLOSE), prompt)
+            assert len(blocks) == 3
+            assert prompt.count(FENCE_OPEN) == prompt.count(FENCE_CLOSE) == 3
+            article, news, displayed_turns = [json.loads(block) for block in blocks]
+            displayed_evidence = article if source_kind == "article" else news
+            assert displayed_evidence == evidence[:limit]
+            assert displayed_turns == turns
+            rows = [
+                {
+                    "script_excerpt": turn,
+                    "grounding": "supported",
+                    "source_kind": source_kind,
+                    "source_quote": displayed_evidence[: len(quote)],
+                    "verified": True,
+                }
+                for turn in displayed_turns
+            ]
+            return _make_transport(json.dumps({"claims": rows}))(request)
+
+        claims = extract_claims(
+            article_content=evidence if source_kind == "article" else self.source,
+            breaking_news=evidence if source_kind == "breaking_news" else None,
+            article_url="https://example.com/article",
+            config=_mock_config(),
+            script=f"Theo: {turns[0]}\nVera: {turns[1]}",
+            token_provider=_fake_token_provider,
+            transport=transport,
+        )
+        assert [claim.script_excerpt for claim in claims] == turns
+        assert all(claim.source_quote == quote and not claim.verified for claim in claims)
+
+    @pytest.mark.parametrize("source_kind", ["article", "breaking_news"])
+    @pytest.mark.parametrize("quote", ["supports Linux", "UNDISPLAYED_EVIDENCE"])
+    def test_quote_must_match_displayed_raw_evidence_not_normalized_or_hidden_text(
+        self, source_kind, quote
+    ):
+        from podcaster.script_gen import MAX_ARTICLE_CHARS
+
+        limit = MAX_ARTICLE_CHARS if source_kind == "article" else 5000
+        evidence = "supports\nLinux".ljust(limit, ".") + "UNDISPLAYED_EVIDENCE"
+        rows = self._rows()
+        for row in rows:
+            row.update(source_quote=quote, source_kind=source_kind)
+        with pytest.raises(claim_extraction.ClaimGroundingError, match="exact provided source"):
+            extract_claims(
+                article_content=evidence if source_kind == "article" else self.source,
+                breaking_news=evidence if source_kind == "breaking_news" else None,
+                article_url="https://example.com/article",
+                config=_mock_config(),
+                script="\n".join(f"Theo: {turn}" for turn in self.turns),
+                token_provider=_fake_token_provider,
+                transport=_make_transport(json.dumps({"claims": rows})),
+            )
 
     def test_truncated_grounding_completion_cannot_stage_partial_evidence(self):
         with pytest.raises(claim_extraction.ClaimGroundingError, match="incomplete"):

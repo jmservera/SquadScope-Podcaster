@@ -6,6 +6,8 @@ import io
 import json
 import logging
 import os
+from datetime import datetime, timezone
+from functools import partial
 from http import HTTPStatus
 from typing import Any
 from unittest.mock import patch
@@ -619,11 +621,13 @@ class TestSuccessfulGeneration:
         mock_report.assert_called_once()
 
     @pytest.mark.parametrize("failure", ["provider", "section"])
+    @pytest.mark.parametrize("month", [1, 10])
     @patch("podcaster.api.report_failure")
     def test_real_generation_quality_errors_do_not_echo_upstream_text(
-        self, mock_report, tmp_path, monkeypatch, offline_script_generation, failure
+        self, mock_report, tmp_path, monkeypatch, offline_script_generation, failure, month
     ):
         from podcaster.costs import monthly_ledger_path
+        from podcaster.jobs import run_generation_job
         from podcaster.storage import LocalStorageBackend
         from podcaster.validation import RESPONSE_KEYS
 
@@ -655,6 +659,10 @@ class TestSuccessfulGeneration:
         monkeypatch.setattr("podcaster.script_gen._default_transport", transport)
         monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
         monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(tmp_path))
+        current = datetime(2026, month, 15, tzinfo=timezone.utc)
+        monkeypatch.setattr(
+            "podcaster.api.run_generation_job", partial(run_generation_job, now=current)
+        )
         body = json.dumps(
             {
                 "week": "2026-W44",
@@ -676,7 +684,7 @@ class TestSuccessfulGeneration:
         )
         assert len(calls) == (1 if failure == "provider" else 3)
         storage = LocalStorageBackend(tmp_path, "https://test.example")
-        monthly = json.loads(storage.get_bytes(monthly_ledger_path("2026-10")))
+        monthly = json.loads(storage.get_bytes(monthly_ledger_path(current.strftime("%Y-%m"))))
         assert not any(row.get("state") == "reserved" for row in monthly["episodes"])
         mock_report.assert_called_once()
 

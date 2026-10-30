@@ -705,14 +705,26 @@ class TestGenerateEndpoint:
         assert resp.json()["errors"] == ["replay output already exists"]
         assert "private storage path" not in resp.text
 
+    @pytest.mark.parametrize(
+        "quality_reason",
+        [
+            None,
+            "final canonical script has 751 spoken words; requested 1200-1700 inclusive; "
+            "exhausted 2 length repairs",
+            "canonical script grounding failed after 1 repairs; 31 spoken turns",
+        ],
+    )
     @patch("podcaster.monitoring.report_failure")
     @patch("podcaster.monitoring.run_generation_job")
     def test_script_generation_failure_returns_502(
-        self, mock_run_generation_job, mock_report_failure, client, storage
+        self, mock_run_generation_job, mock_report_failure, client, storage, quality_reason
     ):
         from podcaster.jobs import ScriptGenerationFailed
+        from podcaster.validation import RESPONSE_KEYS
 
-        mock_run_generation_job.side_effect = ScriptGenerationFailed("secret detail")
+        mock_run_generation_job.side_effect = ScriptGenerationFailed(
+            "secret detail", quality_reason=quality_reason
+        )
 
         resp = client.post(
             "/api/generate",
@@ -721,10 +733,67 @@ class TestGenerateEndpoint:
 
         assert resp.status_code == 502
         body = resp.json()
+        assert set(body) == set(RESPONSE_KEYS)
         assert body["status"] == "failed"
-        assert body["errors"] == ["script generation failed; no episode was produced"]
+        expected = "script generation failed; no episode was produced"
+        if quality_reason:
+            expected += f"; {quality_reason}"
+        assert body["errors"] == [expected]
         assert "secret detail" not in resp.text
         assert mock_report_failure.call_args.kwargs["error_type"] == "ScriptGenerationFailed"
+
+    @patch("podcaster.monitoring.report_failure")
+    def test_real_generation_quality_failure_returns_safe_reason_and_releases_budget(
+        self, mock_report, client, tmp_path, monkeypatch, offline_script_generation
+    ):
+        from functools import partial
+
+        from podcaster.costs import monthly_ledger_path
+        from podcaster.jobs import run_generation_job
+        from podcaster.storage import LocalStorageBackend
+        from podcaster.validation import RESPONSE_KEYS
+
+        monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
+        monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(tmp_path))
+        current = datetime(2026, 1, 15, tzinfo=timezone.utc)
+        monkeypatch.setattr(
+            "podcaster.monitoring.run_generation_job",
+            partial(run_generation_job, now=current),
+        )
+
+        def transport(request):
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {"content": "Theo: PRIVATE_CONTENT_CANARY"},
+                            "finish_reason": "PRIVATE_PROVIDER_CANARY",
+                        }
+                    ]
+                }
+            ).encode()
+
+        monkeypatch.setattr("podcaster.script_gen._default_transport", transport)
+        response = client.post(
+            "/api/generate",
+            json={
+                "week": "2026-W44",
+                "article_url": "https://example.com/article",
+                "article_title": "Deployment evidence",
+                "article_content": "The source describes a product rollout, engineering tradeoffs, "
+                "customer impact, and competitive context in enough detail for a substantive "
+                "weekly discussion of the deployment evidence.",
+                "script_directions": {"episode_style": {"format": "1200-1700 words"}},
+            },
+        )
+        assert response.status_code == 502
+        assert set(response.json()) == set(RESPONSE_KEYS)
+        assert "completion incomplete; completion budget=" in response.json()["errors"][0]
+        assert "PRIVATE_" not in response.text
+        storage = LocalStorageBackend(tmp_path, "https://test.example")
+        ledger = json.loads(storage.get_bytes(monthly_ledger_path("2026-01")))
+        assert not any(row.get("state") == "reserved" for row in ledger["episodes"])
+        mock_report.assert_called_once()
 
     @patch("podcaster.monitoring.report_failure")
     @patch("podcaster.monitoring.run_generation_job")
