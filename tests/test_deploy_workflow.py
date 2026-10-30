@@ -3,6 +3,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/deploy-azure.yml"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
@@ -10,6 +13,112 @@ REUSABLE_WORKFLOW = ROOT / ".github/workflows/reusable-deploy-azure.yml"
 BICEP = ROOT / "infra/main.bicep"
 ALERTS_BICEP = ROOT / "infra/modules/distribution-alerts.bicep"
 ACA_DISTRIBUTION_BICEP = ROOT / "infra/modules/aca-distribution.bicep"
+
+
+@pytest.mark.parametrize("base_length", [2, 22, 35])
+def test_distribution_default_names_fit_aca_and_preserve_parameter_consumers(base_length):
+    source = BICEP.read_text()
+    base = "p" * base_length
+    for parameter, limit, suffix in (
+        ("distributionJobName", 27, "-dist"),
+        ("distributionSchedulerJobName", 25, "-dsched"),
+    ):
+        assert f"param {parameter} string = '${{take(baseName, {limit})}}{suffix}'" in source
+        assert 2 <= len(base[:limit] + suffix) <= 32
+        assert f"output {parameter} string = " in source
+    assert "distributionJobName: distributionJobName" in source
+    assert "schedulerJobName: distributionSchedulerJobName" in source
+
+
+def test_redeployment_preserves_existing_aca_subnet_nsg_and_security_defaults():
+    source = BICEP.read_text()
+    network = (ROOT / "infra/modules/network.bicep").read_text()
+    workflow = REUSABLE_WORKFLOW.read_text()
+    assert "param acaSubnetNetworkSecurityGroupId string = ''" in source
+    assert "acaSubnetNetworkSecurityGroupId: acaSubnetNetworkSecurityGroupId" in source
+    assert "networkSecurityGroup: {\n            id: acaSubnetNetworkSecurityGroupId" in network
+    assert "empty(acaSubnetNetworkSecurityGroupId) ? {}" in network
+    assert "peSubnetNetworkSecurityGroupId: peSubnetNetworkSecurityGroupId" in source
+    assert "networkSecurityGroup: {\n            id: peSubnetNetworkSecurityGroupId" in network
+    assert 'peSubnetNetworkSecurityGroupId="$pe_subnet_nsg_id"' in workflow
+    assert "Microsoft.Network/networkSecurityGroups@" not in network  # external NSG ownership
+    assert "az network vnet subnet show" in workflow
+    assert 'acaSubnetNetworkSecurityGroupId="$aca_subnet_nsg_id"' in workflow
+    assert workflow.index("az network vnet subnet show") < workflow.index(
+        "az deployment group create"
+    )
+    openai = (ROOT / "infra/modules/openai.bicep").read_text()
+    assert openai.count("raiPolicyName: 'Microsoft.DefaultV2'") == 2
+    assert "azureADAuthenticationAsArmPolicy:" in (ROOT / "infra/modules/acr.bicep").read_text()
+
+
+@pytest.mark.parametrize("custom_policy", [False, True])
+def test_deployed_api_and_worker_have_identical_effective_review_provider_fingerprint(
+    monkeypatch, custom_policy
+) -> None:
+    from podcaster.review import provider_settings_sha256
+    from podcaster.tts import load_tts_config
+    from podcaster.tts_pool import load_tts_pool_config
+
+    main = BICEP.read_text(encoding="utf-8")
+    root_values = dict(re.findall(r"(?m)^param (\w+) string = '([^'\n]*)'$", main))
+    root_values["openAiEndpoint"] = "https://offline-review.openai.azure.com/"
+    runtime = re.search(r"param ttsRuntimePolicy object = \{(.*?)\n\}", main, re.S)
+    assert runtime, "API and synthesis need a shared fingerprinted TTS pool policy"
+    policy = yaml.safe_load(runtime[1])
+    if custom_policy:
+        root_values.update(
+            ttsDeploymentName="operator-reviewed-tts",
+            ttsVoiceHostA="nova",
+            ttsVoiceHostB="onyx",
+        )
+        policy.update(concurrency=3, maxRetries=2, format="mp3", styleHostA="Measured")
+
+    shared = re.search(r"var ttsRuntimeEnvironment = \[(.*?)\n\]", main, re.S)
+    assert shared
+    env_pattern = r"name: '(AZURE_OPENAI_\w+|PODCASTER_TTS_\w+)'\s+value: ([^\n]+)"
+
+    def resolve(expression, values):
+        expression = expression.strip()
+        if expression.startswith("string(") and expression.endswith(")"):
+            return resolve(expression[7:-1], values)
+        if expression.startswith("'") and expression.endswith("'"):
+            return expression[1:-1]
+        if expression.startswith("ttsRuntimePolicy."):
+            return str(policy[expression.split(".")[1]])
+        return values[expression]
+
+    shared_env = {name: resolve(value, {}) for name, value in re.findall(env_pattern, shared[1])}
+    effective = []
+    for module_name in ("api", "aca"):
+        module = (ROOT / f"infra/modules/{module_name}.bicep").read_text(encoding="utf-8")
+        binding = re.search(
+            rf"module \w+ 'modules/{module_name}\.bicep'.*?\n  params: \{{(.*?)\n  \}}",
+            main,
+            re.S,
+        )
+        assert binding
+        references = dict(re.findall(r"(?m)^\s+(\w+): (\w+)$", binding[1]))
+        for field in ("ttsDeploymentName", "ttsVoiceHostA", "ttsVoiceHostB"):
+            assert references.get(field) == field
+        assert references.get("ttsRuntimeEnvironment") == "ttsRuntimeEnvironment"
+        assert re.search(r"env:\s*concat\(\[.*?\], ttsRuntimeEnvironment\)", module, re.S)
+        values = {
+            key: root_values[value] for key, value in references.items() if value in root_values
+        }
+        env = {name: resolve(value, values) for name, value in re.findall(env_pattern, module)}
+        env.update(shared_env)
+        with monkeypatch.context() as environment:
+            for name, value in env.items():
+                environment.setenv(name, value)
+            config = load_tts_config(env)
+            assert config.production_ready
+            effective.append((config, load_tts_pool_config(env), provider_settings_sha256(config)))
+    assert effective[0] == effective[1]
+    if custom_policy:
+        assert effective[0][0].tts_deployment == "operator-reviewed-tts"
+        assert effective[0][1].concurrency == 3
+        assert effective[0][1].max_retries == 2
 
 
 def _workflow_text() -> str:
@@ -119,6 +228,36 @@ def test_distribution_worker_infra_is_wired_but_provider_mutation_defaults_off()
     assert "DISTRIBUTION_WORKER_PROVIDER_MUTATION_ENABLED" in worker
     assert "param providerMutationEnabled string = 'false'" in worker
     assert "PODCAST_AUTO_PUBLISH" not in worker
+    distribution_params = main.split("module acaDistribution '", 1)[1].split(
+        "module acaDistributionScheduler '", 1
+    )[0]
+    for parameter in (
+        "spotifySessionCookieDc",
+        "spotifySessionCookieKey",
+        "spotifyShowId",
+        "spotifyVideoAllowLivePublish",
+        "spotifyVideoPublishMode",
+        "videoYoutubeEnabled",
+        "videoYoutubeCategoryId",
+        "videoYoutubePrivacy",
+        "videoYoutubePlaylistId",
+        "videoYoutubeClientId",
+        "videoYoutubeClientSecret",
+        "videoYoutubeRefreshToken",
+    ):
+        assert f"{parameter}: {parameter}" in distribution_params
+        assert f"param {parameter} string" in worker
+    for name in (
+        "youtube-client-id",
+        "youtube-client-secret",
+        "youtube-refresh-token",
+        "spotify-sp-dc",
+        "spotify-sp-key",
+    ):
+        assert f"secretRef: '{name}'" in worker
+    assert "secrets: concat(youtubeSecrets, spotifySecrets)" in worker
+    assert "spotifyConfigured ? [" in worker
+    assert "youtubeConfigured ? [" in worker
 
     assert "triggerType: 'Schedule'" in scheduler
     assert "'podcaster.distribution_scheduler'" in scheduler

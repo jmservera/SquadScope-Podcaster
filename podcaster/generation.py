@@ -86,6 +86,8 @@ def generate_artifacts(
     prior_monthly_spend_usd: Decimal = Decimal("0.00"),
     cost_override: dict[str, object] | None = None,
     config: PodcastConfig | None = None,
+    script: str | None = None,
+    claim_ledger: str | None = None,
 ) -> list[GeneratedArtifact]:
     config = config or PodcastConfig()
     generated_at_str = (
@@ -101,7 +103,8 @@ def generate_artifacts(
             .isoformat()
             .replace("+00:00", "Z")
         )
-    script = _script(job_id, payload, generated_at_str, config)
+    generated_script = script is not None
+    script = script if script is not None else _script(job_id, payload, generated_at_str, config)
     transcript = _transcript(script, config)
     show_notes = _show_notes(payload, generated_at_str, config)
     audio_placeholder = _audio_placeholder(job_id, payload)
@@ -109,7 +112,7 @@ def generate_artifacts(
         byte_length=len(audio_placeholder),
         sha256=checksum(audio_placeholder),
     ).to_manifest()
-    claim_ledger = _claim_ledger(payload)
+    claim_ledger = claim_ledger if claim_ledger is not None else _claim_ledger(payload)
     review_checklist = _review_checklist(job_id, payload)
     rights = _rights_and_attribution()
     pre_packet_bytes = [
@@ -136,6 +139,16 @@ def generate_artifacts(
     )
     cost_ledger_json = json.dumps(cost_ledger, sort_keys=True, indent=2) + "\n"
     metadata = _metadata(job_id, payload, created_at, expires_at, cost_ledger, audio_validation)
+    metadata["script_sha256"] = checksum(script.encode("utf-8"))
+    script_header = script.partition("\n---")[0]
+    for line in script_header.splitlines():
+        if line.startswith("Generated:"):
+            metadata["generation"]["script_generated_at"] = line.removeprefix("Generated:").strip()
+        elif line.startswith("Generator:"):
+            metadata["generation"]["script_generator"] = line.removeprefix("Generator:").strip()
+    if generated_script:
+        metadata["generation"]["engine"] = "llm-script-gen"
+        metadata["generation"]["deterministic"] = False
     packet = _packet(
         script=script,
         transcript=transcript,
@@ -275,6 +288,7 @@ def _transcript(script: str, config: PodcastConfig) -> str:
     episode = ""
     source_url = ""
     generated = ""
+    generator = ""
     for line in lines:
         if line.startswith("Title:"):
             title = line.replace("Title:", "").strip()
@@ -284,42 +298,30 @@ def _transcript(script: str, config: PodcastConfig) -> str:
             source_url = line.replace("Source URL:", "").strip()
         elif line.startswith("Generated:"):
             generated = line.replace("Generated:", "").strip()
+        elif line.startswith("Generator:"):
+            generator = line.removeprefix("Generator:").strip()
 
     published = generated.split("T")[0] if generated else "unknown"
-
-    # Placeholder duration for stub
-    duration = "15:42"
 
     header = "\n".join(
         [
             f"Title: {title}",
             f"Episode: {episode}",
-            f"Published: {published}",
+            f"Generated: {generated}",
+            f"Generator: {generator}",
+            f"Prepared: {published}",
             f"Source: {source_url}",
-            f"Duration: {duration}",
+            "Duration: pending synthesis",
             f"TTS Provider: OpenAI TTS ({config.host_a.name} {config.host_a.voice} / "
             f"{config.host_b.name} {config.host_b.voice}) [synthesis pending review]",
-            "License: CC-BY-4.0",
+            "License: pending human rights review",
             "---",
             "",
         ]
     )
 
-    # Extract body (after "---" in script) and add timestamps
-    body_start = script.find("---") + 3
-    body = script[body_start:].strip()
-
-    # Add placeholder timestamps to body lines
-    timestamped_body = ""
-    current_time_sec = 0
-    for line in body.split("\n"):
-        if line.strip():
-            timestamped_body += (
-                f"[{current_time_sec // 60:02d}:{current_time_sec % 60:02d}:00] {line}\n"
-            )
-            current_time_sec += 15  # Estimate 15 seconds per line
-
-    return header + timestamped_body
+    _, separator, body = script.partition("\n---")
+    return header + (body.lstrip("\n") if separator else script)
 
 
 def _show_notes(payload: dict[str, object], generated_at: str, config: PodcastConfig) -> str:
@@ -334,8 +336,8 @@ def _show_notes(payload: dict[str, object], generated_at: str, config: PodcastCo
             f"# {config.name} Podcast — Week {week}",
             "",
             f"**Episode:** {week}",
-            f"**Published:** {published}",
-            "**Duration:** 15:42",
+            f"**Prepared:** {published}",
+            "**Duration:** pending synthesis",
             f"**Hosts:** Two AI voices — {config.host_a.name} ({config.host_a.voice}) and "
             f"{config.host_b.name} ({config.host_b.voice}), OpenAI TTS [synthesis pending review]",
             "",
@@ -494,7 +496,7 @@ def _metadata(
             "artifact": "review-checklist.md",
             "gate": {
                 "status": "blocked",
-                "approval_required_before": "spotify_publication",
+                "approval_required_before": "tts_synthesis",
                 "checks": [
                     "script_accuracy",
                     "claim_verification",
@@ -514,10 +516,10 @@ def _metadata(
             "tts_voice": None,
             "audio_placeholder": True,
             "tts_synthesis": {
-                "status": "blocked" if payload.get("dry_run") else "queued",
-                "allowed": bool(not payload.get("dry_run")),
-                "blocked_by": ["dry_run"] if payload.get("dry_run") else [],
-                "dry_run_bypass_allowed": bool(payload.get("dry_run")),
+                "status": "blocked",
+                "allowed": False,
+                "blocked_by": ["dry_run"] if payload.get("dry_run") else ["human_review"],
+                "dry_run_bypass_allowed": False,
             },
             "audio_validation": audio_validation,
             "duration_seconds": None,
@@ -644,9 +646,16 @@ def _review_checklist(job_id: str, payload: dict[str, object]) -> str:
             "",
             "## Enforcement",
             "",
-            "The synthesis runner generates real audio automatically for non-dry-run jobs.",
-            "Publication remains blocked until the review workflow records an approved "
-            "decision with reviewer identity and timestamp.",
+            "Non-dry-run generation stages the final script and pauses before TTS.",
+            "Submit script_sha256 and manifest_sha256 from review.snapshot with an "
+            "explicit human approval to /api/review. Inspect the final configured AI "
+            "disclosure, acronym pronunciation and Markdown readiness before approval.",
+            "Set review_checks_confirmed=true and supply provider_authorization with "
+            "the reviewed provider_settings_sha256 and actual recorded provider/fallback, "
+            "privacy, security/RAI and merged disclosure evidence; see "
+            "docs/integration-contract.md. Configuration readiness alone is not signoff.",
+            "Audio/video/public promotion requires its own subsequent review; "
+            "pre-TTS approval never authorizes publication.",
             "",
         ]
     )

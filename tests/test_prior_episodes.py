@@ -4,9 +4,13 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+from review_support import approval_evidence_for
+
 from podcaster import jobs
 from podcaster.config import HistoricalContext
 from podcaster.jobs import run_generation_job
+from podcaster.orchestration import process_review_decision
 from podcaster.prior_episodes import fetch_prior_episode_themes
 from podcaster.storage import LocalStorageBackend
 
@@ -14,6 +18,133 @@ VALID_ARTICLE_CONTENT = (
     "This article covers a fresh platform release, the migration strategy behind it, the "
     "customer impact, and the operational lessons the hosts should react to on air this week."
 )
+
+
+def _themes_after_staged_episode(storage: LocalStorageBackend) -> tuple[str, ...]:
+    return fetch_prior_episode_themes(
+        storage,
+        "podcast-2026-W45-current",
+        current_week="2026-W45",
+        current_created_at=datetime(2026, 11, 5, 11, tzinfo=timezone.utc),
+    )
+
+
+def test_prior_themes_include_real_review_pending_stage_without_authorizing_publish(
+    reviewed_stage,
+) -> None:
+    storage, result, generator, producer, script = reviewed_stage
+    job_id = result.response["job_id"]
+    manifest_path = f"jobs/{job_id}/manifest.json"
+    original_manifest = storage.get_bytes(manifest_path)
+
+    assert result.manifest["status"] == "review_pending"
+    assert result.manifest["publishing"]["eligible"] is False
+    assert storage.get_bytes(f"jobs/{job_id}/script.txt") == script
+    assert "The reviewed opening is unique to this staged episode" in _themes_after_staged_episode(
+        storage
+    )
+    assert storage.get_bytes(manifest_path) == original_manifest
+    assert result.manifest["generation"]["tts_synthesis"]["allowed"] is False
+    assert producer.sent == []
+    generator.assert_called_once()
+
+
+def test_prior_themes_include_real_review_approved_stage(reviewed_stage) -> None:
+    storage, result, generator, producer, script = reviewed_stage
+    job_id = result.response["job_id"]
+    reviewed = process_review_decision(
+        job_id,
+        storage=storage,
+        reviewer="fry",
+        decision="approved",
+        reviewed_at="2026-10-29T11:05:00Z",
+        **approval_evidence_for(result.manifest),
+    ).manifest
+    original_manifest = storage.get_bytes(f"jobs/{job_id}/manifest.json")
+
+    assert reviewed["status"] == "review_approved"
+    assert "The reviewed opening is unique to this staged episode" in _themes_after_staged_episode(
+        storage
+    )
+    assert storage.get_bytes(f"jobs/{job_id}/manifest.json") == original_manifest
+    assert storage.get_bytes(f"jobs/{job_id}/script.txt") == script
+    assert reviewed["publishing"]["eligible"] is False
+    assert len(producer.sent) == 1
+    generator.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "accepted",
+        "synthesized_review_ready",
+        "synthesized_publish_ready",
+        "publish_requested",
+        "published",
+        "scheduled",
+        "draft",
+    ],
+)
+def test_prior_themes_preserve_staged_script_at_supported_later_and_legacy_statuses(
+    reviewed_stage, status: str
+) -> None:
+    storage, result, _generator, producer, script = reviewed_stage
+    job_id = result.response["job_id"]
+    manifest = json.loads(storage.get_bytes(f"jobs/{job_id}/manifest.json"))
+    manifest["status"] = status
+    manifest["lifecycle"]["status"] = status
+    storage.put_bytes(
+        f"jobs/{job_id}/manifest.json", json.dumps(manifest).encode(), "application/json"
+    )
+
+    assert "The reviewed opening is unique to this staged episode" in _themes_after_staged_episode(
+        storage
+    )
+    assert storage.get_bytes(f"jobs/{job_id}/script.txt") == script
+    assert producer.sent == []
+
+
+@pytest.mark.parametrize("decision", ["rejected", "changes_requested"])
+def test_prior_themes_exclude_actual_negative_review_with_canonical_script_intact(
+    reviewed_stage, decision: str
+) -> None:
+    storage, result, generator, producer, script = reviewed_stage
+    job_id = result.response["job_id"]
+    reviewed = process_review_decision(
+        job_id,
+        storage=storage,
+        reviewer="fry",
+        decision=decision,
+        reviewed_at="2026-10-29T11:05:00Z",
+    ).manifest
+
+    assert reviewed["status"] == decision
+    assert reviewed["lifecycle"]["status"] == decision
+    assert reviewed["review"]["synthesis_approval"]["status"] == decision
+    assert storage.get_bytes(f"jobs/{job_id}/script.txt") == script
+    assert _themes_after_staged_episode(storage) == ()
+    assert reviewed["publishing"]["eligible"] is False
+    assert reviewed["generation"]["tts_synthesis"]["allowed"] is False
+    assert producer.sent == []
+    generator.assert_called_once()
+
+
+@pytest.mark.parametrize("status", ["failed", "rejected", "dry_run", "skipped", "unknown"])
+def test_prior_themes_exclude_ineligible_staged_manifest_statuses(
+    reviewed_stage, status: str
+) -> None:
+    storage, result, _generator, producer, script = reviewed_stage
+    job_id = result.response["job_id"]
+    manifest = json.loads(storage.get_bytes(f"jobs/{job_id}/manifest.json"))
+    manifest["status"] = status
+    manifest["lifecycle"]["status"] = status
+    storage.put_bytes(
+        f"jobs/{job_id}/manifest.json", json.dumps(manifest).encode(), "application/json"
+    )
+
+    assert storage.get_bytes(f"jobs/{job_id}/script.txt") == script
+    assert _themes_after_staged_episode(storage) == ()
+    assert producer.sent == []
 
 
 def test_local_storage_backend_list_blobs_returns_prefix_matches(tmp_path: Path) -> None:
@@ -197,7 +328,9 @@ def test_prior_selection_excludes_newer_week_and_uses_same_week_creation_time() 
     assert "jobs/podcast-2026-W26-aaaaaaaaaaaa/script.txt" not in storage.read_paths
 
 
-def test_run_generation_job_threads_auto_prior_episode_themes(monkeypatch, tmp_path: Path) -> None:
+def test_run_generation_job_threads_auto_prior_episode_themes(
+    monkeypatch, tmp_path: Path, offline_script_generation
+) -> None:
     storage = LocalStorageBackend(tmp_path / "artifacts", "https://example.invalid/artifacts")
     captured: dict[str, object] = {}
 

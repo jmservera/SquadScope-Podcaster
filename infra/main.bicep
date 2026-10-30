@@ -97,6 +97,58 @@ param ttsVoiceHostA string = 'fable'
 @description('TTS voice for host B of the Claracle conversation.')
 param ttsVoiceHostB string = 'alloy'
 
+@description('Shared TTS format, style, API version and pool policy for staging/review and synthesis. No credentials.')
+param ttsRuntimePolicy object = {
+  apiVersion: '2024-12-01-preview'
+  format: 'wav'
+  styleHostA: ''
+  styleHostB: ''
+  concurrency: 6
+  maxRetries: 4
+  backoffBaseSeconds: '0.5'
+  backoffMaxSeconds: '20.0'
+  backoffJitter: '0.25'
+}
+
+var ttsRuntimeEnvironment = [
+  {
+    name: 'AZURE_OPENAI_TTS_API_VERSION'
+    value: ttsRuntimePolicy.apiVersion
+  }
+  {
+    name: 'AZURE_OPENAI_TTS_FORMAT'
+    value: ttsRuntimePolicy.format
+  }
+  {
+    name: 'AZURE_OPENAI_TTS_STYLE_HOST_A'
+    value: ttsRuntimePolicy.styleHostA
+  }
+  {
+    name: 'AZURE_OPENAI_TTS_STYLE_HOST_B'
+    value: ttsRuntimePolicy.styleHostB
+  }
+  {
+    name: 'PODCASTER_TTS_CONCURRENCY'
+    value: string(ttsRuntimePolicy.concurrency)
+  }
+  {
+    name: 'PODCASTER_TTS_MAX_RETRIES'
+    value: string(ttsRuntimePolicy.maxRetries)
+  }
+  {
+    name: 'PODCASTER_TTS_BACKOFF_BASE_SECONDS'
+    value: string(ttsRuntimePolicy.backoffBaseSeconds)
+  }
+  {
+    name: 'PODCASTER_TTS_BACKOFF_MAX_SECONDS'
+    value: string(ttsRuntimePolicy.backoffMaxSeconds)
+  }
+  {
+    name: 'PODCASTER_TTS_BACKOFF_JITTER'
+    value: string(ttsRuntimePolicy.backoffJitter)
+  }
+]
+
 @description('Container Apps managed environment name.')
 param containerAppsEnvName string = '${baseName}-cae'
 
@@ -107,10 +159,12 @@ param synthesisJobName string = '${baseName}-synth'
 param videoJobName string = '${baseName}-video'
 
 @description('Queue-triggered provider distribution Container Apps Job name.')
-param distributionJobName string = '${baseName}-distribution'
+@maxLength(32)
+param distributionJobName string = '${take(baseName, 27)}-dist'
 
 @description('Scheduled reconciliation notifier Container Apps Job name.')
-param distributionSchedulerJobName string = '${baseName}-distribution-scheduler'
+@maxLength(32)
+param distributionSchedulerJobName string = '${take(baseName, 25)}-dsched'
 
 @description('Queue-triggered scale-out recorder Container Apps Job name (#552/#565).')
 param videoRecorderJobName string = '${baseName}-recorder'
@@ -242,6 +296,12 @@ param uiAuthSecret string = ''
 @description('Deploy VNet + private endpoints for ACA ↔ Storage connectivity. Requires environment recreation if enabling on an existing deployment (VNet integration is a create-time-only setting).')
 param deployVnet bool = false
 
+@description('Existing externally managed ACA subnet NSG resource ID. Preserve the current binding on redeployment; empty only for a subnet without an NSG.')
+param acaSubnetNetworkSecurityGroupId string = ''
+
+@description('Existing externally managed private-endpoint subnet NSG resource ID. Preserve the current binding on redeployment.')
+param peSubnetNetworkSecurityGroupId string = ''
+
 @allowed([
   'Enabled'
   'Disabled'
@@ -276,6 +336,8 @@ module network 'modules/network.bicep' = if (deployVnet) {
     vnetName: '${baseName}-vnet'
     storageAccountId: storage.id
     storageAccountName: storage.name
+    acaSubnetNetworkSecurityGroupId: acaSubnetNetworkSecurityGroupId
+    peSubnetNetworkSecurityGroupId: peSubnetNetworkSecurityGroupId
   }
 }
 
@@ -442,6 +504,7 @@ module aca 'modules/aca.bicep' = {
     chatDeploymentName: chatDeploymentName
     ttsVoiceHostA: ttsVoiceHostA
     ttsVoiceHostB: ttsVoiceHostB
+    ttsRuntimeEnvironment: ttsRuntimeEnvironment
     podcasterApiKey: podcasterApiKey
     spotifyPublishEnabled: spotifyPublishEnabled
     spotifyShowId: spotifyShowId
@@ -517,6 +580,18 @@ module acaDistribution 'modules/aca-distribution.bicep' = {
     distributionImage: synthesisImage
     containerRegistryServer: acrLoginServer
     providerMutationEnabled: distributionWorkerProviderMutationEnabled
+    spotifySessionCookieDc: spotifySessionCookieDc
+    spotifySessionCookieKey: spotifySessionCookieKey
+    spotifyShowId: spotifyShowId
+    spotifyVideoAllowLivePublish: spotifyVideoAllowLivePublish
+    spotifyVideoPublishMode: spotifyVideoPublishMode
+    videoYoutubeEnabled: videoYoutubeEnabled
+    videoYoutubeCategoryId: videoYoutubeCategoryId
+    videoYoutubePrivacy: videoYoutubePrivacy
+    videoYoutubePlaylistId: videoYoutubePlaylistId
+    videoYoutubeClientId: videoYoutubeClientId
+    videoYoutubeClientSecret: videoYoutubeClientSecret
+    videoYoutubeRefreshToken: videoYoutubeRefreshToken
   }
   dependsOn: [
     artifactContainer
@@ -635,6 +710,10 @@ module api 'modules/api.bicep' = if (deployApiApp) {
     containerRegistryServer: acrLoginServer
     corsOrigins: deployUiApp ? 'https://${uiAppName}.${aca.outputs.defaultDomain}' : ''
     openAiEndpoint: openAiEndpoint
+    ttsDeploymentName: ttsDeploymentName
+    ttsVoiceHostA: ttsVoiceHostA
+    ttsVoiceHostB: ttsVoiceHostB
+    ttsRuntimeEnvironment: ttsRuntimeEnvironment
     chatDeploymentName: chatDeploymentName
     spotifyPublishEnabled: spotifyPublishEnabled
     spotifyShowId: spotifyShowId

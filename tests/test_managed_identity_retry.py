@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 from unittest.mock import Mock
 from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -185,3 +187,49 @@ def test_sdk_blob_credential_rejects_empty_token(monkeypatch):
     cred = storage._SdkBlobCredential()
     with pytest.raises(RuntimeError):
         cred.get_token(STORAGE_SCOPE)
+
+
+@pytest.mark.parametrize("continuation", [None, "opaque+/=& marker"])
+def test_blob_page_uses_real_managed_identity_string_token(monkeypatch, continuation):
+    identity = Mock(return_value=dict(TOKEN_PAYLOAD))
+    monkeypatch.setattr(storage, "_request_managed_identity_token", identity)
+    backend = storage.AzureBlobStorageBackend(
+        "https://acct.blob.core.windows.net", "podcaster-artifacts"
+    )
+    assert isinstance(backend._credential, storage.ManagedIdentityTokenCredential)
+    response = BytesIO(
+        b"<EnumerationResults><Blobs>"
+        b"<Blob><Name>distribution-outbox/a.json</Name></Blob>"
+        b"</Blobs><NextMarker>next+/=&amp;</NextMarker></EnumerationResults>"
+    )
+    urlopen_mock = Mock(return_value=response)
+    monkeypatch.setattr(storage, "urlopen", urlopen_mock)
+
+    names, marker = backend.list_blobs_page(
+        "distribution-outbox/", limit=2, continuation=continuation
+    )
+
+    assert names == ["distribution-outbox/a.json"]
+    assert marker == "next+/=&"
+    identity.assert_called_once_with(STORAGE_RESOURCE)
+    urlopen_mock.assert_called_once()
+    request = urlopen_mock.call_args.args[0]
+    assert urlopen_mock.call_args.kwargs == {"timeout": 30}
+    assert request.method == "GET"
+    assert request.get_header("Authorization") == "Bearer fake-token"
+    assert request.get_header("X-ms-version") == "2023-11-03"
+    assert request.get_header("X-ms-date")
+    parsed = urlsplit(request.full_url)
+    assert parsed.scheme == "https"
+    assert parsed.netloc == "acct.blob.core.windows.net"
+    assert parsed.path == "/podcaster-artifacts"
+    query = {
+        "restype": ["container"],
+        "comp": ["list"],
+        "prefix": ["distribution-outbox"],
+        "maxresults": ["2"],
+    }
+    if continuation:
+        query["marker"] = [continuation]
+    assert parse_qs(parsed.query) == query
+    assert "fake-token" not in request.full_url

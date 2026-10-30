@@ -18,11 +18,17 @@ param acaSubnetName string = 'snet-aca'
 @description('Address prefix for the ACA infrastructure subnet (minimum /23).')
 param acaSubnetAddressPrefix string = '10.0.0.0/23'
 
+@description('Existing ACA subnet NSG resource ID; this module preserves the binding but does not manage NSG rules.')
+param acaSubnetNetworkSecurityGroupId string = ''
+
 @description('Subnet name for private endpoints.')
 param peSubnetName string = 'snet-private-endpoints'
 
 @description('Address prefix for the private endpoints subnet.')
 param peSubnetAddressPrefix string = '10.0.2.0/24'
+
+@description('Existing private-endpoint subnet NSG resource ID; this module preserves the binding but does not manage NSG rules.')
+param peSubnetNetworkSecurityGroupId string = ''
 
 @description('Resource ID of the storage account to create private endpoints for.')
 param storageAccountId string
@@ -44,7 +50,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
     subnets: [
       {
         name: acaSubnetName
-        properties: {
+        properties: union({
           addressPrefix: acaSubnetAddressPrefix
           delegations: [
             {
@@ -54,14 +60,22 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
               }
             }
           ]
-        }
+        }, empty(acaSubnetNetworkSecurityGroupId) ? {} : {
+          networkSecurityGroup: {
+            id: acaSubnetNetworkSecurityGroupId
+          }
+        })
       }
       {
         name: peSubnetName
-        properties: {
+        properties: union({
           addressPrefix: peSubnetAddressPrefix
           privateEndpointNetworkPolicies: 'Disabled'
-        }
+        }, empty(peSubnetNetworkSecurityGroupId) ? {} : {
+          networkSecurityGroup: {
+            id: peSubnetNetworkSecurityGroupId
+          }
+        })
       }
     ]
   }

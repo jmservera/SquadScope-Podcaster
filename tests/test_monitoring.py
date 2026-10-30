@@ -15,6 +15,7 @@ from podcaster.jobs import ReplayCollisionError
 from podcaster.monitoring import app, set_storage
 from podcaster.orchestration import JobPublishOutcome
 from podcaster.publish import PublishResult
+from podcaster.review import ReviewBindingError
 
 # ---------------------------------------------------------------------------
 # In-memory storage backend for tests
@@ -580,6 +581,25 @@ class TestStructuredJobLogs:
 
 
 class TestEnqueueVideo:
+    @pytest.mark.parametrize("snapshot", [{"script_sha256": "a" * 64}, None, "corrupt", []])
+    def test_exact_script_job_is_refused_before_manual_video_enqueue(
+        self, client, storage, snapshot
+    ):
+        job_id = "podcast-2026-W44-review-bound"
+        manifest = _make_manifest(job_id)
+        manifest["review"] = {"status": "approved", "snapshot": snapshot}
+        manifest["generation"]["audio_mode"] = "synthesized"
+        path = f"jobs/{job_id}/manifest.json"
+        storage.put_bytes(path, json.dumps(manifest).encode(), "application/json")
+        before = dict(storage._blobs)
+
+        with patch("podcaster.monitoring.enqueue_video_job", return_value=True) as enqueue:
+            response = client.post(f"/api/jobs/{job_id}/video/generate")
+
+        assert response.status_code == 409
+        enqueue.assert_not_called()
+        assert storage._blobs == before
+
     def test_not_found(self, client, storage):
         resp = client.post("/api/jobs/nonexistent/video/generate")
         assert resp.status_code == 404
@@ -685,6 +705,96 @@ class TestGenerateEndpoint:
         assert resp.json()["errors"] == ["replay output already exists"]
         assert "private storage path" not in resp.text
 
+    @pytest.mark.parametrize(
+        "quality_reason",
+        [
+            None,
+            "final canonical script has 751 spoken words; requested 1200-1700 inclusive; "
+            "exhausted 2 length repairs",
+            "canonical script grounding failed after 1 repairs; 31 spoken turns",
+        ],
+    )
+    @patch("podcaster.monitoring.report_failure")
+    @patch("podcaster.monitoring.run_generation_job")
+    def test_script_generation_failure_returns_502(
+        self, mock_run_generation_job, mock_report_failure, client, storage, quality_reason
+    ):
+        from podcaster.jobs import ScriptGenerationFailed
+        from podcaster.validation import RESPONSE_KEYS
+
+        mock_run_generation_job.side_effect = ScriptGenerationFailed(
+            "secret detail", quality_reason=quality_reason
+        )
+
+        resp = client.post(
+            "/api/generate",
+            json={"week": "2026-W24", "article_url": "https://example.com/article"},
+        )
+
+        assert resp.status_code == 502
+        body = resp.json()
+        assert set(body) == set(RESPONSE_KEYS)
+        assert body["status"] == "failed"
+        expected = "script generation failed; no episode was produced"
+        if quality_reason:
+            expected += f"; {quality_reason}"
+        assert body["errors"] == [expected]
+        assert "secret detail" not in resp.text
+        assert mock_report_failure.call_args.kwargs["error_type"] == "ScriptGenerationFailed"
+
+    @patch("podcaster.monitoring.report_failure")
+    def test_real_generation_quality_failure_returns_safe_reason_and_releases_budget(
+        self, mock_report, client, tmp_path, monkeypatch, offline_script_generation
+    ):
+        from functools import partial
+
+        from podcaster.costs import monthly_ledger_path
+        from podcaster.jobs import run_generation_job
+        from podcaster.storage import LocalStorageBackend
+        from podcaster.validation import RESPONSE_KEYS
+
+        monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
+        monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(tmp_path))
+        current = datetime(2026, 1, 15, tzinfo=timezone.utc)
+        monkeypatch.setattr(
+            "podcaster.monitoring.run_generation_job",
+            partial(run_generation_job, now=current),
+        )
+
+        def transport(request):
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {"content": "Theo: PRIVATE_CONTENT_CANARY"},
+                            "finish_reason": "PRIVATE_PROVIDER_CANARY",
+                        }
+                    ]
+                }
+            ).encode()
+
+        monkeypatch.setattr("podcaster.script_gen._default_transport", transport)
+        response = client.post(
+            "/api/generate",
+            json={
+                "week": "2026-W44",
+                "article_url": "https://example.com/article",
+                "article_title": "Deployment evidence",
+                "article_content": "The source describes a product rollout, engineering tradeoffs, "
+                "customer impact, and competitive context in enough detail for a substantive "
+                "weekly discussion of the deployment evidence.",
+                "script_directions": {"episode_style": {"format": "1200-1700 words"}},
+            },
+        )
+        assert response.status_code == 502
+        assert set(response.json()) == set(RESPONSE_KEYS)
+        assert "completion incomplete; completion budget=" in response.json()["errors"][0]
+        assert "PRIVATE_" not in response.text
+        storage = LocalStorageBackend(tmp_path, "https://test.example")
+        ledger = json.loads(storage.get_bytes(monthly_ledger_path("2026-01")))
+        assert not any(row.get("state") == "reserved" for row in ledger["episodes"])
+        mock_report.assert_called_once()
+
     @patch("podcaster.monitoring.report_failure")
     @patch("podcaster.monitoring.run_generation_job")
     def test_unrelated_generation_failure_remains_500(
@@ -703,6 +813,71 @@ class TestGenerateEndpoint:
 
 
 class TestReviewEndpoint:
+    def test_review_binding_conflict_never_exposes_exception_details(self, client):
+        confidential = "confidential-review-sentinel: /private/review.json provider-token=hidden"
+
+        with patch(
+            "podcaster.monitoring.process_review_decision",
+            side_effect=ReviewBindingError(confidential),
+        ) as process:
+            response = client.post(
+                "/api/review",
+                json={
+                    "job_id": "podcast-1",
+                    "reviewer": "test-reviewer",
+                    "decision": "approved",
+                },
+            )
+
+        process.assert_called_once()
+        assert response.status_code == 409
+        assert response.json() == {"error": "review binding conflict"}
+        assert confidential not in response.text
+
+    @pytest.mark.parametrize("conflict", [None, "script_sha256", "manifest_sha256"])
+    def test_deployed_review_endpoint_binds_exact_staged_content(
+        self, reviewed_stage, monkeypatch, conflict
+    ):
+        from review_support import approval_evidence_for
+
+        from podcaster.orchestration import load_manifest
+        from podcaster.queue import parse_job_id
+
+        storage, result, generator, producer, script = reviewed_stage
+        job_id = result.response["job_id"]
+        monkeypatch.setattr("podcaster.monitoring.get_storage", lambda: storage)
+        evidence = approval_evidence_for(result.manifest)
+        if conflict:
+            evidence[conflict] = "0" * 64
+        path = f"jobs/{job_id}/manifest.json"
+        before = storage.get_bytes(path)
+        with TestClient(app) as deployed_client:
+            response = deployed_client.post(
+                "/api/review",
+                json={
+                    "job_id": job_id,
+                    "reviewer": "leela",
+                    "reviewed_at": "2026-10-29T11:05:00Z",
+                    "decision": "approved",
+                    "publish_on_approval": False,
+                    **evidence,
+                },
+            )
+
+        assert response.status_code == (409 if conflict else 200)
+        if conflict:
+            assert storage.get_bytes(path) == before
+            assert producer.sent == []
+        else:
+            approval = load_manifest(storage, job_id)["review"]["synthesis_approval"]
+            assert approval["binding"]["script_sha256"] == evidence["script_sha256"]
+            assert approval["binding"]["manifest_sha256"] == evidence["manifest_sha256"]
+            assert approval["provider_authorization"] == evidence["provider_authorization"]
+            assert approval["review_checks_confirmed"] is True
+            assert [parse_job_id(body) for body in producer.sent] == [job_id]
+        assert storage.get_bytes(f"jobs/{job_id}/script.txt") == script
+        generator.assert_called_once()
+
     def test_missing_required_fields_return_400(self, client, storage):
         resp = client.post("/api/review", json={"reviewer": "leela"})
 

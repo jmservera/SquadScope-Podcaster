@@ -34,10 +34,16 @@ from podcaster.auth_core import create_token, get_credentials, verify_token
 from podcaster.credentials import CredentialStore
 from podcaster.dispatch_receipts import DispatchReceiptError, DispatchReceiptRepository
 from podcaster.failure_reporting import report_failure
-from podcaster.jobs import ReplayCollisionError, failed_response, run_generation_job
+from podcaster.jobs import (
+    ReplayCollisionError,
+    ScriptGenerationFailed,
+    failed_response,
+    run_generation_job,
+)
 from podcaster.orchestration import process_review_decision
 from podcaster.podcast_config import PodcastConfigStore
 from podcaster.publication_status import PublicationStatusError, publication_status
+from podcaster.review import ReviewBindingError
 from podcaster.spotify_mode import (
     record_review_skip_outcome,
     review_publish_fields,
@@ -556,6 +562,18 @@ class GenerateHandler(BaseHTTPRequestHandler):
             response = failed_response(["replay output already exists"])
             _json_response(self, HTTPStatus.CONFLICT, response)
             return
+        except ScriptGenerationFailed as error:
+            report_failure(
+                container="podcaster-api",
+                error_type="ScriptGenerationFailed",
+                error_message="LLM script generation failed in /api/generate",
+            )
+            reason = "script generation failed; no episode was produced"
+            if error.quality_reason:
+                reason += f"; {error.quality_reason}"
+            response = failed_response([reason])
+            _json_response(self, HTTPStatus.BAD_GATEWAY, response)
+            return
         except Exception:
             logger.exception("unhandled error in generation job")
             report_failure(
@@ -662,11 +680,20 @@ class GenerateHandler(BaseHTTPRequestHandler):
                 notes=notes,
                 run_url=run_url,
                 publish_on_approval=publish_on_approval and not audio_publish_skipped,
+                publish_video_on_approval=publish_on_approval,
+                script_sha256=payload.get("script_sha256"),
+                manifest_sha256=payload.get("manifest_sha256"),
+                provider_authorization=payload.get("provider_authorization"),
+                review_checks_confirmed=payload.get("review_checks_confirmed") is True,
+                media_review=payload.get("media_review"),
                 storage=storage,
             )
             outcome = record_review_skip_outcome(
                 storage, job_id, outcome, reviewed_at, audio_publish_skipped
             )
+        except ReviewBindingError:
+            _json_response(self, HTTPStatus.CONFLICT, {"error": "review binding conflict"})
+            return
         except ValueError:
             logger.warning("review decision was rejected", exc_info=True)
             _json_response(self, HTTPStatus.NOT_FOUND, {"error": "review request not found"})

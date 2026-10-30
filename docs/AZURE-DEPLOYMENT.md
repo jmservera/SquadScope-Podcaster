@@ -621,3 +621,20 @@ records an approved decision.
 - **Security concerns:** Contact Hermes (Safety & Security).
 - **Integration issues:** Contact Leela (Coordinator) and the SquadScope team.
 - **Cost overruns:** Contact leadership for budget approval or optimization.
+# Preserving an existing ACA subnet security group
+
+The network module owns the inline subnet declaration, but an existing subnet
+NSG may be managed outside this template. On redeployment supply its exact
+current resource ID as `acaSubnetNetworkSecurityGroupId`. The module preserves
+that binding without creating an NSG or changing rules. The same applies to the
+private-endpoint subnet's `peSubnetNetworkSecurityGroupId`. Empty is appropriate
+only when the subnet has no current NSG. The existing deploy workflow reads the
+binding from the last `main` deployment's network identity and fails rather than
+guessing an ambiguous existing network. Inspect the complete ARM what-if before
+applying a production parameter repair; an NSG deletion is not normalization.
+
+Distribution defaults now use bounded `-dist` / `-dsched` names (32 characters
+maximum), retaining their existing overrides, module consumers and outputs.
+Deployments with already-existing custom job names must continue supplying
+those overrides. Existing production images, provider-mutation flags, private
+networking and security policies are not changed by a naming repair.

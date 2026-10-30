@@ -242,3 +242,61 @@ Sample request fixtures for integration testing:
 
 - `tests/fixtures/podcaster_request_legacy_strings.json` — legacy string source artifacts
 - `tests/fixtures/podcaster_request_squadscope_objects.json` — SquadScope object references
+# Exact-script private video continuation
+
+Exact script review is pre-TTS consent, not approval of unseen audio or video.
+After successful one-shot synthesis, the same video runner may privately prepare
+an MP4 only when the completed synthesis claim, reviewed script, surviving input
+fingerprint, complete nonempty MP3/WAV proof, staged artifact digests and sizes
+still agree. The renderer consumes the MP3 bytes returned by that same verifier,
+never a first-match manifest track. Missing/ambiguous selection or changed proof
+blocks preparation before recording. Normal jobs keep their existing route.
+
+The prepared MP4 is stored through the existing immutable-artifact/outbox
+contracts. Its outbox has `media_review.status=pending`; no provider upload,
+public archive, distribution notification or provider claim is admitted by
+pre-TTS consent. The review package is the private MP4 referenced by the outbox's
+`artifact.path`, together with `outbox_id`, `publication_digest` and
+`artifact.sha256`. Retrieve it through authenticated private storage; never
+make the container public for review.
+
+A separate actual human decision uses the existing authenticated `/api/review`:
+
+```json
+{
+  "job_id": "<existing accepted job>",
+  "reviewer": "<actual reviewer>",
+  "decision": "approved",
+  "review_checks_confirmed": true,
+  "media_review": {
+    "outbox_id": "<prepared outbox id>",
+    "publication_digest": "<that outbox publication digest>",
+    "artifact_sha256": "<the reviewed MP4 sha256>"
+  }
+}
+```
+
+`changes_requested` and `rejected` are also supported. Decisions must postdate the
+prepared artifact. Wrong/stale identities or media, missing explicit checks,
+prior ambiguous provider work, or conflicting replay fail closed. An identical
+replay is idempotent. The decision/audit and provider approvals are committed
+together in the existing outbox; generic audio approval stays separate. The
+existing scheduler owns one-shot notification repair after approval.
+
+The production distribution worker uses the existing YouTube and Spotify video
+adapters with separate outbox operations for draft creation/upload, playlist
+insertion and public promotion. Each operation consumes its own fenced intent
+and persists a receipt. A lost/ambiguous outcome is reconciliation-only and
+never repeats a create. Runtime destinations/policy are fingerprinted at
+preparation and bound into media review; changed providers, job/media identity,
+expired verification windows or changed bytes stop before provider mutation.
+Legacy outboxes are not automatically admitted by this dispatcher.
+
+`DISTRIBUTION_WORKER_PROVIDER_MUTATION_ENABLED` remains false by default;
+enabling it does not waive media review or the existing Spotify video live
+flags. Runtime provider credentials/policy reuse the video job's deployment
+parameters via secret references. Spotify audio is never invoked. Disabled
+destinations and RSS-only delivery require explicit operator handoff. Neither
+an uploaded draft, successful mutation response nor queue acknowledgement is
+terminal success: exact media/identity-bound authoritative public readback
+must satisfy the existing outbox verification proof.

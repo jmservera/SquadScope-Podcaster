@@ -112,6 +112,10 @@ class OutboxConflictError(DistributionOutboxError):
     """Raised when an existing logical item conflicts with a new enqueue."""
 
 
+class MediaReviewRequiredError(DistributionOutboxError):
+    """Private prepared media cannot be claimed before its separate human review."""
+
+
 class StaleClaimError(DistributionOutboxError):
     """Raised when a stale or non-owning worker attempts a fenced write."""
 
@@ -1318,6 +1322,46 @@ def provider_approval_is_valid(
     )
 
 
+def media_review_allows_distribution(document: Mapping[str, Any]) -> bool:
+    """Keep normal jobs unchanged; exact-script media must retain its actual binding."""
+    if "media_review" not in document:
+        return True
+    review = document.get("media_review")
+    if not isinstance(review, Mapping):
+        return False
+    binding = review.get("binding")
+    return bool(
+        review.get("status") == "approved"
+        and isinstance(binding, Mapping)
+        and binding.get("decision") == "approved"
+        and binding.get("checks_confirmed") is True
+        and binding.get("outbox_id") == document.get("outbox_id")
+        and binding.get("accepted_job_id")
+        == document.get("publication_identity", {}).get("accepted_job_id")
+        and binding.get("publication_digest") == document.get("publication_digest")
+        and binding.get("artifact_sha256") == document.get("artifact", {}).get("sha256")
+        and binding.get("destination_sha256") == media_destination_sha256(document)
+        and binding in review.get("audit_trail", [])
+        and all(
+            provider_approval_is_valid(document, provider) for provider in document["providers"]
+        )
+    )
+
+
+def media_destination_sha256(document: Mapping[str, Any]) -> str:
+    return hashlib.sha256(
+        _canonical_json_bytes(
+            {
+                "objectives": document["provider_objectives"],
+                "contexts": {
+                    provider: leg.get("context") for provider, leg in document["providers"].items()
+                },
+                "artifact": document["artifact"],
+            }
+        )
+    ).hexdigest()
+
+
 def _attempt_event(attempt: dict[str, Any], state: str, at: str, **details: Any) -> None:
     event = {
         "sequence": len(attempt["events"]) + 1,
@@ -1503,6 +1547,7 @@ class DistributionOutboxRepository:
         authorize: Callable[[], None] | None = None,
         provider_approvals: Mapping[str, Mapping[str, Any]] | None = None,
         provider_context: Mapping[str, Mapping[str, Any]] | None = None,
+        await_media_review: bool = False,
     ) -> tuple[dict[str, Any], bool]:
         verify_artifact(self.storage, artifact)
         item_id = outbox_id_for(
@@ -1536,6 +1581,8 @@ class DistributionOutboxRepository:
                     or existing.get("provider_objectives") != expected["provider_objectives"]
                 ):
                     raise OutboxConflictError("logical outbox item conflicts with existing record")
+                if await_media_review and "media_review" not in existing:
+                    raise OutboxConflictError("existing outbox lacks the private media review gate")
                 if source_ownership is not None:
                     existing["source_ownership"] = _safe_value(source_ownership)
                 for provider in provider_objectives:
@@ -1630,6 +1677,8 @@ class DistributionOutboxRepository:
                 "updated_at": timestamp,
             }
             _ensure_truth_fields(document)
+            if await_media_review:
+                document["media_review"] = {"status": "pending", "audit_trail": []}
             _ensure_provider_reconciliation(
                 document,
                 due_at=self.now() + INITIAL_RECONCILIATION_DELAY,
@@ -1646,6 +1695,106 @@ class DistributionOutboxRepository:
             _create,
         )
         return captured, created
+
+    def record_media_review(
+        self,
+        outbox_id: str,
+        *,
+        accepted_job_id: str,
+        publication_digest: str,
+        artifact_sha256: str,
+        reviewer: str,
+        reviewed_at: str,
+        decision: str,
+        checks_confirmed: bool,
+        notes: str = "",
+    ) -> dict[str, Any]:
+        """Review the already-private immutable MP4, not a future render.
+
+        Persist approval on the existing provider legs and audit record in one
+        CAS. Repeated identical decisions are idempotent; competing or changed
+        decisions require explicit reconciliation, never silent reauthorization.
+        """
+        document = self.read(outbox_id)
+        if document is None:
+            raise OutboxConflictError("prepared video does not exist")
+        verify_artifact(self.storage, _artifact_from(document))
+        if decision not in {"approved", "changes_requested", "rejected"}:
+            raise OutboxConflictError("invalid media review decision")
+        approval = _provider_approval(
+            {
+                "approved": True,
+                "approved_by": reviewer,
+                "approved_at": reviewed_at,
+                "source": "manifest_human_review",
+            },
+            publication_digest=publication_digest,
+            manifest_sha256=document["publication_identity"]["manifest_sha256"],
+        )
+        if checks_confirmed is not True or approval["approved"] is not True:
+            raise OutboxConflictError("explicit human media review checks are required")
+        review_time = _parse_time(reviewed_at)
+        if (
+            review_time is None
+            or datetime.fromisoformat(reviewed_at.replace("Z", "+00:00")).tzinfo is None
+            or review_time < _parse_time(document["created_at"])
+            or review_time > self.now() + timedelta(minutes=5)
+        ):
+            raise OutboxConflictError("media decision predates its artifact or is future-dated")
+        binding = _safe_value(
+            {
+                "outbox_id": outbox_id,
+                "accepted_job_id": accepted_job_id,
+                "publication_digest": publication_digest,
+                "artifact_sha256": artifact_sha256,
+                "destination_sha256": media_destination_sha256(document),
+                "reviewer": reviewer,
+                "reviewed_at": reviewed_at,
+                "decision": decision,
+                "checks_confirmed": True,
+                "notes": notes,
+            }
+        )
+
+        def _record(current: dict[str, Any]) -> None:
+            review = current.get("media_review")
+            if (
+                not isinstance(review, dict)
+                or current["publication_identity"]["accepted_job_id"] != accepted_job_id
+                or current["publication_digest"] != publication_digest
+                or current["artifact"]["sha256"] != artifact_sha256
+                or current["artifact"]["media_kind"] != "video"
+                or media_destination_sha256(current) != binding["destination_sha256"]
+            ):
+                raise OutboxConflictError("media decision is not bound to this prepared video")
+            previous = review.get("binding")
+            if previous is not None:
+                # HTTP retries can receive a new server-generated timestamp.
+                # Keep the original decision, audit event and admission window.
+                if {key: value for key, value in previous.items() if key != "reviewed_at"} != {
+                    key: value for key, value in binding.items() if key != "reviewed_at"
+                }:
+                    raise OutboxConflictError("media review already consumed; reconcile explicitly")
+                return
+            if current.get("claim") is not None or any(
+                leg.get("intent") or leg.get("receipts") for leg in current["providers"].values()
+            ):
+                raise OutboxConflictError("media review cannot authorize ambiguous prior work")
+            review.update(status=decision, binding=binding)
+            review["audit_trail"].append(binding)
+            for leg in current["providers"].values():
+                if decision == "approved":
+                    leg["approval"] = approval
+                    # The existing verification budget begins at media
+                    # admission, not while the human is reviewing private bytes.
+                    leg["verification_horizon_at"] = _iso(self.now() + timedelta(hours=24))
+                    leg["active_schedule_token"] = None
+            if decision == "approved":
+                _ensure_provider_reconciliation(
+                    current, due_at=self.now() + INITIAL_RECONCILIATION_DELAY
+                )
+
+        return self._update(outbox_id, _record)
 
     def _register_artifact_reference(self, artifact_sha256: str, outbox_id: str) -> None:
         path = f"{ARTIFACT_REFERENCE_PREFIX}/{artifact_sha256}.json"
@@ -1816,6 +1965,8 @@ class DistributionOutboxRepository:
         result: dict[str, Any] = {}
 
         def _claim(document: dict[str, Any]) -> None:
+            if not media_review_allows_distribution(document):
+                raise MediaReviewRequiredError("separate prepared-media review required")
             now = self.now()
             _ensure_truth_fields(document)
             current = document.get("claim")
@@ -2022,6 +2173,54 @@ class DistributionOutboxRepository:
             document["claim"]["lease_expires_at"] = _iso(now + timedelta(seconds=lease_seconds))
 
         return self._update(claim.outbox_id, _heartbeat)
+
+    def authorize_dispatch(
+        self,
+        claim: Claim,
+        *,
+        provider: str,
+        operation: str | None = None,
+        provider_io: bool = True,
+    ) -> dict[str, Any]:
+        """Check live fencing and the original verification window at provider I/O."""
+        document = self.read(claim.outbox_id)
+        if document is None:
+            raise DistributionOutboxError("outbox item does not exist")
+        self._require_claim(document, claim, mutation=operation is not None)
+        artifact = document["artifact"]
+        canonical = document.get("canonical_artifact") or {}
+        if (
+            document["publication_digest"]
+            != _publication_digest(document["publication_identity"], artifact)
+            or canonical.get("selected") is not True
+            or canonical.get("artifact_id") != artifact["sha256"]
+            or any(
+                canonical.get(field) != artifact[field]
+                for field in ("path", "sha256", "media_kind")
+            )
+        ):
+            raise DistributionOutboxError("canonical media identity changed")
+        leg = self._provider(document, provider)
+        if not provider_approval_is_valid(document, provider):
+            raise MediaReviewRequiredError("provider approval is missing or stale")
+        horizon = _parse_time(leg.get("verification_horizon_at"))
+        if (provider_io or operation is not None) and (
+            horizon is None
+            or self.now() >= horizon
+            or int(leg.get("verification_attempt") or 0) >= int(leg.get("verification_budget") or 0)
+        ):
+            raise DistributionOutboxError("provider verification window is exhausted")
+        if operation is not None:
+            intent = leg.get("intent") or {}
+            if (
+                intent.get("operation") != operation
+                or not intent.get("consumed_at")
+                or intent.get("consumed_owner") != claim.owner
+                or intent.get("consumed_fence") != claim.fencing_token
+                or intent.get("consumed_attempt_id") != claim.attempt_id
+            ):
+                raise StaleClaimError("provider operation is not owned by this dispatch")
+        return document
 
     def persist_intent(
         self,
@@ -2302,29 +2501,46 @@ class DistributionOutboxRepository:
         *,
         provider: str,
         due_at: datetime,
-    ) -> str:
+    ) -> str | None:
         captured: dict[str, str] = {}
 
         def _schedule(document: dict[str, Any]) -> None:
             self._require_claim(document, claim)
             leg = self._provider(document, provider)
+            horizon = _parse_time(str(leg.get("verification_horizon_at") or ""))
+            exhaustion_reason = None
+            if int(leg.get("verification_attempt") or 0) >= int(
+                leg.get("verification_budget") or 0
+            ):
+                exhaustion_reason = "provider verification budget is exhausted"
+            elif horizon is None or self.now() >= horizon or due_at > horizon:
+                exhaustion_reason = "provider verification horizon is exhausted"
+            if exhaustion_reason:
+                captured.pop("token", None)
+                leg["result"] = "manual_handoff_required"
+                leg["next_reconcile_at"] = None
+                leg["active_schedule_token"] = None
+                leg["active_schedule_source"] = None
+                leg["schedule_notification_token"] = None
+                leg["schedule_notification_sent_at"] = None
+                leg["notification_reservation"] = None
+                if leg.get("verification"):
+                    leg["verification"]["result"] = "manual_handoff_required"
+                    leg["verification"]["exhaustion_reason"] = exhaustion_reason
+                self._refresh_aggregate(document)
+                _attempt_event(
+                    _active_attempt(document),
+                    "verifying",
+                    _iso(self.now()),
+                    provider=provider,
+                    result="manual_handoff_required",
+                    exhaustion_reason=exhaustion_reason,
+                )
+                return
             existing = leg.get("active_schedule_token")
             if existing and leg.get("active_schedule_source") != "initial_notification":
                 captured["token"] = str(existing)
                 return
-            if int(leg.get("verification_attempt") or 0) >= int(
-                leg.get("verification_budget") or 0
-            ):
-                leg["result"] = "manual_handoff_required"
-                leg["next_reconcile_at"] = None
-                self._refresh_aggregate(document)
-                raise DistributionOutboxError("provider verification budget is exhausted")
-            horizon = _parse_time(str(leg.get("verification_horizon_at") or ""))
-            if horizon is not None and due_at > horizon:
-                leg["result"] = "manual_handoff_required"
-                leg["next_reconcile_at"] = None
-                self._refresh_aggregate(document)
-                raise DistributionOutboxError("provider verification horizon is exhausted")
             token = hashlib.sha256(
                 f"{claim.outbox_id}|{provider}|{_iso(due_at)}".encode("utf-8")
             ).hexdigest()
@@ -2338,7 +2554,7 @@ class DistributionOutboxRepository:
             captured["token"] = token
 
         self._update(claim.outbox_id, _schedule)
-        return captured["token"]
+        return captured.get("token")
 
     def consume_schedule_token(
         self,
@@ -2378,6 +2594,18 @@ class DistributionOutboxRepository:
                 "failed_terminal": "failed_terminal",
             }
             outcome = terminal_map.get(weekly_state)
+            if (
+                outcome in {"partial", "manual_action_required"}
+                and "media_review" in document
+                and media_review_allows_distribution(document)
+                and any(
+                    leg.get("result") == "pending_provider"
+                    for leg in document["providers"].values()
+                )
+            ):
+                # A completed/manual leg must not revoke the already-reviewed
+                # pending leg. Ambiguous consumed intents still fence takeover.
+                outcome = None
             if outcome and not attempt.get("terminal_outcome"):
                 attempt["terminal_outcome"] = outcome
                 attempt["provider_evidence"] = {
@@ -2458,6 +2686,8 @@ class DistributionOutboxRepository:
                 if raw is None:
                     continue
                 document = json.loads(raw.decode("utf-8"))
+                if not media_review_allows_distribution(document):
+                    continue
                 for provider, leg in document.get("providers", {}).items():
                     due_at = _parse_time(str(leg.get("next_reconcile_at") or ""))
                     token = leg.get("active_schedule_token")
@@ -2838,6 +3068,8 @@ class DistributionOutboxRepository:
             if raw is None:
                 continue
             document = _load_outbox_document(raw)
+            if not media_review_allows_distribution(document):
+                continue
             item_id = str(document["outbox_id"])
             document = self._update(
                 item_id,
@@ -3047,6 +3279,8 @@ class DistributionOutboxRepository:
         if mutation and (claim.read_only or current.get("read_only")):
             raise StaleClaimError("takeover claim is reconciliation-only")
         if mutation:
+            if not media_review_allows_distribution(document):
+                raise MediaReviewRequiredError("prepared-media review is missing or stale")
             attempt = _active_attempt(document)
             if attempt.get("authz_source") != "initial_enqueue" and not (
                 _recovery_authorization_binding_is_valid(

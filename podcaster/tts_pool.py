@@ -29,6 +29,7 @@ import logging
 import random
 import socket
 from dataclasses import dataclass
+from functools import partial
 from typing import Awaitable, Callable, Mapping, Sequence
 from urllib.error import HTTPError, URLError
 
@@ -150,6 +151,8 @@ def synthesize_plan_concurrent(
     synthesize: SynthesizeFn = synthesize_turn,
     sleeper: Sleeper | None = None,
     progress: "Callable[[int, int], None] | None" = None,
+    exact_review: bool = False,
+    before_provider: Callable[[], None] | None = None,
 ) -> list[bytes]:
     """Synthesize ``plan`` concurrently, returning audio bytes in plan order.
 
@@ -162,6 +165,10 @@ def synthesize_plan_concurrent(
     ``progress`` (issue #470): when supplied it is called ``progress(completed,
     total)`` as each segment finishes so callers can surface a live "recording
     N/M" counter. A failing callback never aborts synthesis.
+
+    ``exact_review`` admits segments serially, retries only explicit 429
+    rejections and checks ``before_provider`` before every attempt. Legacy
+    callers retain the configured concurrent/transient-retry policy.
     """
 
     if not decision.get("allowed"):
@@ -171,6 +178,8 @@ def synthesize_plan_concurrent(
         raise ValueError("voice plan is empty")
 
     pool = pool or load_tts_pool_config()
+    if exact_review and synthesize is synthesize_turn:
+        synthesize = partial(synthesize_turn, exact_review=True, before_provider=before_provider)
     turns = list(plan)
     total = len(turns)
     progress = _guard_progress(progress)
@@ -182,6 +191,8 @@ def synthesize_plan_concurrent(
     if (pool.concurrency <= 1 or len(turns) <= 1) and pool.max_retries == 0:
         outputs: list[bytes] = []
         for turn in turns:
+            if exact_review and before_provider is not None:
+                before_provider()
             outputs.append(
                 synthesize(turn, config, token_provider=token_provider, transport=transport)
             )
@@ -197,6 +208,8 @@ def synthesize_plan_concurrent(
         synthesize=synthesize,
         sleeper=sleeper or asyncio.sleep,
         progress=progress,
+        exact_review=exact_review,
+        before_provider=before_provider,
     )
     return _run_coro(coro)
 
@@ -246,6 +259,8 @@ async def _synthesize_all(
     synthesize: SynthesizeFn,
     sleeper: Sleeper,
     progress: "Callable[[int, int], None] | None" = None,
+    exact_review: bool = False,
+    before_provider: Callable[[], None] | None = None,
 ) -> list[bytes]:
     semaphore = asyncio.Semaphore(pool.concurrency)
     results: list[bytes | None] = [None] * len(turns)
@@ -263,6 +278,8 @@ async def _synthesize_all(
                 transport=transport,
                 synthesize=synthesize,
                 sleeper=sleeper,
+                exact_review=exact_review,
+                before_provider=before_provider,
             )
             results[index] = audio
             # Runs on the single event-loop thread, so this counter needs no
@@ -276,7 +293,12 @@ async def _synthesize_all(
         pool.concurrency,
         pool.max_retries,
     )
-    await asyncio.gather(*(worker(i, turn) for i, turn in enumerate(turns)))
+    if exact_review:
+        # Do not let queued segments start after an ambiguous acceptance or revocation.
+        for i, turn in enumerate(turns):
+            await worker(i, turn)
+    else:
+        await asyncio.gather(*(worker(i, turn) for i, turn in enumerate(turns)))
     # Every slot must be populated once gather completes without raising; a None
     # here would mean a worker silently skipped its segment and would break the
     # order-preserving contract, so fail loudly instead of dropping entries.
@@ -296,9 +318,13 @@ async def _synthesize_one(
     transport: Transport | None,
     synthesize: SynthesizeFn,
     sleeper: Sleeper,
+    exact_review: bool = False,
+    before_provider: Callable[[], None] | None = None,
 ) -> bytes:
     attempt = 0
     while True:
+        if exact_review and before_provider is not None:
+            before_provider()
         try:
             return await asyncio.to_thread(
                 synthesize,
@@ -309,7 +335,8 @@ async def _synthesize_one(
             )
         except Exception as exc:  # noqa: BLE001 - retry transient/rate-limit failures
             attempt += 1
-            if attempt > pool.max_retries or not is_retryable(exc):
+            safe_retry = is_rate_limited(exc) if exact_review else is_retryable(exc)
+            if attempt > pool.max_retries or not safe_retry:
                 raise
             delay = pool.backoff_delay(attempt)
             logging.warning(

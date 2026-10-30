@@ -93,6 +93,44 @@ def test_video_runner_does_not_import_audio_align():
         importlib.import_module("podcaster.video.audio_align")
 
 
+@pytest.mark.parametrize("snapshot", [{"script_sha256": "a" * 64}, None, "corrupt", []])
+def test_exact_script_video_worker_refuses_before_mutating_storage_or_creating_clients(
+    reviewed_stage, monkeypatch, snapshot
+):
+    from podcaster.video import job_runner as video_runner
+
+    storage, result, _generator, _producer, _script = reviewed_stage
+    job_id = result.response["job_id"]
+    manifest = json.loads(storage.get_bytes(manifest_path(job_id)))
+    manifest["review"]["snapshot"] = snapshot
+    manifest["review"]["status"] = "approved"
+    manifest["generation"]["audio_mode"] = "synthesized"
+    storage.put_bytes(manifest_path(job_id), json.dumps(manifest).encode(), "application/json")
+    before = {path: storage.get_bytes(path) for path in storage.list_blobs("jobs/", limit=10000)}
+    boundaries = {}
+    for name in (
+        "create_intermediate_store",
+        "create_scratch_storage_backend",
+        "create_clip_queue_backend",
+        "_load_or_create_video_budget",
+        "claim_pipeline",
+        "enqueue_distribution_job",
+    ):
+        boundaries[name] = MagicMock(
+            side_effect=AssertionError(f"canonical video job crossed {name}")
+        )
+        monkeypatch.setattr(video_runner, name, boundaries[name])
+
+    outcome = run_video_generation(job_id, storage)
+
+    assert outcome.status == STATUS_SKIPPED
+    for boundary in boundaries.values():
+        boundary.assert_not_called()
+    assert {
+        path: storage.get_bytes(path) for path in storage.list_blobs("jobs/", limit=10000)
+    } == before
+
+
 class FakeStorage:
     """In-memory storage backend for testing."""
 

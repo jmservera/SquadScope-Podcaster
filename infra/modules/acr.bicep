@@ -57,6 +57,9 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
     adminUserEnabled: false
     publicNetworkAccess: deployVnet ? 'Disabled' : 'Enabled'
     policies: {
+      azureADAuthenticationAsArmPolicy: {
+        status: 'enabled'
+      }
       retentionPolicy: {
         status: 'disabled'
       }

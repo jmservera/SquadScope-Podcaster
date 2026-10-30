@@ -28,7 +28,7 @@ Config-driven podcast generation engine. Receives article content and editorial 
   - storage.py — Blob/local storage abstraction
   - validation.py — Request auth + validation
   - publish.py — Spotify for Creators mutation adapter used only by explicit publication orchestration
-  - orchestration.py — approved/manual `process_review_decision` → `publish_staged_job` publication owner
+  - orchestration.py — atomic exact-script approval/dispatch and separate publication review
   - costs.py — Monthly budget/ledger guardrails
   - sanitization.py — Prompt injection neutralization
   - claim_extraction.py — Claim ledger from articles
@@ -48,13 +48,84 @@ Config-driven podcast generation engine. Receives article content and editorial 
 2. validation.py authenticates and validates request
 3. jobs.py stages artifacts, runs budget checks, generates script via LLM
 4. hooks.py generates personality-matched conversational hooks via LLM
-5. Job enqueued to Azure Storage Queue
-6. job_runner.py dequeues, runs TTS synthesis per turn via Azure OpenAI
-7. audio.py stitches segments + mixes intro/outro music (ffmpeg, eval=frame volume expressions)
-8. Validation pass (duration, file size, format checks)
-9. Artifacts stored to Azure Blob Storage
-10. Validated audio remains staged and is never published by synthesis
-11. An explicit approved/manual orchestration request runs `process_review_decision` → `publish_staged_job`; video generation and distribution remain independent
+   Script generation enforces explicit requested spoken-word ranges against the
+   final TTS-parser output, including formatter disclosures, with bounded repairs.
+   Complete replacements preserve original section identities/order and minimum
+   host turns. Prior canonical scripts and ordered section identities (including
+   duplicates) use lossless, delimiter-safe JSON fences through grounding,
+   section and length repairs. Repair context is bounded before serialization;
+   oversized context fails without truncating identities. Public
+   quality failures expose only fixed messages and numeric constraints.
+   Production claim alignment accounts for every exact final spoken turn.
+   Audit prompts losslessly JSON-encode complete turns and bounded raw evidence
+   inside untrusted fences; quote matching uses those same decoded evidence
+   buffers, preserving Unicode and whitespace without exposing fence delimiters.
+   Generation and all repairs select those same raw article/news windows
+   (16,000/5,000 characters) before lossy prompt sanitization. Audit budgets
+   include ASCII-serialized full speech, quote/notes and schema overhead,
+   using at most eight ordered batches capped at the deployed GPT-4o-mini's
+   16,384 output tokens each. Quotes/notes are bounded to 1,024/256 serialized
+   characters per row. Oversized utterances, insufficient evidence fields or
+   incomplete completions fail closed with regeneration guidance; no speech
+   is truncated, silently omitted or blindly retried.
+   Literal evidence is bound to either the article or separately supplied
+   breaking news (`source_kind`); supplemental material has no invented article
+   URL. Known empirical/novelty/absence formulations are conservatively rejected
+   even with caveats; growth-assertion guards do not treat technical terms such
+   as power-surge protection or the product name Surge as growth claims.
+   Qualified interpretations require spoken source attribution in supported
+   English, Spanish or French as well as a literal source quote; editor notes
+   cannot supply the spoken qualification. Repairs retain scoped observations.
+   Quotes and model alignment are triage, not entailment, factual verification,
+   or human approval; all extracted claims remain `verified=false`.
+5. Production pauses with manifest `review_pending`; response remains HTTP 202 `accepted`.
+   Missing production article/LLM configuration fails closed, never accepting a placeholder.
+6. A human reviews staged script/transcript/packet, source claims, rights, provider
+   constraints, configured disclosure, acronym pronunciation and Markdown readiness.
+   `/api/review` requires the exact `review.snapshot.script_sha256` and
+   `review.snapshot.manifest_sha256` for pre-TTS approval. It records the
+   reviewer/time/decision/audit only in `review.synthesis_approval`, leaving shared
+   publication review pending. Explicit artifact checklist confirmation and actual
+   provider-selection/privacy/security/disclosure evidence bound to the effective
+   provider fingerprint are required; configuration readiness is not signoff.
+   Approval atomically consumes a dispatch intent before enqueue.
+7. job_runner.py verifies content/config digests and approval again, then consumes
+   an atomic one-shot provider claim before TTS. Concurrent/duplicate messages
+   cannot repeat TTS; ambiguous dispatch/provider outcomes require reconciliation.
+   Exact-review segments are admitted serially with live approval checks before
+   each attempt. Only explicit rate-limit rejection (429) is retryable; ambiguous
+   acceptance stops subsequent segments and leaves the claim unknown. Negative
+   human decisions can revoke queued approval without rearming dispatch, but
+   cannot retract provider calls already accepted.
+8. audio.py stitches segments + mixes intro/outro music (ffmpeg, eval=frame volume expressions)
+9. Validation pass (duration, file size, format checks)
+10. Artifacts stored to Azure Blob Storage
+11. Validated audio remains staged and is never published by synthesis
+12. Existing nonsnapshot post-audio approval/manual orchestration can run
+    `process_review_decision` → `publish_staged_job`. For exact-script jobs,
+    generic post-audio decisions are audited under `review.audio_approval` while
+    shared publication review stays pending. Neither script nor audio consent
+    authorizes future media. Exact-script jobs may queue private video
+    preparation only from complete verified synthesis proof; the renderer consumes
+    that verified MP3, never a separate first-match selection.
+13. Private immutable video/outbox artifacts require a separate actual
+    MP4/digest/job/destination-bound human media decision. The existing scheduler
+    notifies only approved media. The distribution worker revalidates proof and
+    runtime destination bindings and consumes fenced operation-specific intents
+    before the existing YouTube/Spotify video adapters. Unknown mutations are
+    never replayed. YouTube starts private/unlisted; separate media consent
+    permits promotion, not script consent. Spotify retains its operator live
+    flags; audio publishing is not called. Provider public readback must prove
+    exact identity/media before terminal success. Mutation stays disabled by
+    default and legacy outboxes are not blanket enabled.
+    YouTube upload and identity readback share bounded metadata (100-character
+    title, 5,000-character description with the publication marker retained).
+    Each readback consumes one verification attempt; exhausted polling persists
+    a manual handoff and clears scheduling before the worker releases its claim.
+    Binding/fencing checks still cover completed legs, but polling limits admit
+    only new provider I/O: terminal legs do not block duplicates or other pending
+    destinations. Delayed pending deliveries past their horizon hand off without
+    provider I/O.
 
 ## API Contract
 ### Config Contract (received via API payload)
@@ -68,7 +139,8 @@ Required: week, article_url
 Optional: article_content, article_title, article_sha256, source_artifacts, podcast_config, script_directions, music_mix, dry_run, force, callback
 
 ### Response Contract
-Returns: job_id, status, manifest_url, mp3_url, transcript_url, show_notes_url, warnings, errors
+Returns the same eleven keys: job_id, status, manifest_url, mp3_url, wav_url,
+transcript_url, show_notes_url, publishing_packet_url, expires_at, warnings, errors.
 
 ## Audio Mixing Architecture
 - Music track: assets/music/claracle-theme.mp3 (85.4s, used for both intro and outro)
@@ -84,6 +156,9 @@ Returns: job_id, status, manifest_url, mp3_url, transcript_url, show_notes_url, 
 - OpenAI: podcaster-yqabcnkm2junu-openai (deployments: tts, chat)
 - Storage: squadscopepo3f9a07d60de7
 - Auth: Managed Identity (DefaultAzureCredential)
+- API and synthesis share deployment/voice settings and `ttsRuntimePolicy`
+  (API version, format, styles, pool concurrency/retries/backoff) via `main.bicep`;
+  both therefore fingerprint the same effective provider configuration for review.
 
 ## Environment Variables
 Required:

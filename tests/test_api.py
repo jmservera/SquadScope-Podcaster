@@ -6,6 +6,8 @@ import io
 import json
 import logging
 import os
+from datetime import datetime, timezone
+from functools import partial
 from http import HTTPStatus
 from typing import Any
 from unittest.mock import patch
@@ -18,6 +20,7 @@ from podcaster.dispatch_receipts import dispatch_receipt_path
 from podcaster.jobs import ReplayCollisionError
 from podcaster.orchestration import JobPublishOutcome
 from podcaster.publish import PublishResult
+from podcaster.review import ReviewBindingError
 
 
 class FakeRequest:
@@ -460,17 +463,21 @@ class TestSuccessfulGeneration:
     def _headers(self, body: bytes) -> dict[str, str]:
         return {"x-podcaster-api-key": "test-key-123", "Content-Length": str(len(body))}
 
-    def test_valid_request_returns_202(self, tmp_path, monkeypatch):
+    def test_valid_request_returns_202(self, tmp_path, monkeypatch, offline_script_generation):
         monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
         monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(tmp_path))
         body = json.dumps(
             {
                 "week": "2026-W24",
                 "article_url": "https://example.com/article",
+                "article_content": "The source describes a product rollout, engineering tradeoffs, "
+                "customer impact, and competitive context in enough detail for a substantive "
+                "weekly discussion of the deployment evidence.",
+                "article_title": "Reviewed weekly signal",
             }
         ).encode()
         handler = make_handler("POST", "/api/generate", body=body, headers=self._headers(body))
-        assert handler.response_code == HTTPStatus.ACCEPTED
+        assert handler.response_code == HTTPStatus.ACCEPTED, handler.get_response_json()
         resp = handler.get_response_json()
         assert resp["job_id"] is not None
         assert resp["status"] == "accepted"
@@ -478,7 +485,7 @@ class TestSuccessfulGeneration:
         assert resp["errors"] == []
 
     def test_registered_dispatch_intent_correlates_first_durable_arrival(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, offline_script_generation
     ):
         monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
         monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(tmp_path))
@@ -503,6 +510,10 @@ class TestSuccessfulGeneration:
             {
                 "week": "2026-W39",
                 "article_url": "https://example.com/article",
+                "article_content": "The source describes a product rollout, engineering tradeoffs, "
+                "customer impact, and competitive context in enough detail for a substantive "
+                "weekly discussion of the deployment evidence.",
+                "article_title": "Reviewed weekly signal",
                 "dispatch_correlation_id": correlation_id,
             }
         ).encode()
@@ -512,7 +523,7 @@ class TestSuccessfulGeneration:
             body=generate_body,
             headers=self._headers(generate_body),
         )
-        assert generated.response_code == HTTPStatus.ACCEPTED
+        assert generated.response_code == HTTPStatus.ACCEPTED, generated.get_response_json()
         receipt = json.loads((tmp_path / dispatch_receipt_path(correlation_id)).read_text())
         assert receipt["arrival_state"] == "arrived"
         assert receipt["accepted_job_id"] == generated.get_response_json()["job_id"]
@@ -577,6 +588,104 @@ class TestSuccessfulGeneration:
 
         assert handler.response_code == HTTPStatus.INTERNAL_SERVER_ERROR
         assert handler.get_response_json()["errors"] == ["internal server error"]
+        mock_report.assert_called_once()
+
+    @pytest.mark.parametrize("safe_quality_reason", [True, False])
+    @patch("podcaster.api.report_failure")
+    @patch("podcaster.api.run_generation_job")
+    def test_script_quality_contract_502_is_actionable_without_provider_detail_leak(
+        self, mock_run, mock_report, safe_quality_reason
+    ):
+        from podcaster.jobs import ScriptGenerationFailed
+        from podcaster.validation import RESPONSE_KEYS
+
+        reason = (
+            "final canonical script has 751 spoken words; requested 1200-1700 inclusive; "
+            "exhausted 2 length repairs"
+        )
+        mock_run.side_effect = ScriptGenerationFailed(
+            "private-provider-token-and-endpoint",
+            quality_reason=reason if safe_quality_reason else None,
+        )
+        body = json.dumps(
+            {"week": "2026-W44", "article_url": "https://example.com/article"}
+        ).encode()
+        handler = make_handler("POST", "/api/generate", body=body, headers=self._headers(body))
+        assert handler.response_code == HTTPStatus.BAD_GATEWAY
+        response = handler.get_response_json()
+        assert set(response) == set(RESPONSE_KEYS)
+        assert response["status"] == "failed"
+        assert (reason in response["errors"][0]) is safe_quality_reason
+        assert "no episode was produced" in response["errors"][0]
+        assert "private-provider" not in json.dumps(response)
+        mock_report.assert_called_once()
+
+    @pytest.mark.parametrize("failure", ["provider", "section"])
+    @pytest.mark.parametrize("month", [1, 10])
+    @patch("podcaster.api.report_failure")
+    def test_real_generation_quality_errors_do_not_echo_upstream_text(
+        self, mock_report, tmp_path, monkeypatch, offline_script_generation, failure, month
+    ):
+        from podcaster.costs import monthly_ledger_path
+        from podcaster.jobs import run_generation_job
+        from podcaster.storage import LocalStorageBackend
+        from podcaster.validation import RESPONSE_KEYS
+
+        calls = []
+
+        def transport(request):
+            calls.append(request)
+            if len(calls) == 1:
+                dialogue = "\n".join(
+                    f"## Section: {title}\n"
+                    + "\n".join(f"{host}: Brief." for host in ("Theo", "Vera", "Theo", "Vera"))
+                    for title in ("PRIVATE_TITLE_CANARY", "Second")
+                )
+            else:
+                dialogue = "Theo: " + "word " * 1200 + "\nVera: Indeed."
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {"content": dialogue},
+                            "finish_reason": "PRIVATE_PROVIDER_CANARY"
+                            if failure == "provider"
+                            else "stop",
+                        }
+                    ]
+                }
+            ).encode()
+
+        monkeypatch.setattr("podcaster.script_gen._default_transport", transport)
+        monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
+        monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(tmp_path))
+        current = datetime(2026, month, 15, tzinfo=timezone.utc)
+        monkeypatch.setattr(
+            "podcaster.api.run_generation_job", partial(run_generation_job, now=current)
+        )
+        body = json.dumps(
+            {
+                "week": "2026-W44",
+                "article_url": "https://example.com/article",
+                "article_title": "Deployment evidence",
+                "article_content": "The source describes a product rollout, engineering tradeoffs, "
+                "customer impact, and competitive context in enough detail for a substantive "
+                "weekly discussion of the deployment evidence.",
+                "script_directions": {"episode_style": {"format": "1200-1700 words"}},
+            }
+        ).encode()
+        handler = make_handler("POST", "/api/generate", body=body, headers=self._headers(body))
+        response = handler.get_response_json()
+        assert handler.response_code == HTTPStatus.BAD_GATEWAY
+        assert set(response) == set(RESPONSE_KEYS)
+        assert "PRIVATE_" not in json.dumps(response)
+        assert ("completion incomplete" if failure == "provider" else "section validation") in (
+            response["errors"][0]
+        )
+        assert len(calls) == (1 if failure == "provider" else 3)
+        storage = LocalStorageBackend(tmp_path, "https://test.example")
+        monthly = json.loads(storage.get_bytes(monthly_ledger_path(current.strftime("%Y-%m"))))
+        assert not any(row.get("state") == "reserved" for row in monthly["episodes"])
         mock_report.assert_called_once()
 
     def test_wrong_path_returns_404(self):
@@ -658,6 +767,23 @@ class TestReviewEndpoint:
         assert handler.response_code == HTTPStatus.BAD_REQUEST
         assert "job_id is required" in handler.get_response_json()["errors"]
 
+    def test_review_binding_conflict_never_exposes_exception_details(self):
+        confidential = "confidential-review-sentinel: /private/review.json provider-token=hidden"
+        body = json.dumps(
+            {"job_id": "podcast-1", "reviewer": "test-reviewer", "decision": "approved"}
+        ).encode()
+
+        with patch(
+            "podcaster.api.process_review_decision",
+            side_effect=ReviewBindingError(confidential),
+        ) as process:
+            handler = make_handler("POST", "/api/review", body=body, headers=self._headers(body))
+
+        process.assert_called_once()
+        assert handler.response_code == HTTPStatus.CONFLICT
+        assert handler.get_response_json() == {"error": "review binding conflict"}
+        assert confidential not in handler._wfile.getvalue().decode()
+
     @patch("podcaster.api.process_review_decision")
     def test_review_endpoint_returns_manifest_and_publish_status(self, mock_process):
         mock_process.return_value = JobPublishOutcome(
@@ -673,6 +799,48 @@ class TestReviewEndpoint:
         assert response["job_id"] == "podcast-1"
         assert response["publish_status"] == "published"
         assert response["manifest"]["status"] == "published"
+
+    @patch("podcaster.api.process_review_decision")
+    def test_review_endpoint_preserves_digests_and_explicit_checks(self, mock_process):
+        mock_process.return_value = JobPublishOutcome(
+            manifest={"job_id": "podcast-1", "status": "review_approved"},
+        )
+        body = json.dumps(
+            {
+                "job_id": "podcast-1",
+                "reviewer": "leela",
+                "decision": "approved",
+                "script_sha256": "a" * 64,
+                "manifest_sha256": "b" * 64,
+                "provider_authorization": {
+                    "provider_privacy_review_reference": "test-evidence/privacy-review",
+                    "rai_security_signoff_reference": "test-evidence/rai-security-review",
+                    "provider_settings_sha256": "c" * 64,
+                },
+                "review_checks_confirmed": True,
+                "media_review": {
+                    "outbox_id": "d" * 64,
+                    "publication_digest": "e" * 64,
+                    "artifact_sha256": "f" * 64,
+                },
+            }
+        ).encode()
+        handler = make_handler("POST", "/api/review", body=body, headers=self._headers(body))
+
+        assert handler.response_code == HTTPStatus.OK
+        assert mock_process.call_args.kwargs["script_sha256"] == "a" * 64
+        assert mock_process.call_args.kwargs["manifest_sha256"] == "b" * 64
+        assert mock_process.call_args.kwargs["provider_authorization"] == {
+            "provider_privacy_review_reference": "test-evidence/privacy-review",
+            "rai_security_signoff_reference": "test-evidence/rai-security-review",
+            "provider_settings_sha256": "c" * 64,
+        }
+        assert mock_process.call_args.kwargs["review_checks_confirmed"] is True
+        assert mock_process.call_args.kwargs["media_review"] == {
+            "outbox_id": "d" * 64,
+            "publication_digest": "e" * 64,
+            "artifact_sha256": "f" * 64,
+        }
 
     @patch("podcaster.api.process_review_decision", side_effect=ValueError("secret missing job"))
     def test_review_endpoint_sanitizes_missing_job_error(self, _mock_process, caplog):

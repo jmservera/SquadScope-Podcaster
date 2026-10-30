@@ -7,10 +7,12 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+from uuid import uuid4
 
 from podcaster.config import SpotifyPublishConfig
 from podcaster.costs import cost_gate_blockers
+from podcaster.distribution_outbox import DistributionOutboxError, DistributionOutboxRepository
 from podcaster.generation import manifest_bytes
 from podcaster.music import TRACK_ATTRIBUTION
 from podcaster.publication_state import (
@@ -25,7 +27,16 @@ from podcaster.publication_state import (
     publication_identity,
 )
 from podcaster.publish import PublishResult, publish_episode
-from podcaster.review import APPROVED, apply_review_decision
+from podcaster.queue import enqueue_synthesis_job
+from podcaster.review import (
+    APPROVED,
+    ReviewBindingError,
+    apply_review_decision,
+    is_exact_script_job,
+    validate_private_media_inputs,
+    validate_review_binding,
+    validate_review_snapshot,
+)
 from podcaster.sanitization import normalize_weekly_url
 from podcaster.storage import (
     LocalStorageBackend,
@@ -34,6 +45,7 @@ from podcaster.storage import (
     _safe_local_blob_path,
     create_storage_backend,
 )
+from podcaster.tts import load_tts_config
 
 logger = logging.getLogger("podcaster.orchestration")
 
@@ -63,18 +75,157 @@ def process_review_decision(
     run_url: str | None = None,
     storage: StorageBackend | None = None,
     publish_on_approval: bool = True,
+    publish_video_on_approval: bool | None = None,
+    script_sha256: str | None = None,
+    manifest_sha256: str | None = None,
+    provider_authorization: dict[str, Any] | None = None,
+    review_checks_confirmed: bool = False,
+    enqueue: Callable[[str], bool] | None = None,
+    media_review: dict[str, Any] | None = None,
 ) -> JobPublishOutcome:
+    """Record review atomically; pre-TTS approval dispatches only the staged script.
+
+    ``publish_video_on_approval`` is compatibility-only and never authorizes video.
+    """
     backend = storage or create_storage_backend()
-    manifest = load_manifest(backend, job_id)
-    updated = apply_review_decision(
-        manifest,
-        reviewer=reviewer,
-        reviewed_at=reviewed_at,
-        decision=decision,
-        notes=notes,
-        run_url=run_url,
-    )
-    persist_manifest(backend, job_id, updated)
+    if media_review is not None:
+        # This is the same authenticated review interface, but a separate
+        # decision over an existing private MP4/outbox digest. It must not
+        # dispatch TTS, synthesize again, approve audio, or render new bytes.
+        manifest = load_manifest(backend, job_id)
+        if not is_exact_script_job(manifest) or not isinstance(media_review, dict):
+            raise ReviewBindingError("media review requires an exact-script job")
+        validate_private_media_inputs(manifest, backend, job_id)
+        prepared_id = (
+            manifest.get("generation", {})
+            .get("video_runner", {})
+            .get("distribution", {})
+            .get("outbox_id")
+        )
+        if not prepared_id or media_review.get("outbox_id") != prepared_id:
+            raise ReviewBindingError("media review must name this job's prepared outbox")
+        try:
+            DistributionOutboxRepository(backend).record_media_review(
+                prepared_id,
+                accepted_job_id=job_id,
+                publication_digest=media_review.get("publication_digest"),
+                artifact_sha256=media_review.get("artifact_sha256"),
+                reviewer=reviewer,
+                reviewed_at=reviewed_at,
+                decision=decision,
+                checks_confirmed=review_checks_confirmed,
+                notes=notes,
+            )
+        except (DistributionOutboxError, ValueError, TypeError) as exc:
+            raise ReviewBindingError("prepared-media review binding conflict") from exc
+        # Existing scheduler repairs initial notification after this atomic
+        # decision. There is no second queue-send/dedup implementation here.
+        return JobPublishOutcome(manifest)
+    dispatch_id = uuid4().hex
+
+    def record(content: bytes | None) -> bytes:
+        if content is None:
+            raise ValueError(f"no manifest found for job_id={job_id}")
+        manifest = json.loads(content)
+        if not isinstance(manifest, dict):
+            raise ReviewBindingError("invalid staged manifest")
+        request = manifest.get("request", {})
+        if request.get("dry_run") or job_id.endswith("-dry-run"):
+            raise ReviewBindingError("dry-run artifacts cannot be approved or adopted")
+        generation = manifest.get("generation", {})
+        pre_tts = generation.get("audio_mode") != "synthesized"
+        if (
+            pre_tts
+            and decision == APPROVED
+            and generation.get("synthesis_queue", {}).get("status") not in {None, "awaiting_review"}
+        ):
+            raise ReviewBindingError(
+                "dispatch already requested; reconciliation required, not retry"
+            )
+        if pre_tts and decision == APPROVED:
+            snapshot = manifest.get("review", {}).get("snapshot")
+            if not isinstance(snapshot, dict):
+                raise ReviewBindingError("missing exact-content review snapshot")
+            if (
+                not script_sha256
+                or not manifest_sha256
+                or script_sha256 != snapshot.get("script_sha256")
+                or manifest_sha256 != snapshot.get("manifest_sha256")
+            ):
+                raise ReviewBindingError(
+                    "script_sha256 and manifest_sha256 must match review.snapshot"
+                )
+            if review_checks_confirmed is not True:
+                raise ReviewBindingError("explicit script/artifact review checks are required")
+        updated = apply_review_decision(
+            manifest,
+            reviewer=reviewer,
+            reviewed_at=reviewed_at,
+            decision=decision,
+            notes=notes,
+            run_url=run_url,
+            provider_authorization=provider_authorization,
+            review_checks_confirmed=review_checks_confirmed,
+        )
+        if pre_tts and decision == APPROVED:
+            approval = updated["review"]["synthesis_approval"]
+            binding = {
+                **updated["review"]["snapshot"],
+                "reviewer": reviewer,
+                "reviewed_at": reviewed_at,
+                "decision": decision,
+                "scope": "pre_tts",
+                "provider_authorization": approval["provider_authorization"],
+                "review_checks_confirmed": True,
+            }
+            approval["binding"] = binding
+            approval["audit_trail"].append(binding)
+            validate_review_snapshot(updated, backend, job_id, load_tts_config())
+            validate_review_binding(updated)
+            updated["generation"]["synthesis_queue"] = {
+                "status": "dispatching",
+                "dispatch_id": dispatch_id,
+                "requested_at": reviewed_at,
+                "enqueued_at": None,
+                "detail": "dispatch intent consumed; never blindly retry",
+            }
+        return manifest_bytes(updated)
+
+    backend.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", record)
+    updated = load_manifest(backend, job_id)
+    queue = updated.get("generation", {}).get("synthesis_queue", {})
+    if queue.get("dispatch_id") == dispatch_id:
+        # Persist intent before sending: a timeout/crash may have delivered the
+        # message. No outcome (including missing queue config) re-arms this intent.
+        try:
+            sent = (enqueue or enqueue_synthesis_job)(job_id)
+            status = (
+                "enqueued" if sent is True else "not_configured" if sent is False else "unknown"
+            )
+        except Exception:
+            logger.exception("synthesis dispatch outcome unknown job_id=%s", job_id)
+            status = "unknown"
+
+        def finish_dispatch(content: bytes | None) -> bytes:
+            if content is None:
+                raise ReviewBindingError("dispatch manifest missing; reconciliation required")
+            latest = json.loads(content)
+            state = latest["generation"]["synthesis_queue"]
+            if state.get("dispatch_id") != dispatch_id:
+                raise ReviewBindingError("dispatch ownership changed; reconciliation required")
+            state["status"] = status
+            state["enqueued_at"] = reviewed_at if status == "enqueued" else None
+            state["detail"] = (
+                None
+                if status == "enqueued"
+                else "dispatch blocked; operator reconciliation required"
+            )
+            return manifest_bytes(latest)
+
+        backend.update_bytes(
+            manifest_path(job_id), "application/json; charset=utf-8", finish_dispatch
+        )
+        return JobPublishOutcome(load_manifest(backend, job_id))
     if decision != APPROVED or not publish_on_approval:
         return JobPublishOutcome(updated)
     return publish_staged_job(
