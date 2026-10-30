@@ -143,13 +143,22 @@ def test_disjoint_breaking_news_survives_production_generation_and_alignment(tmp
         + "\n".join(f"{host}: {article}" for host in ("Theo", "Vera", "Theo", "Vera"))
     )
     prompts = []
+    audited_turns = []
 
     def transport(request):
         body = json.loads(request.data)
         prompts.append(body)
         if body.get("response_format"):
             assert "BREAKING NEWS EVIDENCE" in body["messages"][1]["content"]
-            turns = script_gen.spoken_turns(generated[0], jobs.PodcastConfig())
+            from podcaster.sanitization import FENCE_CLOSE, FENCE_OPEN
+
+            turns = json.loads(
+                body["messages"][1]["content"].split("CANONICAL SPOKEN TURNS:\n")[1][
+                    len(FENCE_OPEN) : -len(FENCE_CLOSE)
+                ]
+            )
+            audited_turns.extend(turns)
+            assert 2000 <= body["max_tokens"] <= 16384
             rows = [
                 {
                     "script_excerpt": turn,
@@ -185,7 +194,8 @@ def test_disjoint_breaking_news_survives_production_generation_and_alignment(tmp
     result = run_generation_job(payload, storage=storage)
     ledger = json.loads(storage.get_bytes(f"jobs/{result.response['job_id']}/claim-ledger.json"))
     supplemental = [row for row in ledger if row["source_kind"] == "breaking_news"]
-    assert len(prompts) == 2
+    assert 2 <= len(prompts) <= 9
+    assert audited_turns == script_gen.spoken_turns(generated[0], jobs.PodcastConfig())
     assert len(supplemental) == 4
     assert all(row["source_quote"] == news and row["source_url"] == "" for row in supplemental)
     assert all(not row["verified"] for row in ledger)

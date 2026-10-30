@@ -1253,6 +1253,114 @@ class TestShowIntroPromptLiteral:
 
 
 class TestScriptQualityContract:
+    @pytest.mark.parametrize("grounding_repair", [False, True])
+    def test_generation_repairs_and_audit_share_raw_article_and_news_windows(
+        self, grounding_repair
+    ):
+        import re
+
+        from podcaster.claim_extraction import extract_claims
+        from podcaster.config import EpisodeStyle, ScriptDirections
+        from podcaster.sanitization import neutralize
+
+        article = (
+            VALID_ARTICLE_CONTENT
+            + " Visible article fact.\n\t"
+            + " " * MAX_ARTICLE_CHARS
+            + "HIDDEN_ARTICLE_FACT"
+        )
+        news = "Visible news fact.\n\t" + " " * 5000 + "HIDDEN_NEWS_FACT"
+        requests = []
+        config = PodcastConfig(ai_voice_disclosure="Synthetic voices.")
+
+        def generation_transport(request):
+            body = json.loads(request.data)
+            requests.append(body)
+            prompt = json.dumps(body["messages"])
+            assert "Visible article fact." in prompt and "Visible news fact." in prompt
+            assert "HIDDEN_ARTICLE_FACT" not in prompt
+            assert "HIDDEN_NEWS_FACT" not in prompt
+            blocks = [
+                block
+                for message in body["messages"][:2]
+                for block in re.findall(
+                    re.escape(FENCE_OPEN) + "(.*?)" + re.escape(FENCE_CLOSE),
+                    message["content"],
+                )
+            ]
+            assert neutralize(article[:MAX_ARTICLE_CHARS], limit=MAX_ARTICLE_CHARS) in blocks
+            assert neutralize(news[:5000], limit=5000) in blocks
+            words = 751 if len(requests) <= 2 else 1200
+            return _make_transport(self._dialogue(words))(request)
+
+        script = generate_script(
+            week="2026-W44",
+            article_title="Shared evidence regression",
+            article_url="https://example.com/w44",
+            article_content=article,
+            breaking_news=news,
+            config=_mock_config(),
+            podcast_config=config,
+            script_directions=ScriptDirections(
+                episode_style=EpisodeStyle(format="1200-1700 words")
+            ),
+            token_provider=_fake_token_provider,
+            transport=generation_transport,
+            previous_script=self._dialogue(1200) if grounding_repair else None,
+            repair_feedback="Repair grounding." if grounding_repair else None,
+        )
+        assert len(requests) == 3
+        seen = []
+
+        def audit_transport(request):
+            body = json.loads(request.data)
+            blocks = re.findall(
+                re.escape(FENCE_OPEN) + "(.*?)" + re.escape(FENCE_CLOSE),
+                body["messages"][1]["content"],
+            )
+            article_evidence, news_evidence, turns = [json.loads(block) for block in blocks]
+            assert article_evidence == article[:MAX_ARTICLE_CHARS]
+            assert news_evidence == news[:5000]
+            rows = [
+                {
+                    "script_excerpt": turn,
+                    "grounding": "supported",
+                    "source_kind": "article" if (len(seen) + index) % 2 == 0 else "breaking_news",
+                    "source_quote": (
+                        "Visible article fact.\n\t"
+                        if (len(seen) + index) % 2 == 0
+                        else "Visible news fact.\n\t"
+                    ),
+                }
+                for index, turn in enumerate(turns)
+            ]
+            seen.extend(turns)
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {"content": json.dumps({"claims": rows})},
+                            "finish_reason": "stop",
+                        }
+                    ]
+                }
+            ).encode()
+
+        claims = extract_claims(
+            article_content=article,
+            breaking_news=news,
+            article_url="https://example.com/w44",
+            config=_mock_config(),
+            podcast_config=config,
+            script=script,
+            token_provider=_fake_token_provider,
+            transport=audit_transport,
+        )
+        assert seen == script_gen.spoken_turns(script, config)
+        assert sum(len(turn.split()) for turn in seen) == 1200
+        assert {claim.source_kind for claim in claims} == {"article", "breaking_news"}
+        assert all(not claim.verified for claim in claims)
+
     @staticmethod
     def _dialogue(words):
         # The formatter adds the two-word disclosure at both ends.

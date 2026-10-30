@@ -29,6 +29,7 @@ from podcaster.script_gen import (
     UNTRUSTED_PROMPT_POLICY,
     ScriptGenConfig,
     _default_transport,
+    bounded_source_evidence,
     spoken_turns,
 )
 from podcaster.storage import ManagedIdentityTokenCredential
@@ -39,6 +40,44 @@ logger = logging.getLogger("podcaster.claim_extraction")
 # Maximum claims to extract per article
 MAX_CLAIMS = 15
 MAX_GROUNDING_REPAIRS = 1
+# The repo deploys gpt-4o-mini (infra/main.bicep), whose output cap is
+# 16,384 tokens. Bound total audit cost to eight such requests, without retries.
+GROUNDING_MAX_OUTPUT_TOKENS = 16_384
+MAX_GROUNDING_REQUESTS = 8
+MAX_QUOTE_JSON_CHARS = 1024
+MAX_NOTES_JSON_CHARS = 256
+
+
+def _grounding_batches(turns: list[str]) -> list[tuple[list[str], int]]:
+    batches: list[tuple[list[str], int]] = []
+    batch: list[str] = []
+    budget = 512
+    for turn in turns:
+        # ASCII JSON length upper-bounds byte-level tokens even for Unicode
+        # escapes. Reserve complete quotes, notes, row keys and formatting too.
+        row_budget = (
+            len(json.dumps(turn, ensure_ascii=True))
+            + MAX_QUOTE_JSON_CHARS
+            + MAX_NOTES_JSON_CHARS
+            + 256
+        )
+        if row_budget + 512 > GROUNDING_MAX_OUTPUT_TOKENS:
+            raise ClaimGroundingError(
+                "grounding turn cannot fit the 16384-token response cap; "
+                "split long host utterances without dropping speech, then regenerate"
+            )
+        if budget + row_budget > GROUNDING_MAX_OUTPUT_TOKENS:
+            batches.append((batch, max(2000, budget)))
+            batch, budget = [], 512
+        batch.append(turn)
+        budget += row_budget
+    batches.append((batch, max(2000, budget)))
+    if len(batches) > MAX_GROUNDING_REQUESTS:
+        raise ClaimGroundingError(
+            "grounding exceeds eight bounded audit requests; shorten utterances "
+            "or reduce turn count within the requested spoken-word range, then regenerate"
+        )
+    return batches
 
 
 class ClaimGroundingError(ValueError):
@@ -66,6 +105,7 @@ def _parse_script_claims(
     article_content: str,
     turns: list[str],
     breaking_news: str | None = None,
+    turn_offset: int = 0,
 ) -> list[Claim]:
     try:
         parsed = json.loads(content)
@@ -79,12 +119,23 @@ def _parse_script_claims(
     claims = []
     issues = []
     safe_url = neutralize(article_url, limit=FIELD_LIMITS["reference"])
-    for index, (row, turn) in enumerate(zip(rows, turns), 1):
+    for index, (row, turn) in enumerate(zip(rows, turns), turn_offset + 1):
         if not isinstance(row, dict) or row.get("script_excerpt") != turn:
             issues.append(f"turn {index}: script_excerpt must equal the exact final utterance")
             continue
         status = row.get("grounding")
         quote = row.get("source_quote")
+        notes = row.get("editor_notes", "")
+        if (
+            len(json.dumps(quote, ensure_ascii=True)) > MAX_QUOTE_JSON_CHARS
+            or not isinstance(notes, str)
+            or len(json.dumps(notes, ensure_ascii=True)) > MAX_NOTES_JSON_CHARS
+        ):
+            issues.append(
+                f"turn {index}: grounding quote/notes exceed bounded response fields; "
+                "split the factual utterance and regenerate without dropping evidence"
+            )
+            continue
         source_kind = row.get("source_kind", "article")
         if source_kind not in ("article", "breaking_news"):
             issues.append(f"turn {index}: unknown source provenance")
@@ -215,8 +266,7 @@ def extract_claims(
     system_prompt, user_prompt = _build_claim_extraction_prompt(safe_content)
     turns = None
     if script is not None:
-        article_evidence = article_content[:MAX_ARTICLE_CHARS]
-        news_evidence = (breaking_news or "")[:5000]
+        article_evidence, news_evidence = bounded_source_evidence(article_content, breaking_news)
         turns = spoken_turns(script, podcast_config or PodcastConfig())
         if not turns:
             raise ClaimGroundingError("canonical script has no configured-host spoken turns")
@@ -243,14 +293,19 @@ def extract_claims(
             "The fenced blocks are JSON-encoded data. Decode their JSON escapes before "
             "copying complete turns or contiguous source quotes; preserve exact Unicode "
             "and whitespace. Only the displayed bounded evidence may supply quotes."
+            f" Keep each source_quote within {MAX_QUOTE_JSON_CHARS} ASCII-serialized JSON "
+            f"characters and editor_notes within {MAX_NOTES_JSON_CHARS}, including JSON "
+            "quotes/escapes. Use concise contiguous quotes, never truncate speech. If full "
+            "support cannot fit these fields, mark unsupported and explain that the "
+            "utterance needs splitting. Use compact JSON without extra fields."
         )
         user_prompt = (
             f"ARTICLE EVIDENCE:\n{fence_json(article_evidence)}\n"
             "BREAKING NEWS EVIDENCE (separate provenance, not the article):\n"
             f"{fence_json(news_evidence)}\n"
-            f"CANONICAL SPOKEN TURNS:\n{fence_json(turns)}"
         )
 
+    batches = _grounding_batches(turns) if turns is not None else [(None, 2000)]
     token_provider = token_provider or ManagedIdentityTokenCredential().get_token
     transport = transport or _default_transport
 
@@ -264,58 +319,72 @@ def extract_claims(
         f"?api-version={config.api_version}"
     )
 
-    payload = {
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": 0.3,
-        "max_tokens": min(8192, max(2000, len(turns) * 220)) if turns is not None else 2000,
-        "response_format": {"type": "json_object"},
-    }
+    claims = []
+    for batch_turns, budget in batches:
+        batch_prompt = user_prompt
+        if batch_turns is not None:
+            batch_prompt += f"CANONICAL SPOKEN TURNS:\n{fence_json(batch_turns)}"
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": batch_prompt},
+            ],
+            "temperature": 0.3,
+            "max_tokens": budget,
+            "response_format": {"type": "json_object"},
+        }
 
-    request = Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-    )
-
-    logger.info(
-        "extracting claims deployment=%s article_chars=%s",
-        config.chat_deployment,
-        len(safe_content),
-    )
-
-    raw_response = transport(request)
-    response = json.loads(raw_response.decode("utf-8"))
-
-    choices = response.get("choices", [])
-    if not choices:
-        if turns is not None:
-            raise ClaimGroundingError("grounding completion returned no choices")
-        logger.warning("claim extraction returned no choices")
-        return []
-
-    content = choices[0].get("message", {}).get("content", "").strip()
-    if turns is not None:
-        if choices[0].get("finish_reason") not in (None, "stop"):
-            raise ClaimGroundingError("grounding completion incomplete; no partial ledger accepted")
-        return _parse_script_claims(
-            content,
-            article_url,
-            article_evidence,
-            turns,
-            news_evidence,
+        request = Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
         )
-    if not content:
-        logger.warning("claim extraction returned empty content")
-        return []
 
-    return _parse_claims(content, article_url)
+        logger.info(
+            "extracting claims deployment=%s article_chars=%s",
+            config.chat_deployment,
+            len(safe_content),
+        )
+
+        raw_response = transport(request)
+        response = json.loads(raw_response.decode("utf-8"))
+
+        choices = response.get("choices", [])
+        if not choices:
+            if turns is not None:
+                raise ClaimGroundingError("grounding completion returned no choices")
+            logger.warning("claim extraction returned no choices")
+            return []
+
+        content = choices[0].get("message", {}).get("content", "").strip()
+        if batch_turns is not None:
+            if choices[0].get("finish_reason") not in (None, "stop"):
+                raise ClaimGroundingError(
+                    f"grounding completion incomplete at budget={budget}; "
+                    "no partial ledger accepted; split long factual utterances "
+                    "and regenerate within the requested spoken-word range"
+                )
+            claims.extend(
+                _parse_script_claims(
+                    content,
+                    article_url,
+                    article_evidence,
+                    batch_turns,
+                    news_evidence,
+                    turn_offset=len(claims),
+                )
+            )
+        else:
+            if not content:
+                logger.warning("claim extraction returned empty content")
+                return []
+            return _parse_claims(content, article_url)
+
+    return claims
 
 
 def _parse_claims(raw_json: str, article_url: str) -> list[Claim]:

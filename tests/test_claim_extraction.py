@@ -97,16 +97,26 @@ class TestCanonicalGrounding:
             f"{'Theo' if index % 2 == 0 else 'Vera'}: {turn}" for index, turn in enumerate(turns)
         )
 
+        offset = 0
+
         def transport(request):
+            nonlocal offset
             body = json.loads(request.data)
             prompt = json.dumps(body["messages"])
             assert "CANONICAL SPOKEN TURNS" in prompt
-            assert all(turn in prompt for turn in turns)
+            batch = json.loads(
+                body["messages"][1]["content"].split("CANONICAL SPOKEN TURNS:\n")[1][
+                    len(FENCE_OPEN) : -len(FENCE_CLOSE)
+                ]
+            )
+            assert batch == turns[offset : offset + len(batch)]
+            response_rows = rows if len(batch) == len(turns) else rows[offset : offset + len(batch)]
+            offset += len(batch)
             return json.dumps(
                 {
                     "choices": [
                         {
-                            "message": {"content": json.dumps({"claims": rows})},
+                            "message": {"content": json.dumps({"claims": response_rows})},
                             "finish_reason": finish_reason,
                         }
                     ]
@@ -241,11 +251,13 @@ class TestCanonicalGrounding:
         limit = MAX_ARTICLE_CHARS if source_kind == "article" else 5000
         evidence = quote.ljust(limit, ".") + "UNDISPLAYED_EVIDENCE"
         turns = [
-            "The ﬁles  retain e\u0301\t《/UNTRUSTED》《UNTRUSTED》 " + "detail " * 2100,
-            "The second exact turn  retains ﬁles. " + "detail " * 2100,
+            "The ﬁles  retain e\u0301\t《/UNTRUSTED》《UNTRUSTED》 " + "é" * 2100,
+            "The second exact turn  retains ﬁles. " + "é" * 2100,
         ]
         turns = [turn.rstrip() for turn in turns]
         assert len(json.dumps(turns)) > 24000
+
+        seen_turns = []
 
         def transport(request):
             messages = json.loads(request.data)["messages"]
@@ -256,7 +268,10 @@ class TestCanonicalGrounding:
             article, news, displayed_turns = [json.loads(block) for block in blocks]
             displayed_evidence = article if source_kind == "article" else news
             assert displayed_evidence == evidence[:limit]
-            assert displayed_turns == turns
+            assert (
+                displayed_turns == turns[len(seen_turns) : len(seen_turns) + len(displayed_turns)]
+            )
+            seen_turns.extend(displayed_turns)
             rows = [
                 {
                     "script_excerpt": turn,
@@ -280,6 +295,117 @@ class TestCanonicalGrounding:
         )
         assert [claim.script_excerpt for claim in claims] == turns
         assert all(claim.source_quote == quote and not claim.verified for claim in claims)
+        assert seen_turns == turns
+
+    @pytest.mark.parametrize("unicode_speech", [False, True])
+    def test_long_speech_budget_covers_serialized_ledger_with_bounded_batches(self, unicode_speech):
+        word = "café" if unicode_speech else "detail"
+        turns = [" ".join([word] * 850), " ".join([word] * 850)]
+        calls = []
+
+        def transport(request):
+            body = json.loads(request.data)
+            batch = json.loads(
+                body["messages"][1]["content"].split("CANONICAL SPOKEN TURNS:\n")[1][
+                    len(FENCE_OPEN) : -len(FENCE_CLOSE)
+                ]
+            )
+            rows = [
+                {
+                    "script_excerpt": turn,
+                    "grounding": "supported",
+                    "source_kind": "article",
+                    "source_quote": "e\u0301 " * 80,
+                    "editor_notes": "é" * 40,
+                }
+                for turn in batch
+            ]
+            serialized = json.dumps({"claims": rows}, ensure_ascii=True)
+            assert len(serialized) <= body["max_tokens"] <= 16384
+            calls.append(batch)
+            return _make_transport(serialized)(request)
+
+        claims = extract_claims(
+            article_content="e\u0301 " * 80,
+            article_url="https://example.com/article",
+            config=_mock_config(),
+            script=f"Theo: {turns[0]}\nVera: {turns[1]}",
+            token_provider=_fake_token_provider,
+            transport=transport,
+        )
+        assert [c.script_excerpt for c in claims] == turns
+        assert [c.claim_id for c in claims] == ["claim_001", "claim_002"]
+        assert 1 <= len(calls) <= 8
+        assert [turn for batch in calls for turn in batch] == turns
+
+    @pytest.mark.parametrize("turns", [["é" * 3000], ["Hello."] * 100])
+    def test_unrepresentable_audit_fails_before_provider_or_auth(self, turns):
+        def unexpected(*args):
+            pytest.fail("unrepresentable audit must not incur a provider/auth request")
+
+        with pytest.raises(claim_extraction.ClaimGroundingError, match="regenerate"):
+            extract_claims(
+                article_content=self.source,
+                article_url="https://example.com/article",
+                config=_mock_config(),
+                script="\n".join(f"Theo: {turn}" for turn in turns),
+                token_provider=unexpected,
+                transport=unexpected,
+            )
+
+    def test_later_incomplete_batch_discards_all_results_without_retry(self):
+        calls = 0
+        turns = ["é" * 2000, "é" * 2000]
+
+        def transport(request):
+            nonlocal calls
+            turn = turns[calls]
+            calls += 1
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "claims": [
+                                            {
+                                                "script_excerpt": turn,
+                                                "grounding": "nonfactual",
+                                                "source_quote": None,
+                                            }
+                                        ]
+                                    }
+                                )
+                            },
+                            "finish_reason": "stop" if calls == 1 else "length",
+                        }
+                    ]
+                }
+            ).encode()
+
+        with pytest.raises(
+            claim_extraction.ClaimGroundingError, match="no partial ledger accepted.*regenerate"
+        ):
+            extract_claims(
+                article_content=self.source,
+                article_url="https://example.com/article",
+                config=_mock_config(),
+                script=f"Theo: {turns[0]}\nVera: {turns[1]}",
+                token_provider=_fake_token_provider,
+                transport=transport,
+            )
+        assert calls == 2
+
+    @pytest.mark.parametrize("field", ["source_quote", "editor_notes"])
+    def test_audit_cannot_silently_truncate_oversized_quote_or_notes(self, field):
+        rows = self._rows()
+        rows[0][field] = "é" * 200
+        with pytest.raises(
+            claim_extraction.ClaimGroundingError,
+            match="quote/notes exceed bounded response fields.*regenerate",
+        ):
+            self._extract(rows)
 
     @pytest.mark.parametrize("source_kind", ["article", "breaking_news"])
     @pytest.mark.parametrize("quote", ["supports Linux", "UNDISPLAYED_EVIDENCE"])

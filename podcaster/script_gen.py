@@ -75,6 +75,13 @@ __all__ = [
 # Maximum article content length sent to the LLM (chars). Longer articles are
 # truncated to stay within token limits. 16k chars ≈ 4k tokens.
 MAX_ARTICLE_CHARS = 16000
+MAX_BREAKING_NEWS_CHARS = 5000
+
+
+def bounded_source_evidence(article: str, news: str | None = None) -> tuple[str, str]:
+    """Select raw evidence before any lossy prompt sanitization."""
+    return article[:MAX_ARTICLE_CHARS], (news or "")[:MAX_BREAKING_NEWS_CHARS]
+
 
 # Maximum generated dialogue length (chars). Overflow must not silently lose turns.
 MAX_SCRIPT_CHARS = 16000
@@ -953,7 +960,7 @@ def _build_system_prompt(
         breaking_news_block = _build_untrusted_prompt_block(
             "BREAKING NEWS SOURCE TEXT (UNTRUSTED)",
             breaking_news,
-            limit=5000,
+            limit=MAX_BREAKING_NEWS_CHARS,
         )
         base += (
             "\nBREAKING NEWS SEGMENT (REQUIRED):\n"
@@ -1010,7 +1017,7 @@ def _build_user_prompt(
             "BREAKING NEWS (UNTRUSTED; include this as a Hot off the press "
             "segment early in the episode)",
             breaking_news,
-            limit=5000,
+            limit=MAX_BREAKING_NEWS_CHARS,
         )
         prompt += f"""
 
@@ -1211,7 +1218,9 @@ def generate_script(
 
     # Sanitize article content (untrusted)
     safe_title = neutralize(article_title, limit=200)
-    safe_content = neutralize(article_content, limit=MAX_ARTICLE_CHARS)
+    article_evidence, news_evidence = bounded_source_evidence(article_content, breaking_news)
+    safe_content = neutralize(article_evidence, limit=MAX_ARTICLE_CHARS)
+    breaking_news = news_evidence or None
     safe_week = neutralize(week, limit=32)
     required_repo_checklist = _build_required_repo_checklist(safe_content)
 

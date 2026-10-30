@@ -57,6 +57,14 @@ Config-driven podcast generation engine. Receives article content and editorial 
    Audit prompts losslessly JSON-encode complete turns and bounded raw evidence
    inside untrusted fences; quote matching uses those same decoded evidence
    buffers, preserving Unicode and whitespace without exposing fence delimiters.
+   Generation and all repairs select those same raw article/news windows
+   (16,000/5,000 characters) before lossy prompt sanitization. Audit budgets
+   include ASCII-serialized full speech, quote/notes and schema overhead,
+   using at most eight ordered batches capped at the deployed GPT-4o-mini's
+   16,384 output tokens each. Quotes/notes are bounded to 1,024/256 serialized
+   characters per row. Oversized utterances, insufficient evidence fields or
+   incomplete completions fail closed with regeneration guidance; no speech
+   is truncated, silently omitted or blindly retried.
    Literal evidence is bound to either the article or separately supplied
    breaking news (`source_kind`); supplemental material has no invented article
    URL. Known empirical/novelty/absence formulations are conservatively rejected
