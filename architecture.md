@@ -48,6 +48,36 @@ Config-driven podcast generation engine. Receives article content and editorial 
 2. validation.py authenticates and validates request
 3. jobs.py stages artifacts, runs budget checks, generates script via LLM
 4. hooks.py generates personality-matched conversational hooks via LLM
+   Script generation enforces explicit requested spoken-word ranges against the
+   final TTS-parser output, including formatter disclosures, with bounded repairs.
+   Complete replacements preserve original section identities/order and minimum
+   host turns. Prior canonical scripts and ordered section identities (including
+   duplicates) use lossless, delimiter-safe JSON fences through grounding,
+   section and length repairs. Repair context is bounded before serialization;
+   oversized context fails without truncating identities. Public
+   quality failures expose only fixed messages and numeric constraints.
+   Production claim alignment accounts for every exact final spoken turn.
+   Audit prompts losslessly JSON-encode complete turns and bounded raw evidence
+   inside untrusted fences; quote matching uses those same decoded evidence
+   buffers, preserving Unicode and whitespace without exposing fence delimiters.
+   Generation and all repairs select those same raw article/news windows
+   (16,000/5,000 characters) before lossy prompt sanitization. Audit budgets
+   include ASCII-serialized full speech, quote/notes and schema overhead,
+   using at most eight ordered batches capped at the deployed GPT-4o-mini's
+   16,384 output tokens each. Quotes/notes are bounded to 1,024/256 serialized
+   characters per row. Oversized utterances, insufficient evidence fields or
+   incomplete completions fail closed with regeneration guidance; no speech
+   is truncated, silently omitted or blindly retried.
+   Literal evidence is bound to either the article or separately supplied
+   breaking news (`source_kind`); supplemental material has no invented article
+   URL. Known empirical/novelty/absence formulations are conservatively rejected
+   even with caveats; growth-assertion guards do not treat technical terms such
+   as power-surge protection or the product name Surge as growth claims.
+   Qualified interpretations require spoken source attribution in supported
+   English, Spanish or French as well as a literal source quote; editor notes
+   cannot supply the spoken qualification. Repairs retain scoped observations.
+   Quotes and model alignment are triage, not entailment, factual verification,
+   or human approval; all extracted claims remain `verified=false`.
 5. Production pauses with manifest `review_pending`; response remains HTTP 202 `accepted`.
    Missing production article/LLM configuration fails closed, never accepting a placeholder.
 6. A human reviews staged script/transcript/packet, source claims, rights, provider

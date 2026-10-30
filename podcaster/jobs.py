@@ -12,7 +12,12 @@ from urllib.parse import urlparse
 from podcaster.article_validation import validate_article_inputs
 from podcaster.artifact_access import ACCESS_MODEL, artifact_access_metadata
 from podcaster.audio import placeholder_audio_validation
-from podcaster.claim_extraction import claims_to_ledger_json, extract_claims
+from podcaster.claim_extraction import (
+    MAX_GROUNDING_REPAIRS,
+    ClaimGroundingError,
+    claims_to_ledger_json,
+    extract_claims,
+)
 from podcaster.config import HistoricalContext, PodcastConfig, ScriptDirections
 from podcaster.costs import (
     USD_ZERO,
@@ -31,7 +36,7 @@ from podcaster.review import (
     content_snapshot_sha256,
     provider_settings_sha256,
 )
-from podcaster.script_gen import ScriptGenConfig, generate_script
+from podcaster.script_gen import ScriptGenConfig, ScriptQualityError, generate_script
 from podcaster.sections import parse_script_sections, sections_to_metadata
 from podcaster.storage import StorageBackend, StoredArtifact, create_storage_backend
 from podcaster.tts import load_tts_config
@@ -69,6 +74,10 @@ class MonthlyBudgetExceeded(RuntimeError):
 
 class ScriptGenerationFailed(RuntimeError):
     """Raised when a configured LLM script generation fails for a publishable job."""
+
+    def __init__(self, message: str, *, quality_reason: str | None = None) -> None:
+        super().__init__(message)
+        self.quality_reason = quality_reason
 
 
 class ReplayCollisionError(RuntimeError):
@@ -355,19 +364,50 @@ def run_generation_job(
         script_config = ScriptGenConfig.from_env()
         if script_config.ready:
             try:
-                llm_script = generate_script(
-                    week=str(payload["week"]),
-                    article_title=str(payload.get("article_title") or ""),
-                    article_url=str(payload["article_url"]),
-                    article_content=payload["article_content"],
-                    article_sha256=str(payload.get("article_sha256") or ""),
-                    config=script_config,
-                    podcast_config=podcast_config,
-                    script_directions=script_directions,
-                    historical_context=historical_context,
-                    breaking_news=payload.get("breaking_news") or None,
-                    generated_at=current,
-                )
+                previous_script = None
+                repair_feedback = None
+                for attempt in range(MAX_GROUNDING_REPAIRS + 1):
+                    repair_args = (
+                        {"previous_script": previous_script, "repair_feedback": repair_feedback}
+                        if previous_script is not None
+                        else {}
+                    )
+                    llm_script = generate_script(
+                        week=str(payload["week"]),
+                        article_title=str(payload.get("article_title") or ""),
+                        article_url=str(payload["article_url"]),
+                        article_content=payload["article_content"],
+                        article_sha256=str(payload.get("article_sha256") or ""),
+                        config=script_config,
+                        podcast_config=podcast_config,
+                        script_directions=script_directions,
+                        historical_context=historical_context,
+                        breaking_news=payload.get("breaking_news") or None,
+                        generated_at=current,
+                        **repair_args,
+                    )
+                    try:
+                        claims = extract_claims(
+                            article_content=payload["article_content"],
+                            article_url=str(payload["article_url"]),
+                            config=script_config,
+                            script=llm_script,
+                            podcast_config=podcast_config,
+                            breaking_news=payload.get("breaking_news") or None,
+                        )
+                        if not claims:
+                            raise ClaimGroundingError(
+                                "canonical script grounding returned no claims"
+                            )
+                        llm_claims_json = claims_to_ledger_json(claims)
+                        break
+                    except ClaimGroundingError as error:
+                        if attempt == MAX_GROUNDING_REPAIRS:
+                            raise ClaimGroundingError(
+                                f"{error}; exhausted {MAX_GROUNDING_REPAIRS} grounding repair"
+                            ) from None
+                        previous_script = llm_script
+                        repair_feedback = str(error)
                 llm_generation_engine = "llm-script-gen"
                 sections = parse_script_sections(llm_script, podcast_config)
                 if sections:
@@ -380,32 +420,28 @@ def run_generation_job(
                         + "\n"
                     )
                 logging.info("podcaster job using LLM-generated script job_id=%s", job_id)
-            except Exception:
+            except Exception as error:
                 if not payload.get("dry_run"):
                     logging.exception(
                         "LLM script generation failed job_id=%s; failing closed", job_id
                     )
                     _release_failed_reservation(storage, job_id, monthly_path, month)
-                    raise ScriptGenerationFailed("LLM script generation failed") from None
+                    quality_reason = (
+                        str(error)
+                        if isinstance(error, (ScriptQualityError, ClaimGroundingError))
+                        else None
+                    )
+                    detail = f": {quality_reason}" if quality_reason else ""
+                    raise ScriptGenerationFailed(
+                        f"LLM script generation failed{detail}",
+                        quality_reason=quality_reason,
+                    ) from None
                 logging.exception(
                     "LLM script generation failed job_id=%s; falling back to placeholder",
                     job_id,
                 )
                 warnings.append("LLM script generation failed; using placeholder script")
                 llm_script = None
-            # Extract claims from article content (#141)
-            try:
-                claims = extract_claims(
-                    article_content=payload["article_content"],
-                    article_url=str(payload["article_url"]),
-                    config=script_config,
-                )
-                if claims:
-                    llm_claims_json = claims_to_ledger_json(claims)
-                    logging.info("podcaster job extracted %d claims job_id=%s", len(claims), job_id)
-            except Exception:
-                logging.exception("claim extraction failed job_id=%s; using stub ledger", job_id)
-                warnings.append("claim extraction failed; using stub claim ledger")
         else:
             warnings.append(
                 "article_content provided but chat endpoint not configured; using "

@@ -569,13 +569,16 @@ async def api_generate(request: Request):
     except ReplayCollisionError:
         response = failed_response(["replay output already exists"])
         return JSONResponse(status_code=409, content=response)
-    except ScriptGenerationFailed:
+    except ScriptGenerationFailed as error:
         report_failure(
             container="podcaster-api",
             error_type="ScriptGenerationFailed",
             error_message="LLM script generation failed in /api/generate",
         )
-        response = failed_response(["script generation failed; no episode was produced"])
+        reason = "script generation failed; no episode was produced"
+        if error.quality_reason:
+            reason += f"; {error.quality_reason}"
+        response = failed_response([reason])
         return JSONResponse(status_code=502, content=response)
     except Exception:
         logger.exception("unhandled error in generation job")

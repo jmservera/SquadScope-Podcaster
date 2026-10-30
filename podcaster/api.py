@@ -526,13 +526,16 @@ class GenerateHandler(BaseHTTPRequestHandler):
             response = failed_response(["replay output already exists"])
             _json_response(self, HTTPStatus.CONFLICT, response)
             return
-        except ScriptGenerationFailed:
+        except ScriptGenerationFailed as error:
             report_failure(
                 container="podcaster-api",
                 error_type="ScriptGenerationFailed",
                 error_message="LLM script generation failed in /api/generate",
             )
-            response = failed_response(["script generation failed; no episode was produced"])
+            reason = "script generation failed; no episode was produced"
+            if error.quality_reason:
+                reason += f"; {error.quality_reason}"
+            response = failed_response([reason])
             _json_response(self, HTTPStatus.BAD_GATEWAY, response)
             return
         except Exception:
