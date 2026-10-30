@@ -85,16 +85,21 @@ class ClaimGroundingError(ValueError):
 
 
 _EMPIRICAL_ASSERTION = re.compile(
-    r"\b(surge|on the rise|almost overnight|never (?:seen |done )?before|"
+    r"\b(surge (?:of|in|among|across)|surged|surging|surges|"
+    r"on the rise|almost overnight|never (?:seen |done )?before|"
     r"we['’]ve never seen before|unprecedented|first[- ]ever|"
     r"lacks? (?:a |any )?(?:shared |common )?(?:safety|provenance|evaluation)|"
     r"(?:provenance|safeguards?|evaluations?) (?:is|are|remains?) (?:missing|absent))\b",
     re.IGNORECASE,
 )
 _QUALIFICATION = re.compile(
-    r"\b(?:the article (?:describes|calls|frames|argues|suggests)|"
+    r"\b(?:the article (?:describes|calls|frames|argues|suggests|reports|states|notes)|"
     r"according to the article|the authors? (?:claim|describe|report)|"
-    r"according to the breaking[- ]news (?:report|material))\b",
+    r"according to the breaking[- ]news (?:report|material)|"
+    r"según el artículo|el artículo (?:describe|informa|señala|afirma|sugiere)|"
+    r"según (?:los autores|las noticias de última hora)|"
+    r"selon l['’]article|l['’]article (?:décrit|rapporte|indique|affirme|suggère)|"
+    r"selon (?:les auteurs|les dernières nouvelles))\b",
     re.IGNORECASE,
 )
 

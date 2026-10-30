@@ -176,6 +176,7 @@ class TestCanonicalGrounding:
             "The article does not show whether every game is compatible.",
             "According to the article, the sample describes a surge of PHP projects. "
             "This does not establish exploitation rates.",
+            "PHP exploitation surged this week. The article does not establish adoption rates.",
         ],
     )
     @pytest.mark.parametrize("model_disposition", ["supported", "nonfactual"])
@@ -198,6 +199,65 @@ class TestCanonicalGrounding:
         rows[0]["grounding"] = "qualified"
         claims = self._extract(rows, turns=[turn])
         assert claims[0].script_excerpt == turn
+        assert claims[0].verified is False
+
+    @pytest.mark.parametrize(
+        "turn",
+        [
+            "The article reports a PHP proof of concept and scanner.",
+            "Según el artículo, la muestra incluye un escáner.",
+            "El artículo describe una prueba de concepto de PHP.",
+            "Selon l’article, l’échantillon contient un scanner.",
+            "Selon l'article, l'échantillon contient un scanner.",
+            "L’article rapporte une preuve de concept PHP.",
+        ],
+    )
+    def test_natural_supported_language_attribution_is_spoken_and_source_backed(self, turn):
+        rows = self._rows([turn])
+        rows[0]["grounding"] = "qualified"
+        claims = self._extract(rows, turns=[turn])
+        assert claims[0].script_excerpt == turn
+        assert claims[0].source_quote == self.source
+        assert claims[0].verified is False
+        rows[0]["source_quote"] = "Not in the supplied source."
+        with pytest.raises(claim_extraction.ClaimGroundingError, match="exact provided source"):
+            self._extract(rows, turns=[turn])
+
+    @pytest.mark.parametrize(
+        "turn",
+        [
+            "The sample includes a scanner.",
+            "La muestra incluye un escáner.",
+            "L’échantillon contient un scanner.",
+        ],
+    )
+    def test_localized_editor_notes_cannot_qualify_unattributed_speech(self, turn):
+        rows = self._rows([turn])
+        rows[0].update(
+            grounding="qualified",
+            editor_notes="The article reports; Según el artículo; Selon l’article.",
+        )
+        with pytest.raises(claim_extraction.ClaimGroundingError, match="actual spoken text"):
+            self._extract(rows, turns=[turn])
+
+    @pytest.mark.parametrize(
+        "turn",
+        [
+            "The board includes a power-surge protector.",
+            "The article reports that Surge includes a circuit monitor.",
+        ],
+    )
+    def test_literal_technical_terms_and_product_names_are_not_growth_assertions(self, turn):
+        rows = [{"script_excerpt": turn, "grounding": "supported", "source_quote": turn}]
+        claims = extract_claims(
+            article_content=turn,
+            article_url="https://example.com/article",
+            script=f"Theo: {turn}",
+            config=_mock_config(),
+            token_provider=_fake_token_provider,
+            transport=_make_transport(json.dumps({"claims": rows})),
+        )
+        assert claims[0].source_quote == claims[0].script_excerpt == turn
         assert claims[0].verified is False
 
     @pytest.mark.parametrize("source_kind", ["breaking_news", "article", "invented"])

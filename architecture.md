@@ -51,7 +51,10 @@ Config-driven podcast generation engine. Receives article content and editorial 
    Script generation enforces explicit requested spoken-word ranges against the
    final TTS-parser output, including formatter disclosures, with bounded repairs.
    Complete replacements preserve original section identities/order and minimum
-   host turns. Repair diagnostics are capped, fenced untrusted data; public
+   host turns. Prior canonical scripts and ordered section identities (including
+   duplicates) use lossless, delimiter-safe JSON fences through grounding,
+   section and length repairs. Repair context is bounded before serialization;
+   oversized context fails without truncating identities. Public
    quality failures expose only fixed messages and numeric constraints.
    Production claim alignment accounts for every exact final spoken turn.
    Audit prompts losslessly JSON-encode complete turns and bounded raw evidence
@@ -68,7 +71,11 @@ Config-driven podcast generation engine. Receives article content and editorial 
    Literal evidence is bound to either the article or separately supplied
    breaking news (`source_kind`); supplemental material has no invented article
    URL. Known empirical/novelty/absence formulations are conservatively rejected
-   even with caveats; repairs should retain attributed scoped observations.
+   even with caveats; growth-assertion guards do not treat technical terms such
+   as power-surge protection or the product name Surge as growth claims.
+   Qualified interpretations require spoken source attribution in supported
+   English, Spanish or French as well as a literal source quote; editor notes
+   cannot supply the spoken qualification. Repairs retain scoped observations.
    Quotes and model alignment are triage, not entailment, factual verification,
    or human approval; all extracted claims remain `verified=false`.
 5. Production pauses with manifest `review_pending`; response remains HTTP 202 `accepted`.
