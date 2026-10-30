@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import io
 import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from http.client import HTTPException, HTTPResponse, IncompleteRead
 from pathlib import Path
 from unittest.mock import MagicMock
 from urllib.error import URLError
@@ -21,6 +23,7 @@ from podcaster.video.distribution import (
     YouTubeDeliveryError,
     _create_rss_feed,
     _escape_xml,
+    _get_youtube_access_token,
     _try_chunked_upload,
     archive_to_blob,
     archive_video_verified,
@@ -93,6 +96,87 @@ class FakeTransport:
             {"location": f"{url}/resumable-session"},
             b'{"id": "test-video-id", "access_token": "fake-token"}',
         )
+
+
+@pytest.mark.parametrize(
+    "error", [IncompleteRead(b"private-fragment", 84), HTTPException(), OSError()]
+)
+def test_oauth_response_failure_is_sanitized_nonretryable(youtube_config, error):
+    transport = MagicMock()
+    transport.request.side_effect = error
+    with pytest.raises(YouTubeDeliveryError) as raised:
+        _get_youtube_access_token(youtube_config, transport)
+    assert raised.value.code == "youtube_oauth_response_error"
+    assert raised.value.stage == "oauth_token"
+    assert raised.value.retryable is False
+    assert str(raised.value) == "YouTube token refresh failed: response unavailable"
+    assert raised.value.__cause__ is None
+    assert raised.value.__suppress_context__ is True
+    assert transport.request.call_count == 1
+
+
+def test_oauth_programming_error_is_not_converted_to_unavailable(youtube_config):
+    transport = MagicMock()
+    transport.request.side_effect = TypeError("broken transport implementation")
+    with pytest.raises(TypeError, match="broken transport implementation"):
+        _get_youtube_access_token(youtube_config, transport)
+
+
+@pytest.mark.parametrize("stage", ["init", "put"])
+def test_actual_upload_protocol_failure_does_not_expand_mutation_retries(
+    video_file, youtube_config, monkeypatch, stage
+):
+    calls = []
+
+    def response(message):
+        class Socket:
+            def makefile(self, *args):
+                return io.BytesIO(message)
+
+        result = HTTPResponse(Socket())
+        result.begin()
+        return result
+
+    def provider(request, **kwargs):
+        calls.append(request.method)
+        if request.full_url == "https://oauth2.googleapis.com/token":
+            assert request.method == "POST"
+            body = b'{"access_token":"offline-access"}'
+            return response(
+                b"HTTP/1.1 200 OK\r\nContent-Length: "
+                + str(len(body)).encode()
+                + b"\r\n\r\n"
+                + body
+            )
+        if request.method == "POST":
+            assert request.full_url.startswith(
+                "https://www.googleapis.com/upload/youtube/v3/videos?"
+            )
+            if stage == "put":
+                return response(
+                    b"HTTP/1.1 200 OK\r\nLocation: https://offline.invalid/session\r\n"
+                    b"Content-Length: 0\r\n\r\n"
+                )
+        else:
+            assert request.method == "PUT"
+            assert request.full_url == "https://offline.invalid/session"
+        return response(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nprivate-fragment")
+
+    monkeypatch.setattr("podcaster.video.distribution.urlopen", provider)
+    if stage == "init":
+        with pytest.raises(IncompleteRead):
+            upload_to_youtube(
+                video_file, "title", "description", youtube_config, raise_on_failure=True
+            )
+    else:
+        with pytest.raises(YouTubeDeliveryError) as raised:
+            upload_to_youtube(
+                video_file, "title", "description", youtube_config, raise_on_failure=True
+            )
+        assert raised.value.code == "youtube_upload_error"
+        assert raised.value.retryable is False
+        assert raised.value.stage == "upload_put"
+    assert calls == (["POST", "POST"] if stage == "init" else ["POST", "POST", "PUT"])
 
 
 class FakeStorage:

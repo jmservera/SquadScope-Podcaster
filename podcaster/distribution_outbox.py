@@ -1523,6 +1523,13 @@ def _validate_document(document: Mapping[str, Any], expected_id: str) -> None:
         raise DistributionOutboxError("outbox correlation is incomplete")
     if not isinstance(providers, Mapping) or not providers:
         raise DistributionOutboxError("outbox provider objectives are missing")
+    for leg in providers.values():
+        if (
+            not isinstance(leg, Mapping)
+            or not isinstance(leg.get("result"), str)
+            or leg["result"] not in PROVIDER_RESULTS
+        ):
+            raise DistributionOutboxError("outbox provider result is invalid")
     if not _SHA256.fullmatch(str(artifact.get("sha256") or "")):
         raise DistributionOutboxError("outbox artifact digest is invalid")
     _safe_value(document)

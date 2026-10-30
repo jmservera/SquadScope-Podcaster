@@ -30,6 +30,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from http.client import HTTPException
 
 from podcaster.publication_state import (
     DRAFT_CREATED,
@@ -377,8 +378,8 @@ def get_video_snippet(
             method="GET",
             headers={"Authorization": f"Bearer {access_token}"},
         )
-    except Exception as exc:
-        logger.warning("videos.list error for %s: %s", video_id, exc)
+    except (OSError, HTTPException):
+        logger.warning("videos.list response unavailable for %s", video_id)
         return None
     if status != 200:
         logger.warning("videos.list HTTP %s for %s", status, video_id)

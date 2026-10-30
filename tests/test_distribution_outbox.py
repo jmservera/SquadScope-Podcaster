@@ -12,6 +12,7 @@ from podcaster.distribution_outbox import (
     ACTIONABLE_RESULTS,
     ARTIFACT_METADATA_PREFIX,
     OUTBOX_SCHEMA_VERSION,
+    PROVIDER_RESULTS,
     DistributionOutboxError,
     DistributionOutboxRepository,
     LeaseBudgetError,
@@ -122,6 +123,32 @@ def test_read_normalizes_missing_older_truth_fields_without_persisting(setup):
         document["outbox_id"], owner="worker", execution_id="one", lease_seconds=300
     )
     assert claim.attempt_id
+
+
+@pytest.mark.parametrize("provider", ["youtube", "spotify"])
+@pytest.mark.parametrize("result", sorted(PROVIDER_RESULTS))
+def test_persisted_provider_result_enum_round_trip(setup, provider, result):
+    storage, repository, _clock, document, _created = setup
+    document["providers"][provider]["result"] = result
+    path = outbox_path(document["outbox_id"])
+    raw = json.dumps(document).encode()
+    storage.put_bytes(path, raw, "application/json")
+    loaded = repository.read(document["outbox_id"])
+    assert loaded["providers"][provider]["result"] == result
+    assert loaded["attempts"] == document["attempts"]
+    assert storage.get_bytes(path) == raw
+
+
+@pytest.mark.parametrize("provider", ["youtube", "spotify"])
+def test_missing_persisted_provider_result_is_not_defaulted(setup, provider):
+    storage, repository, _clock, document, _created = setup
+    del document["providers"][provider]["result"]
+    path = outbox_path(document["outbox_id"])
+    raw = json.dumps(document).encode()
+    storage.put_bytes(path, raw, "application/json")
+    with pytest.raises(DistributionOutboxError, match="provider result is invalid"):
+        repository.read(document["outbox_id"])
+    assert storage.get_bytes(path) == raw
 
 
 def test_human_approval_is_durable_and_bound_to_publication_identity(

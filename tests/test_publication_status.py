@@ -7,7 +7,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from http.client import HTTPResponse
 from unittest.mock import MagicMock
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlencode, urlsplit
 
 import pytest
@@ -853,6 +853,168 @@ def _status_handler_response(monkeypatch, backend, query, handler):
     with TestClient(monitoring.app, raise_server_exceptions=False) as client:
         response = client.get(url, headers=headers)
     return response.status_code, response.json()
+
+
+@pytest.mark.parametrize("handler", ["stdlib", "fastapi"])
+@pytest.mark.parametrize("provider", ["youtube", "spotify"])
+@pytest.mark.parametrize("value", [[], {}, None, False, 7, 1.5, "", "published", "partial "])
+def test_invalid_persisted_provider_result_is_typed_409(
+    canonical, monkeypatch, handler, provider, value
+):
+    storage, _, query, document = canonical
+    document["providers"][provider]["result"] = value
+    storage.data[outbox_path(document["outbox_id"])] = json.dumps(document).encode()
+    before = copy.deepcopy(storage.data)
+    backend = _offline_status_backend(monkeypatch, storage)
+    with pytest.raises(DistributionOutboxError, match="provider result is invalid"):
+        DistributionOutboxRepository(backend).read(document["outbox_id"])
+    status, body = _status_handler_response(monkeypatch, backend, query, handler)
+    assert (status, body) == (409, {"error": "invalid_outbox_evidence"})
+    assert storage.data == before
+
+
+@pytest.mark.parametrize("handler", ["stdlib", "fastapi"])
+@pytest.mark.parametrize("fixture_name", ["canonical", "recovered"])
+def test_valid_terminal_provider_results_through_both_handlers(
+    request, monkeypatch, handler, fixture_name
+):
+    fixture = request.getfixturevalue(fixture_name)
+    storage, query = fixture[0], fixture[-2]
+    before = copy.deepcopy(storage.data)
+    backend = _offline_status_backend(monkeypatch, storage)
+    status, body = _status_handler_response(monkeypatch, backend, query, handler)
+    assert status == 200
+    assert body["provider"]["state"] == "published"
+    assert body["provider"]["external_verified"] is True
+    assert body["provider"]["weekly"]["state"] == (
+        "published_verified_recovered" if fixture_name == "recovered" else "published_verified"
+    )
+    assert storage.data == before
+
+
+@pytest.mark.parametrize("handler", ["stdlib", "fastapi"])
+@pytest.mark.parametrize("dependency", ["oauth", "videos_list"])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "truncated",
+        "chunk",
+        "status_line",
+        "http404",
+        "error_read",
+        "urlerror",
+        "invalid_json",
+        "invalid_utf8",
+        "invalid_shape",
+        "valid",
+    ],
+)
+def test_actual_provider_http_readback_contract(
+    accepted, monkeypatch, caplog, handler, dependency, fault
+):
+    from functools import partial
+
+    storage, manifest, query = accepted
+    identity = receipts(storage, manifest)
+    before = copy.deepcopy(storage.data)
+    backend = _offline_status_backend(monkeypatch, storage)
+    monkeypatch.setenv("VIDEO_YOUTUBE_CLIENT_ID", "offline-client")
+    monkeypatch.setenv("VIDEO_YOUTUBE_CLIENT_SECRET", "offline-secret")
+    monkeypatch.setattr(
+        "podcaster.video.distribution._load_youtube_refresh_token", lambda: "offline-refresh"
+    )
+    notify = MagicMock(side_effect=AssertionError("readback must not notify"))
+    monkeypatch.setattr("podcaster.video.distribution._notify_youtube_reauthorization", notify)
+    for module in ("podcaster.api", "podcaster.monitoring"):
+        monkeypatch.setattr(module + ".publication_status", partial(publication_status, now=NOW))
+    calls = []
+
+    def provider_response(request, **kwargs):
+        oauth = request.full_url == "https://oauth2.googleapis.com/token"
+        assert request.method == ("POST" if oauth else "GET")
+        if not oauth:
+            assert request.full_url.startswith("https://www.googleapis.com/youtube/v3/videos?")
+            assert "id=_ZD9E_zTjtM" in request.full_url
+        calls.append("oauth" if oauth else "videos_list")
+        body = (
+            b'{"access_token":"offline-access"}'
+            if oauth
+            else json.dumps(
+                {
+                    "items": [
+                        {
+                            "id": "_ZD9E_zTjtM",
+                            "snippet": {"tags": [youtube_identity_tag(identity)]},
+                            "status": {"uploadStatus": "processed", "privacyStatus": "unlisted"},
+                            "processingDetails": {"processingStatus": "succeeded"},
+                        }
+                    ]
+                }
+            ).encode()
+        )
+        if ("oauth" if oauth else "videos_list") == dependency:
+            if fault == "truncated":
+                return _http_response(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nprivate-fragment"
+                )
+            if fault == "chunk":
+                return _http_response(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nprivate-chunk\r\n"
+                )
+            if fault == "status_line":
+                return _http_response(b"private-invalid-status\r\n\r\n")
+            if fault == "http404":
+                raise HTTPError(
+                    request.full_url, 404, "private-error", {}, io.BytesIO(b"private-body")
+                )
+            if fault == "error_read":
+                raise HTTPError(
+                    request.full_url,
+                    503,
+                    "private-error",
+                    {},
+                    _http_response(
+                        b"HTTP/1.1 503 Unavailable\r\nContent-Length: 100\r\n\r\nprivate-fragment"
+                    ),
+                )
+            if fault == "urlerror":
+                raise URLError("private-transport")
+            if fault in {"invalid_json", "invalid_utf8", "invalid_shape"}:
+                body = {
+                    "invalid_json": b"private-invalid-json",
+                    "invalid_utf8": b"\xff",
+                    "invalid_shape": b'{"access_token":[],"items":{}}',
+                }[fault]
+        return _http_response(
+            b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
+        )
+
+    monkeypatch.setattr("podcaster.video.distribution.urlopen", provider_response)
+    snippet = read_youtube_status(identity, "_ZD9E_zTjtM")
+    assert (snippet is not None) == (fault == "valid")
+    status, body = _status_handler_response(monkeypatch, backend, query, handler)
+    assert status == 200
+    provider = body["provider"]
+    assert provider["external_verified"] is (fault == "valid")
+    assert provider["state"] == ("published" if fault == "valid" else "unknown")
+    assert provider["providers"]["youtube"]["code"] == (
+        "processed_upload_readback" if fault == "valid" else "readback_unavailable"
+    )
+    expected_calls = (
+        ["oauth"]
+        if dependency == "oauth" and fault != "valid"
+        else [
+            "oauth",
+            "videos_list",
+        ]
+    )
+    assert calls == expected_calls * 2
+    notify.assert_not_called()
+    assert storage.data == before
+    assert not any(
+        private in json.dumps(body) + caplog.text
+        for private in ("private-", "offline-access", "offline-refresh", "offline-secret")
+    )
 
 
 @pytest.mark.parametrize("handler", ["stdlib", "fastapi"])

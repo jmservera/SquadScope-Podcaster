@@ -25,6 +25,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
@@ -614,6 +615,13 @@ def _get_youtube_access_token(
             stage="oauth_token",
             retryable=True,
         ) from exc
+    except (HTTPException, OSError):
+        raise YouTubeDeliveryError(
+            "YouTube token refresh failed: response unavailable",
+            code="youtube_oauth_response_error",
+            stage="oauth_token",
+            retryable=False,
+        ) from None
     if status != 200:
         oauth_error, oauth_subtype = _extract_oauth_error_fields(body)
         if oauth_error == "invalid_grant" and notify_reauthorization:

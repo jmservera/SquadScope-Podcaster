@@ -388,7 +388,7 @@ class TestGetVideoSnippet:
     def test_returns_none_on_transport_exception(self):
         class _Boom:
             def request(self, *a, **kw):
-                raise RuntimeError("network down")
+                raise OSError("network down")
 
         result = get_video_snippet("vid1", "tok", transport=_Boom())
         assert result is None
@@ -419,12 +419,20 @@ class TestGetVideoSnippet:
     def test_token_not_leaked_on_transport_exception(self, caplog):
         class _Boom:
             def request(self, *a, **kw):
-                raise RuntimeError("network down")
+                raise OSError("network down: s3cr3t-token")
 
         with caplog.at_level("WARNING"):
             result = get_video_snippet("vid1", "s3cr3t-token", transport=_Boom())
         assert result is None
         assert "s3cr3t-token" not in caplog.text
+
+    def test_programming_errors_are_not_unavailable(self):
+        class _Broken:
+            def request(self, *a, **kw):
+                raise TypeError("broken transport implementation")
+
+        with pytest.raises(TypeError, match="broken transport implementation"):
+            get_video_snippet("vid1", "tok", transport=_Broken())
 
     def test_missing_video_id_raises(self):
         with pytest.raises(ValueError):
