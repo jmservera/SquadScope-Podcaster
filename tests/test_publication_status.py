@@ -623,6 +623,69 @@ def test_mutation_requires_typed_consumed_owner_and_fence(
     assert storage.data == before
 
 
+@pytest.mark.parametrize("provider", ["youtube", "spotify"])
+@pytest.mark.parametrize(
+    "fault",
+    ["owner", "fence", "operation", "created_fence", "receipt_id", "consume_event", "snapshot"],
+)
+def test_symmetric_mutation_pair_is_bound_to_durable_origin(
+    canonical, monkeypatch, provider, fault
+):
+    storage, _, query, original = canonical
+    document = DistributionOutboxRepository(storage).read(original["outbox_id"])
+    leg = document["providers"][provider]
+    intent = leg["intent_history"][0]
+    receipt = leg["receipts"][0]
+    attempt = document["attempts"][-1]
+    if fault in {"owner", "fence"}:
+        intent_field, receipt_field, value = (
+            ("consumed_owner", "consumed_owner", "never-claimed")
+            if fault == "owner"
+            else ("consumed_fence", "fencing_token", 999999)
+        )
+        intent[intent_field] = receipt[receipt_field] = value
+        # Agreement with retained mutation evidence still cannot invent a claim.
+        attempt["provider_evidence"][provider]["receipts"][0][receipt_field] = value
+        for event in attempt["events"]:
+            if event.get("intent_id") == intent["intent_id"] and "intent" in event:
+                event["intent"][intent_field] = value
+            if event.get("receipt_id") == receipt["receipt_id"] and "receipt" in event:
+                event["receipt"][receipt_field] = value
+    elif fault == "operation":
+        for record in (intent, receipt):
+            record.update(operation="public_promotion", operation_type="publish")
+    elif fault == "created_fence":
+        intent["created_fence"] = True
+    elif fault == "receipt_id":
+        receipt["receipt_id"] = "never-recorded"
+    elif fault == "consume_event":
+        attempt["events"] = [
+            event
+            for event in attempt["events"]
+            if not (event["state"] == "mutating" and event.get("intent_id") == intent["intent_id"])
+        ]
+        for sequence, event in enumerate(attempt["events"], 1):
+            event["sequence"] = sequence
+    else:
+        attempt["provider_evidence"][provider]["receipts"][0]["operation"] = "public_promotion"
+    _assert_terminal_evidence_rejected((storage, query, document), monkeypatch)
+
+
+def test_existing_terminal_snapshots_bind_mutations_without_new_event_fields(canonical):
+    storage, _, query, original = canonical
+    document = DistributionOutboxRepository(storage).read(original["outbox_id"])
+    for event in document["attempts"][-1]["events"]:
+        event.pop("intent", None)
+        event.pop("receipt", None)
+    storage.data[outbox_path(document["outbox_id"])] = json.dumps(document).encode()
+    before = copy.deepcopy(storage.data)
+    assert aggregate_exit_code([document]) == 0
+    result = publication_status(storage, query, now=NOW)["provider"]
+    assert result["state"] == "published"
+    assert result["external_verified"] is True
+    assert storage.data == before
+
+
 @pytest.mark.parametrize(
     "fault",
     [

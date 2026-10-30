@@ -2307,7 +2307,7 @@ class DistributionOutboxRepository:
             _attempt_event(
                 _active_attempt(document),
                 "intent_persisted",
-                _iso(self.now()),
+                intent["created_at"],
                 provider=provider,
                 intent_id=intent["intent_id"],
             )
@@ -2352,6 +2352,7 @@ class DistributionOutboxRepository:
                 intent["consumed_at"],
                 provider=provider,
                 intent_id=intent["intent_id"],
+                intent=dict(intent),
             )
             captured.update(intent)
 
@@ -2407,6 +2408,7 @@ class DistributionOutboxRepository:
                 receipt["at"],
                 provider=provider,
                 receipt_id=receipt["receipt_id"],
+                receipt=dict(receipt),
             )
             captured.update(receipt)
 
@@ -3559,7 +3561,9 @@ def _bound_outbox_operation(record: Mapping[str, Any], provider: str) -> bool:
     )
 
 
-def _bound_outbox_receipts(leg: Mapping[str, Any], provider: str, attempt_ids: set[str]) -> bool:
+def _bound_outbox_receipts(
+    leg: Mapping[str, Any], provider: str, attempts: list[Mapping[str, Any]]
+) -> bool:
     receipts = leg.get("receipts")
     verification = leg.get("verification")
     history = leg.get("intent_history", [])
@@ -3610,7 +3614,8 @@ def _bound_outbox_receipts(leg: Mapping[str, Any], provider: str, attempt_ids: s
                 for field in ("operation", "operation_type", "consumed_owner")
             )
             or receipt.get("attempt_id") != intent.get("consumed_attempt_id")
-            or receipt.get("attempt_id") not in attempt_ids
+            or not attempts
+            or receipt.get("attempt_id") != attempts[-1].get("attempt_id")
             or receipt.get("fencing_token") != intent.get("consumed_fence")
             or receipt.get("provider") != provider
             or intent.get("provider") != provider
@@ -3621,6 +3626,120 @@ def _bound_outbox_receipts(leg: Mapping[str, Any], provider: str, attempt_ids: s
             or _proof_timestamp(intent["consumed_at"]) is None
             or _proof_timestamp(receipt["at"]) < _proof_timestamp(intent["consumed_at"])
         ):
+            return False
+        attempt = attempts[-1]
+        events = attempt.get("events")
+        if not isinstance(events, list):
+            return False
+        claim = None
+        persisted = None
+        consumed = None
+        recorded = None
+        previous_at = attempt.get("authorized_at")
+        previous_fence = 0
+        for sequence, event in enumerate(events, start=1):
+            if (
+                not isinstance(event, Mapping)
+                or type(event.get("sequence")) is not int
+                or event["sequence"] != sequence
+                or event.get("event_type") != event.get("state")
+                or _proof_timestamp(event.get("at")) is None
+                or _proof_timestamp(previous_at) is None
+                or _proof_timestamp(event["at"]) < _proof_timestamp(previous_at)
+            ):
+                return False
+            previous_at = event["at"]
+            if event.get("state") in ("claimed", "reconciling"):
+                fence = event.get("fencing_token")
+                if (
+                    type(fence) is not int
+                    or fence <= previous_fence
+                    or not all(
+                        _proof_token(event.get(field))
+                        for field in ("owner", "claim_id", "execution_id")
+                    )
+                ):
+                    return False
+                previous_fence = fence
+                claim = event
+            elif event.get("provider") == provider:
+                if (
+                    event.get("state") == "intent_persisted"
+                    and event.get("intent_id") == intent["intent_id"]
+                ):
+                    if (
+                        persisted is not None
+                        or claim is None
+                        or claim["state"] != "claimed"
+                        or type(intent.get("created_fence")) is not int
+                        or intent["created_fence"] != claim["fencing_token"]
+                        or _proof_timestamp(intent.get("created_at")) is None
+                        or _proof_timestamp(event["at"]) < _proof_timestamp(intent["created_at"])
+                    ):
+                        return False
+                    persisted = event
+                elif (
+                    event.get("state") == "mutating"
+                    and event.get("intent_id") == intent["intent_id"]
+                ):
+                    if (
+                        persisted is None
+                        or consumed is not None
+                        or claim is None
+                        or claim["state"] != "claimed"
+                        or claim["owner"] != intent["consumed_owner"]
+                        or claim["fencing_token"] != intent["consumed_fence"]
+                        or event["at"] != intent["consumed_at"]
+                    ):
+                        return False
+                    consumed = event
+                elif (
+                    event.get("state") == "receipt_persisted"
+                    and event.get("receipt_id") == receipt["receipt_id"]
+                ):
+                    if (
+                        consumed is None
+                        or recorded is not None
+                        or claim is None
+                        or claim["owner"] != receipt["consumed_owner"]
+                        or claim["fencing_token"] != receipt["fencing_token"]
+                        or event["at"] != receipt["at"]
+                    ):
+                        return False
+                    recorded = event
+        if consumed is None or recorded is None:
+            return False
+        # Terminal snapshots retain older records; live attempts retain the same
+        # mutation evidence in their append-only consume/receipt events.
+        snapshot = attempt.get("provider_evidence")
+        retained = snapshot.get(provider) if isinstance(snapshot, Mapping) else None
+        try:
+            if "intent" in consumed and not _exact_canonical_equal(consumed["intent"], intent):
+                return False
+            if "receipt" in recorded and not _exact_canonical_equal(recorded["receipt"], receipt):
+                return False
+            if attempt.get("terminal_outcome"):
+                if not isinstance(retained, Mapping) or not isinstance(
+                    retained.get("receipts"), list
+                ):
+                    return False
+                matches = [
+                    item
+                    for item in retained["receipts"]
+                    if isinstance(item, Mapping) and item.get("receipt_id") == receipt["receipt_id"]
+                ]
+                if len(matches) != 1 or not _exact_canonical_equal(matches[0], receipt):
+                    return False
+                retained_intent = retained.get("intent")
+                if (
+                    isinstance(retained_intent, Mapping)
+                    and retained_intent.get("intent_id") == intent["intent_id"]
+                    and not _exact_canonical_equal(retained_intent, intent)
+                ):
+                    return False
+            elif "intent" not in consumed or "receipt" not in recorded:
+                return False
+        except DistributionOutboxError:
             return False
         receipt_ids.add(receipt["receipt_id"])
         seen_intents.add(receipt["intent_id"])
@@ -3845,7 +3964,7 @@ def _authoritative_green_document(document: Mapping[str, Any]) -> bool:
             not isinstance(leg, Mapping)
             or leg.get("result") != "externally_verified_public"
             or not (
-                _bound_outbox_receipts(leg, provider, set(attempt_ids))
+                _bound_outbox_receipts(leg, provider, attempts)
                 or (
                     state == "published_verified_recovered"
                     and _bound_recovery_readback(leg, provider)

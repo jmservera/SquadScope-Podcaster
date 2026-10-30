@@ -214,9 +214,7 @@ def _outbox_provider_status(
             if result == "externally_verified_public":
                 state, code = "unknown", "receipt_missing"
         elif (
-            not _bound_outbox_receipts(
-                leg, provider, {attempt.get("attempt_id") for attempt in document["attempts"]}
-            )
+            not _bound_outbox_receipts(leg, provider, document["attempts"])
             or verification.get("result") != result
         ):
             receipts_bound = False

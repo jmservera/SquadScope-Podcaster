@@ -308,13 +308,24 @@ def test_crash_after_mutation_before_receipt_preserves_consumed_intent(setup):
     assert state["aggregate"]["result"] == "publication_unknown"
 
 
-def test_receipt_and_external_readback_are_required_for_public_success(setup):
+@pytest.fixture(params=["initial", "recovery"])
+def mutating_publication(setup, request):
     _storage, repository, _clock, document, _created = setup
+    if request.param == "recovery":
+        predecessor = _failed_attempt(
+            repository, document["outbox_id"], owner="predecessor", execution_id="failed"
+        )
+        _authorize_recovery(repository, document["outbox_id"], predecessor, suffix="id")
     claim = repository.claim(
         document["outbox_id"], owner="worker", execution_id="exec-1", lease_seconds=300
     )
     for provider, operation in (("youtube", "upload"), ("spotify", "create")):
-        repository.persist_intent(claim, provider=provider, operation=operation)
+        repository.persist_intent(
+            claim,
+            provider=provider,
+            operation=operation,
+            expected_provider_item_id=f"{provider}-id",
+        )
         repository.consume_intent(
             claim,
             provider=provider,
@@ -338,10 +349,96 @@ def test_receipt_and_external_readback_are_required_for_public_success(setup):
             proof=exact_verification_proof(document, provider_item_id=f"{provider}-id"),
         )
     assert aggregate_exit_code([repository.read(document["outbox_id"])]) == 0
+    return repository, claim
+
+
+def test_receipt_and_external_readback_are_required_for_public_success(mutating_publication):
+    repository, claim = mutating_publication
     state = repository.release(claim)
     assert state["state"] == "completed_public"
     assert state["aggregate"]["externally_verified_public"] is True
     assert aggregate_exit_code([state]) == 0
+
+
+@pytest.mark.parametrize("provider", ["youtube", "spotify"])
+@pytest.mark.parametrize("released", [False, True])
+@pytest.mark.parametrize("fault", ["owner", "fence", "operation", "intent", "attempt", "claim"])
+def test_mutation_pair_requires_originating_authorization(
+    mutating_publication, provider, released, fault
+):
+    repository, claim = mutating_publication
+    if released:
+        repository.release(claim)
+    document = repository.read(claim.outbox_id)
+    leg = document["providers"][provider]
+    intent, receipt = leg["intent"], leg["receipts"][0]
+    if fault == "owner":
+        intent["consumed_owner"] = receipt["consumed_owner"] = "never-claimed"
+    elif fault == "fence":
+        intent["consumed_fence"] = receipt["fencing_token"] = 999999
+    elif fault == "operation":
+        for record in (intent, receipt):
+            record.update(operation="public_promotion", operation_type="publish")
+    elif fault == "intent":
+        intent["intent_id"] = receipt["intent_id"] = "never-consumed"
+    elif fault == "attempt":
+        other_attempt = document["attempts"][0]["attempt_id"]
+        if other_attempt == claim.attempt_id:
+            other_attempt = "another-attempt"
+        intent["consumed_attempt_id"] = receipt["attempt_id"] = other_attempt
+    else:
+        event = next(
+            event for event in document["attempts"][-1]["events"] if event["state"] == "claimed"
+        )
+        event["state"] = event["event_type"] = "reconciling"
+    assert aggregate_exit_code([document]) == 1
+
+
+def test_live_mutation_evidence_survives_later_different_claim(mutating_publication):
+    repository, original = mutating_publication
+    terminal = repository.release(original)
+    snapshot = copy.deepcopy(terminal["attempts"][-1]["provider_evidence"])
+    later = repository.claim(
+        original.outbox_id, owner="later-reader", execution_id="readback", lease_seconds=300
+    )
+    assert later.read_only and later.fencing_token > original.fencing_token
+    for provider, leg in terminal["providers"].items():
+        repository.record_verification(
+            later,
+            provider=provider,
+            result="externally_verified_public",
+            source="provider_readback",
+            provider_item_id=leg["verification"]["provider_item_id"],
+            native_state="public",
+            proof=exact_verification_proof(
+                terminal, provider_item_id=leg["verification"]["provider_item_id"]
+            ),
+        )
+    document = repository.release(later)
+    assert aggregate_exit_code([document]) == 0
+    assert document["attempts"][-1]["provider_evidence"] == snapshot
+    assert all(
+        receipt["fencing_token"] == original.fencing_token
+        for leg in document["providers"].values()
+        for receipt in leg["receipts"]
+    )
+    for intent_field, receipt_field, value in (
+        ("consumed_owner", "consumed_owner", later.owner),
+        ("consumed_fence", "fencing_token", later.fencing_token),
+    ):
+        invalid = copy.deepcopy(document)
+        attempt = invalid["attempts"][-1]
+        for provider, leg in invalid["providers"].items():
+            leg["intent"][intent_field] = value
+            leg["receipts"][0][receipt_field] = value
+            attempt["provider_evidence"][provider]["intent"][intent_field] = value
+            attempt["provider_evidence"][provider]["receipts"][0][receipt_field] = value
+        for event in attempt["events"]:
+            if "intent" in event:
+                event["intent"][intent_field] = value
+            if "receipt" in event:
+                event["receipt"][receipt_field] = value
+        assert aggregate_exit_code([invalid]) == 1
 
 
 @pytest.mark.parametrize("result", sorted(ACTIONABLE_RESULTS))
