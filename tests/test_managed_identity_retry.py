@@ -189,6 +189,65 @@ def test_sdk_blob_credential_rejects_empty_token(monkeypatch):
         cred.get_token(STORAGE_SCOPE)
 
 
+@pytest.mark.parametrize(
+    "credential_type", [storage.ManagedIdentityTokenCredential, storage._SdkBlobCredential]
+)
+@pytest.mark.parametrize(
+    "token",
+    [
+        None,
+        "",
+        7,
+        {},
+        "offline-\u6f22",
+        "offline-\u00e9",
+        "offline-\u200b",
+        "offline-\x00",
+        "offline-\x1f",
+        "offline-\x7f",
+        "offline-\r\n",
+        " offline",
+        "offline ",
+        "offline- token",
+        "offline-\t",
+    ],
+)
+def test_managed_identity_credentials_reject_malformed_token(
+    monkeypatch, caplog, credential_type, token
+):
+    request = _install_urlopen(monkeypatch, {**TOKEN_PAYLOAD, "access_token": token})
+
+    with pytest.raises(storage.StorageUnavailableError) as error:
+        credential_type().get_token(STORAGE_SCOPE)
+
+    assert str(error.value) in {
+        "managed identity token response did not include an access token",
+        "managed identity token response included an invalid access token",
+    }
+    assert error.value.__context__ is None
+    assert caplog.text == ""
+    request.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "credential_type", [storage.ManagedIdentityTokenCredential, storage._SdkBlobCredential]
+)
+@pytest.mark.parametrize(
+    "token", ["offline-access", "AZaz09-._~+/==", "offline.header.payload.signature"]
+)
+def test_managed_identity_credentials_preserve_supported_ascii(monkeypatch, credential_type, token):
+    request = _install_urlopen(monkeypatch, {**TOKEN_PAYLOAD, "access_token": token})
+
+    result = credential_type().get_token(STORAGE_SCOPE)
+
+    if credential_type is storage.ManagedIdentityTokenCredential:
+        assert result == token
+    else:
+        assert result.token == token
+        assert result.expires_on == 9999999999
+    request.assert_called_once()
+
+
 @pytest.mark.parametrize("continuation", [None, "opaque+/=& marker"])
 def test_blob_page_uses_real_managed_identity_string_token(monkeypatch, continuation):
     identity = Mock(return_value=dict(TOKEN_PAYLOAD))

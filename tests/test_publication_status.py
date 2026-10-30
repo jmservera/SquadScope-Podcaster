@@ -875,6 +875,112 @@ def _encoded_provider_request(request):
     return socket.data
 
 
+def _managed_identity_status_backend(monkeypatch, storage, token):
+    backend = AzureBlobStorageBackend("https://offline.blob.core.windows.net", "artifacts")
+    monkeypatch.setenv("IDENTITY_ENDPOINT", "http://offline.invalid/identity")
+    monkeypatch.setenv("IDENTITY_HEADER", "offline-identity")
+    monkeypatch.delenv("AZURE_CLIENT_ID", raising=False)
+    calls = []
+
+    def read(request, **kwargs):
+        assert request.get_method() == "GET"
+        calls.append(request.full_url)
+        if urlsplit(request.full_url).netloc == "offline.invalid":
+            body = json.dumps({"access_token": token, "expires_on": "9999999999"}).encode()
+        else:
+            encoded = _encoded_provider_request(request)
+            assert b"Authorization: Bearer " + token.encode("ascii") + b"\r\n" in encoded
+            path = unquote(urlsplit(request.full_url).path).removeprefix("/artifacts/")
+            body = storage.data.get(path)
+            if body is None:
+                raise HTTPError(request.full_url, 404, "absent", {}, io.BytesIO())
+        return _http_response(
+            b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
+        )
+
+    monkeypatch.setattr("podcaster.storage.urlopen", read)
+    return backend, calls
+
+
+@pytest.mark.parametrize("handler", ["stdlib", "fastapi"])
+@pytest.mark.parametrize(
+    ("token", "valid"),
+    [
+        ("offline-access", True),
+        ("AZaz09-._~+/==", True),
+        ("offline.header.payload.signature", True),
+        ("offline-\u6f22", False),
+        ("offline-\u00e9", False),
+        ("offline-\u200b", False),
+        ("offline-\x00", False),
+        ("offline-\x1f", False),
+        ("offline-\x7f", False),
+        ("offline-\r\n", False),
+        ("offline- token", False),
+        ("offline-\t", False),
+    ],
+    ids=[
+        "opaque-ascii",
+        "bearer-alphabet",
+        "dotted-ascii",
+        "non-latin1",
+        "latin1",
+        "zero-width",
+        "nul",
+        "unit-separator",
+        "del",
+        "crlf",
+        "space",
+        "tab",
+    ],
+)
+def test_actual_managed_identity_status_boundary(
+    accepted, monkeypatch, caplog, handler, token, valid
+):
+    storage, _, query = accepted
+    before = copy.deepcopy(storage.data)
+    backend, calls = _managed_identity_status_backend(monkeypatch, storage, token)
+    path = f"jobs/{JOB}/manifest.json"
+
+    if valid:
+        assert backend.get_bytes(path) == storage.data[path]
+    else:
+        with pytest.raises(StorageUnavailableError) as error:
+            backend.get_bytes(path)
+        assert (
+            str(error.value) == "managed identity token response included an invalid access token"
+        )
+        assert error.value.__context__ is None
+    status, body = _status_handler_response(monkeypatch, backend, query, handler)
+    if valid:
+        assert status == 200
+        assert body["job_id"] == JOB
+        assert body["provider"]["external_verified"] is False
+        assert any("offline.blob.core.windows.net" in url for url in calls)
+    else:
+        assert status == 503
+        assert body == {"error": "status_unavailable"}
+        assert len(calls) == 2
+        assert all(urlsplit(url).netloc == "offline.invalid" for url in calls)
+    assert token not in json.dumps(body) + caplog.text
+    assert "UnicodeEncodeError" not in json.dumps(body) + caplog.text
+    assert storage.data == before
+
+
+@pytest.mark.parametrize("handler", ["stdlib", "fastapi"])
+def test_actual_managed_identity_absent_blob_remains_404(accepted, monkeypatch, handler):
+    storage, _, query = accepted
+    del storage.data[f"jobs/{JOB}/manifest.json"]
+    backend, _ = _managed_identity_status_backend(monkeypatch, storage, "offline-access")
+
+    assert backend.get_bytes(f"jobs/{JOB}/manifest.json") is None
+    status, body = _status_handler_response(monkeypatch, backend, query, handler)
+
+    assert status == 404
+    assert body == {"error": "job_not_found"}
+    assert storage.data == {}
+
+
 @pytest.mark.parametrize(
     ("token", "encodable"),
     [("offline-\u6f22", False), ("offline-\u00e9", True)],

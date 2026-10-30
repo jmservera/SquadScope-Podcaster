@@ -1162,11 +1162,7 @@ class ManagedIdentityTokenCredential:
             scopes[0] if scopes else "https://storage.azure.com/.default"
         )
         token_payload = _request_managed_identity_token(resource)
-        token = token_payload.get("access_token")
-        if not isinstance(token, str) or not token:
-            raise StorageUnavailableError(
-                "managed identity token response did not include an access token"
-            )
+        token = _managed_identity_access_token(token_payload)
         _token_expires_on(token_payload)
         return token
 
@@ -1188,12 +1184,21 @@ class _SdkBlobCredential:
         scope = scopes[0] if scopes else "https://storage.azure.com/.default"
         resource = _managed_identity_resource(scope)
         payload = _request_managed_identity_token(resource)
-        token = payload.get("access_token")
-        if not isinstance(token, str) or not token:
-            raise StorageUnavailableError(
-                "managed identity token response did not include an access token"
-            )
+        token = _managed_identity_access_token(payload)
         return AccessToken(token, _token_expires_on(payload))
+
+
+def _managed_identity_access_token(payload: dict[str, object]) -> str:
+    token = payload.get("access_token")
+    if not isinstance(token, str) or not token:
+        raise StorageUnavailableError(
+            "managed identity token response did not include an access token"
+        )
+    if any(not 33 <= ord(char) <= 126 for char in token):
+        raise StorageUnavailableError(
+            "managed identity token response included an invalid access token"
+        )
+    return token
 
 
 def _managed_identity_resource(scope: str) -> str:
