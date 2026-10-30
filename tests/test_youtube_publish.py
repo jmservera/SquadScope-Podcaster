@@ -366,6 +366,16 @@ class _PlaylistTransport(_SnippetTransport):
         return 200, body
 
 
+class _JsonSnippetTransport:
+    def __init__(self, item):
+        self.body = json.dumps({"items": [item]}).encode()
+
+    def request(self, url, *, method, headers):
+        assert method == "GET"
+        assert url.startswith(VIDEOS_LIST_URL + "?")
+        return 200, self.body
+
+
 class TestGetVideoSnippet:
     def test_returns_combined_snippet_and_status(self):
         t = _SnippetTransport(title="W35", description="Agent skills.", privacy="unlisted")
@@ -437,6 +447,67 @@ class TestGetVideoSnippet:
     def test_missing_video_id_raises(self):
         with pytest.raises(ValueError):
             get_video_snippet("", "tok")
+
+    @pytest.mark.parametrize(
+        ("section", "field"),
+        [
+            ("snippet", "title"),
+            ("snippet", "description"),
+            ("status", "privacyStatus"),
+            ("status", "uploadStatus"),
+            ("processingDetails", "processingStatus"),
+        ],
+    )
+    @pytest.mark.parametrize("value", [[], {}, None, False, 7, 1.5])
+    def test_rejects_non_string_consumed_fields(self, section, field, value):
+        transport = _JsonSnippetTransport({section: {field: value}})
+        assert get_video_snippet("vid1", "tok", transport=transport) is None
+        assert verify_draft_ready("vid1", "tok", transport=transport) == [
+            "could not read metadata for video 'vid1'"
+        ]
+
+    @pytest.mark.parametrize("section", ["snippet", "status", "processingDetails"])
+    @pytest.mark.parametrize("value", [[], None, False, 7, 1.5, "invalid"])
+    def test_rejects_non_object_sections(self, section, value):
+        transport = _JsonSnippetTransport({section: value})
+        assert get_video_snippet("vid1", "tok", transport=transport) is None
+
+    @pytest.mark.parametrize(
+        "tags", [{}, None, False, 7, 1.5, "not-a-list", ["valid", {}], [None], [[]]]
+    )
+    def test_rejects_non_string_list_tags(self, tags):
+        transport = _JsonSnippetTransport({"snippet": {"tags": tags}})
+        assert get_video_snippet("vid1", "tok", transport=transport) is None
+
+    @pytest.mark.parametrize(
+        "item",
+        [
+            {},
+            {"snippet": {"title": "", "description": "", "tags": []}},
+            {
+                "status": {
+                    "privacyStatus": "future-privacy",
+                    "uploadStatus": "future-upload",
+                    "madeForKids": False,
+                },
+                "processingDetails": {"processingStatus": "future-processing"},
+            },
+        ],
+    )
+    def test_preserves_optional_omissions_and_future_strings(self, item):
+        transport = _JsonSnippetTransport(item)
+        assert get_video_snippet("vid1", "tok", transport=transport) == {
+            key: value for section in item.values() for key, value in section.items()
+        }
+
+    def test_does_not_mask_malformed_fields_when_merging_sections(self):
+        transport = _JsonSnippetTransport(
+            {
+                "status": {"uploadStatus": []},
+                "processingDetails": {"uploadStatus": "processed"},
+            }
+        )
+        assert get_video_snippet("vid1", "tok", transport=transport) is None
 
 
 class TestVerifyDraftReady:

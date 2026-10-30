@@ -6,9 +6,10 @@ import io
 import json
 from datetime import datetime, timedelta, timezone
 from http.client import HTTPResponse
+from types import MappingProxyType
 from unittest.mock import MagicMock
 from urllib.error import HTTPError, URLError
-from urllib.parse import unquote, urlencode, urlsplit
+from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 
 import pytest
 
@@ -1015,6 +1016,265 @@ def test_actual_provider_http_readback_contract(
         private in json.dumps(body) + caplog.text
         for private in ("private-", "offline-access", "offline-refresh", "offline-secret")
     )
+
+
+def _check_youtube_json_readback(
+    accepted,
+    monkeypatch,
+    handler,
+    change,
+    *,
+    available=False,
+    state="unknown",
+    code="readback_unavailable",
+):
+    from functools import partial
+
+    storage, manifest, query = accepted
+    identity = receipts(storage, manifest)
+    before = copy.deepcopy(storage.data)
+    backend = _offline_status_backend(monkeypatch, storage)
+    payload = {
+        "items": [
+            {
+                "id": "_ZD9E_zTjtM",
+                "snippet": {"tags": [youtube_identity_tag(identity)]},
+                "status": {"uploadStatus": "processed", "privacyStatus": "unlisted"},
+                "processingDetails": {"processingStatus": "succeeded"},
+            }
+        ]
+    }
+    payload = change(payload)
+    monkeypatch.setenv("VIDEO_YOUTUBE_CLIENT_ID", "offline-client")
+    monkeypatch.setenv("VIDEO_YOUTUBE_CLIENT_SECRET", "offline-secret")
+    monkeypatch.setattr(
+        "podcaster.video.distribution._load_youtube_refresh_token", lambda: "offline-refresh"
+    )
+    notify = MagicMock(side_effect=AssertionError("readback must not notify"))
+    monkeypatch.setattr("podcaster.video.distribution._notify_youtube_reauthorization", notify)
+    for module in ("podcaster.api", "podcaster.monitoring"):
+        monkeypatch.setattr(module + ".publication_status", partial(publication_status, now=NOW))
+    calls = []
+
+    def provider_response(request, **kwargs):
+        oauth = request.full_url == "https://oauth2.googleapis.com/token"
+        assert request.method == ("POST" if oauth else "GET")
+        if not oauth:
+            url = urlsplit(request.full_url)
+            assert (url.scheme, url.netloc, url.path) == (
+                "https",
+                "www.googleapis.com",
+                "/youtube/v3/videos",
+            )
+            assert parse_qs(url.query) == {
+                "id": ["_ZD9E_zTjtM"],
+                "part": ["snippet,status,processingDetails"],
+            }
+        calls.append("oauth" if oauth else "videos_list")
+        body = json.dumps({"access_token": "offline-access"} if oauth else payload).encode()
+        return _http_response(
+            b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
+        )
+
+    monkeypatch.setattr("podcaster.video.distribution.urlopen", provider_response)
+    assert (read_youtube_status(identity, "_ZD9E_zTjtM") is not None) is available
+    projected = publication_status(backend, query, now=NOW)
+    status, body = _status_handler_response(monkeypatch, backend, query, handler)
+    assert status == 200
+    assert body == projected
+    assert body["provider"]["state"] == state
+    assert body["provider"]["external_verified"] is (state == "published")
+    assert body["provider"]["providers"]["youtube"]["code"] == code
+    assert body["provider"]["semantics"] == "legacy_delivery"
+    assert calls == ["oauth", "videos_list"] * 3
+    notify.assert_not_called()
+    assert storage.data == before
+    assert not any(
+        private in json.dumps(body)
+        for private in ("offline-access", "offline-refresh", "offline-secret")
+    )
+
+
+@pytest.mark.parametrize("handler", ["stdlib", "fastapi"])
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [
+        ("status", "privacyStatus"),
+        ("status", "uploadStatus"),
+        ("processingDetails", "processingStatus"),
+    ],
+)
+@pytest.mark.parametrize("value", [[], {}, None, False, 7, 1.5])
+def test_actual_provider_nested_status_types(accepted, monkeypatch, handler, section, field, value):
+    def change(payload):
+        payload["items"][0][section][field] = value
+        return payload
+
+    _check_youtube_json_readback(accepted, monkeypatch, handler, change)
+
+
+@pytest.mark.parametrize("handler", ["stdlib", "fastapi"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "top_list",
+        "items_object",
+        "item_list",
+        "status_list",
+        "processing_null",
+        "snippet_bool",
+        "tags_object",
+        "tags_mixed",
+        "empty_items",
+        "wrong_id",
+        "wrong_tag",
+        "public",
+        "unlisted",
+        "private",
+        "missing_upload",
+        "missing_processing",
+        "missing_privacy",
+        "missing_status",
+        "missing_details",
+        "future_status",
+        "failed",
+        "empty_status",
+    ],
+)
+def test_actual_provider_json_shape_and_legacy_controls(accepted, monkeypatch, handler, case):
+    def change(payload):
+        item = payload["items"][0]
+        if case == "top_list":
+            return []
+        if case == "items_object":
+            payload["items"] = {}
+        elif case == "item_list":
+            payload["items"] = [[]]
+        elif case == "status_list":
+            item["status"] = []
+        elif case == "processing_null":
+            item["processingDetails"] = None
+        elif case == "snippet_bool":
+            item["snippet"] = False
+        elif case == "tags_object":
+            item["snippet"]["tags"] = {}
+        elif case == "tags_mixed":
+            item["snippet"]["tags"].append({})
+        elif case == "empty_items":
+            payload["items"] = []
+        elif case == "wrong_id":
+            item["id"] = "other_video"
+        elif case == "wrong_tag":
+            item["snippet"]["tags"] = ["unrelated"]
+        elif case in {"public", "unlisted", "private"}:
+            item["status"]["privacyStatus"] = case
+        elif case == "missing_upload":
+            del item["status"]["uploadStatus"]
+        elif case == "missing_processing":
+            del item["processingDetails"]["processingStatus"]
+        elif case == "missing_privacy":
+            del item["status"]["privacyStatus"]
+        elif case == "missing_status":
+            del item["status"]
+        elif case == "missing_details":
+            del item["processingDetails"]
+        elif case == "future_status":
+            item["status"]["uploadStatus"] = "future-provider-state"
+        elif case == "failed":
+            item["status"]["uploadStatus"] = "failed"
+        elif case == "empty_status":
+            item["status"]["privacyStatus"] = ""
+        return payload
+
+    unavailable = {
+        "top_list",
+        "items_object",
+        "item_list",
+        "status_list",
+        "processing_null",
+        "snippet_bool",
+        "tags_object",
+        "tags_mixed",
+        "empty_items",
+        "wrong_id",
+        "wrong_tag",
+    }
+    state = (
+        "unknown"
+        if case in unavailable
+        else "published"
+        if case in {"public", "unlisted"}
+        else "failed"
+        if case == "failed"
+        else "pending"
+    )
+    code = {
+        "unknown": "readback_unavailable",
+        "published": "processed_upload_readback",
+        "failed": "upload_failed",
+        "pending": "upload_not_ready",
+    }[state]
+    _check_youtube_json_readback(
+        accepted,
+        monkeypatch,
+        handler,
+        change,
+        available=case not in unavailable,
+        state=state,
+        code=code,
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        (field, value)
+        for field in ("privacyStatus", "uploadStatus", "processingStatus")
+        for value in ([], {}, None, False, 7, 1.5)
+    ]
+    + [(None, value) for value in ([], None, False, 7, 1.5, "invalid")],
+)
+def test_status_callback_rejects_malformed_readback_shapes(accepted, field, value):
+    storage, manifest, query = accepted
+    identity = receipts(storage, manifest)
+    before = copy.deepcopy(storage.data)
+    readback = ready(identity, "_ZD9E_zTjtM")
+    if field is None:
+        readback = value
+    else:
+        readback[field] = value
+    body = publication_status(storage, query, now=NOW, youtube_readback=lambda *_: readback)
+    assert body["provider"]["state"] == "unknown"
+    assert body["provider"]["external_verified"] is False
+    assert body["provider"]["providers"]["youtube"]["code"] == "readback_unavailable"
+    assert storage.data == before
+
+
+def test_status_callback_programming_error_is_not_readback_unavailability(accepted):
+    storage, manifest, query = accepted
+    receipts(storage, manifest)
+    before = copy.deepcopy(storage.data)
+
+    def broken(*_):
+        raise TypeError("broken callback implementation")
+
+    with pytest.raises(TypeError, match="broken callback implementation"):
+        publication_status(storage, query, now=NOW, youtube_readback=broken)
+    assert storage.data == before
+
+
+def test_status_callback_accepts_mapping_without_optional_metadata(accepted):
+    storage, manifest, query = accepted
+    receipts(storage, manifest)
+    before = copy.deepcopy(storage.data)
+    readback = MappingProxyType(
+        {"uploadStatus": "processed", "processingStatus": "succeeded", "privacyStatus": "unlisted"}
+    )
+    body = publication_status(storage, query, now=NOW, youtube_readback=lambda *_: readback)
+    assert body["provider"]["state"] == "published"
+    assert body["provider"]["external_verified"] is True
+    assert body["provider"]["semantics"] == "legacy_delivery"
+    assert storage.data == before
 
 
 @pytest.mark.parametrize("handler", ["stdlib", "fastapi"])

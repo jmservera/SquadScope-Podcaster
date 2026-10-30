@@ -31,6 +31,7 @@ from podcaster.publication_state import (
 )
 from podcaster.review import is_exact_script_job
 from podcaster.storage import StorageBackend
+from podcaster.video.youtube_publish import valid_video_readback
 from podcaster.video.youtube_reconcile import youtube_identity_tag
 
 STATUS_SCHEMA_VERSION = "podcast_publication_status_v1"
@@ -425,7 +426,7 @@ def publication_status(
                     state, code = "unknown", "provider_id_invalid"
                 else:
                     readback = youtube_readback(identity, provider_id)
-                    if readback is None:
+                    if not valid_video_readback(readback):
                         state, code = "unknown", "readback_unavailable"
                     elif (
                         readback.get("uploadStatus") == "processed"
