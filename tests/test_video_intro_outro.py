@@ -799,7 +799,7 @@ class TestBuildCreditsFfmpegCmd:
         config = CreditsConfig(duration_ms=7000)
         cmd = _build_credits_ffmpeg_cmd(config, Path("/out/c.mp4"))
         t_idx = cmd.index("-t")
-        assert cmd[t_idx + 1] == pytest.approx("7.000", rel=0)
+        assert cmd[t_idx + 1] == "7.000"
 
     def test_duration_string_exact(self):
         cmd = _build_credits_ffmpeg_cmd(CreditsConfig(duration_ms=8000), Path("/out/c.mp4"))
