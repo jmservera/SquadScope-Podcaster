@@ -49,7 +49,7 @@ from podcaster.spotify_mode import (
     review_publish_fields,
     spotify_audio_publish_enabled,
 )
-from podcaster.storage import create_storage_backend
+from podcaster.storage import StorageUnavailableError, create_storage_backend
 from podcaster.validation import is_authorized, validate_payload_details
 
 logger = logging.getLogger("podcaster.api")
@@ -182,7 +182,7 @@ class GenerateHandler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError):
             _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "invalid_evidence_or_query"})
             return
-        except (OSError, AzureError):
+        except (OSError, AzureError, StorageUnavailableError):
             _json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": "status_unavailable"})
             return
         _json_response(self, HTTPStatus.OK, response, no_store=True)

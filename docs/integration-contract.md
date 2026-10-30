@@ -39,20 +39,41 @@ The response includes the exact four-field `identity`, `job_id`, `correlation_id
 language, and `observed_at` describe missing, incomplete, or stale evidence without
 returning logs, artifact paths, signed URLs, bodies, or secrets.
 
-This endpoint projects the existing manifest/progress/publication-evidence documents.
+This endpoint projects the existing manifest/progress and durable publication documents.
 It never generates, enqueues, mutates receipts, uploads, changes visibility, or promotes.
-Both provider legs are required for terminal success: an identity-tagged YouTube video
-must be read back as **processed**, processing **succeeded**, and **unlisted or public**;
-Spotify must have an identity-bound **video** publication receipt backed by authoritative
-provider readback. Audio-only, draft, private, ambiguous, or unverified delivery is not green.
-Readback receipts older than 24 hours or over five minutes in the future are not reusable.
-Polling does not refresh a persisted receipt's age.
+The response's `provider.semantics` explicitly distinguishes:
+
+- `canonical_public_outbox`: exact-script jobs and jobs with an existing distribution
+  outbox reference use that outbox only. Both YouTube and Spotify VIDEO require bound
+  receipts and terminal public verification, validated by the existing weekly aggregation
+  proof rules. `provider.weekly.state` and `provider.attempts` retain weekly identity truth
+  separately from each attempt's outcome. Durable completed-public evidence does not require
+  a new live OAuth read on every poll. Missing references, ambiguous receipts, invalid proofs,
+  or identity/locale conflicts never fall back to legacy evidence.
+- `legacy_delivery`: only pre-exact-script jobs without an outbox reference use legacy
+  publication evidence. Their YouTube video must be identity-tagged and freshly read back
+  as **processed**, processing **succeeded**, and **unlisted or public**; Spotify must have
+  an identity-bound VIDEO publication receipt backed by authoritative provider readback.
+  This delivery objective does not certify canonical public weekly success.
+
+Audio-only, draft, private, ambiguous, or unverified delivery is not green. Legacy receipts
+older than 24 hours or over five minutes in the future are not reusable; polling does not
+refresh a persisted receipt's age.
 
 The API identity needs read access to job/progress/publication-evidence blobs and only the
 YouTube client ID, client-secret reference, and refresh-token reference used by the existing
 OAuth reader. No Spotify credentials are needed by this route. If Key Vault is used, grant
 only secret-read access to the YouTube reference, not vault write access. OAuth exchange and
 exact-video `videos.list` reads use three-second HTTP timeouts; no provider mutation is allowed.
+
+API deployment wiring is opt-in: set `publicationStatusYoutubeReadbackEnabled=true` in
+`infra/main.bicep` deployment parameters only when legacy live readback is needed. It passes
+the existing secure `videoYoutubeClientId`, `videoYoutubeClientSecret`, and
+`videoYoutubeRefreshToken` parameters to ACA secret references for the API, not plain-text
+environment values or outputs. The default is false; incomplete credentials emit no
+YouTube secrets/env and readback fails closed. This adds no roles, OAuth scopes, network
+access, upload flags, or provider-write paths. Do not enable the caller endpoint until
+the reviewed API image and required credential configuration have been validated.
 
 Errors are sanitized: `401` unauthenticated/unconfigured key, `400` invalid query,
 `404` missing job, `409` missing/malformed/mismatched canonical identity or evidence,

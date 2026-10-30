@@ -26,6 +26,10 @@ DOWNLOAD_METHOD_LOCAL_LOCATOR = "local_filesystem_locator"
 logger = logging.getLogger(__name__)
 
 
+class StorageUnavailableError(RuntimeError):
+    """A storage transport or managed-identity dependency could not be read."""
+
+
 @dataclass(frozen=True)
 class StoredArtifact:
     path: str
@@ -568,10 +572,7 @@ class AzureBlobStorageBackend:
         except HTTPError as exc:
             if exc.code == 404:
                 return None, None
-            detail = exc.read().decode("utf-8", errors="replace")[:500]
-            raise RuntimeError(
-                f"blob read failed for {safe_path}: HTTP {exc.code} {detail}"
-            ) from exc
+            raise StorageUnavailableError(f"blob read failed: HTTP {exc.code}") from exc
 
     def list_blobs(self, prefix: str, *, limit: int = 10) -> list[str]:
         safe_prefix = _safe_blob_prefix(prefix)
@@ -1160,7 +1161,9 @@ class ManagedIdentityTokenCredential:
         token_payload = _request_managed_identity_token(resource)
         token = token_payload.get("access_token")
         if not isinstance(token, str) or not token:
-            raise RuntimeError("managed identity token response did not include an access token")
+            raise StorageUnavailableError(
+                "managed identity token response did not include an access token"
+            )
         _token_expires_on(token_payload)
         return token
 
@@ -1184,7 +1187,9 @@ class _SdkBlobCredential:
         payload = _request_managed_identity_token(resource)
         token = payload.get("access_token")
         if not isinstance(token, str) or not token:
-            raise RuntimeError("managed identity token response did not include an access token")
+            raise StorageUnavailableError(
+                "managed identity token response did not include an access token"
+            )
         return AccessToken(token, _token_expires_on(payload))
 
 
@@ -1241,33 +1246,31 @@ def _request_managed_identity_token(resource: str) -> dict[str, object]:
                     exc.close()
                 time.sleep(delay)
                 continue
-            try:
-                detail = exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
-            finally:
-                if exc.fp:
-                    exc.close()
-            raise RuntimeError(
-                f"managed identity token request failed: HTTP {exc.code} {exc.reason}; {detail}"
+            if exc.fp:
+                exc.close()
+            raise StorageUnavailableError(
+                f"managed identity token request failed: HTTP {exc.code}"
             ) from exc
         except URLError as exc:
             if attempt < max_attempts:
                 delay = backoff_delays[attempt - 1]
                 logger.warning(
                     "managed identity token request retrying after network error on attempt "
-                    "%s/%s; sleeping %.0fs: %s",
+                    "%s/%s; sleeping %.0fs",
                     attempt,
                     max_attempts,
                     delay,
-                    exc.reason,
                 )
                 time.sleep(delay)
                 continue
-            raise RuntimeError(f"managed identity token request failed: {exc.reason}") from exc
+            raise StorageUnavailableError("managed identity token request failed") from exc
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise StorageUnavailableError("managed identity token response was invalid") from exc
         if not isinstance(payload, dict):
-            raise RuntimeError("managed identity token response was not a JSON object")
+            raise StorageUnavailableError("managed identity token response was not a JSON object")
         return payload
 
-    raise RuntimeError("managed identity token request failed after retries")
+    raise StorageUnavailableError("managed identity token request failed after retries")
 
 
 def _token_expires_on(payload: dict[str, object]) -> int:
@@ -1281,7 +1284,7 @@ def _token_expires_on(payload: dict[str, object]) -> int:
         return int(time.time()) + expires_in
     if isinstance(expires_in, str) and expires_in.isdigit():
         return int(time.time()) + int(expires_in)
-    raise RuntimeError("managed identity token response did not include an expiry")
+    raise StorageUnavailableError("managed identity token response did not include an expiry")
 
 
 def _safe_blob_path(path: str) -> str:

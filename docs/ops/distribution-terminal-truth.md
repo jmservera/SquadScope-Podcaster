@@ -99,33 +99,31 @@ reconciliation-only.
 
 ## Rollout and rollback
 
-### Direct weekly two-provider delivery and status adapter
+### Read-only status adapter and separate legacy semantics
 
-For the current direct weekly caller, enable the existing
-`VIDEO_YOUTUBE_REQUIRED=true` **and** `VIDEO_YOUTUBE_ENABLED=true` on the deployed
-video job, retain `VIDEO_YOUTUBE_PRIVACY=unlisted`, and verify
-`VIDEO_YOUTUBE_LANGUAGES` includes the caller's language. Keep Spotify's approved VIDEO
-publish mode and all review/protected-episode gates unchanged. Do not change unrelated
-callers' defaults. Required YouTube OAuth failures retain the queue for a bounded retry;
-their proven pre-upload/no-create evidence alone can atomically re-arm an upload claim.
-Spotify's durable receipt is reused rather than creating another Spotify episode.
-Ambiguous YouTube creation remains retry-blocked and requires read-only reconciliation.
-Other uncertain failures are never automatically re-authorized by this change.
+Current exact-script jobs prepare a private MP4 and the existing outbox; separate
+artifact-bound media review authorizes distribution. Script/audio approval does not
+authorize provider upload or promotion. The status route does not change any mutation,
+queue-retry, visibility, or review policy. The obsolete direct-weekly automatic OAuth
+claim re-arm proposal is not part of this rollout.
 
-Deploy the reviewed API and video images before setting `PODCASTER_STATUS_ENDPOINT`
+Deploy the reviewed API image before setting `PODCASTER_STATUS_ENDPOINT`
 in SquadScope's repository variables and `podcaster-real-generation` environment variables
 to the API's `/api/publication-status` URL. See the
 [terminal status contract](../integration-contract.md#read-only-terminal-status) for
 authentication, exact query identity, YouTube secret-read configuration, and receipt freshness.
-Smoke-test with the **existing** accepted W42 identity/job/correlation only. Do not submit W42
+Smoke-test with an **existing** accepted identity/job/correlation only. Do not submit it
 again, mint a receipt, or repeat an upload to make the smoke green. A missing or stale receipt
 must remain explicit and be investigated.
 
-This adapter's `published` means both requested **delivery objectives** are verified:
-processed unlisted YouTube upload plus published Spotify VIDEO. It does not claim that
-YouTube is publicly listed, grant a promotion approval, or relax the outbox's separate
-public-verification objectives described above. Existing W42 title correction, if needed,
-is a separately reviewed metadata-only operation with exact provider identity readback.
+`provider.semantics=canonical_public_outbox` uses identity-bound durable outbox receipts,
+terminal verification and weekly proof aggregation. It exposes attempt outcomes separately
+from weekly truth and never invokes the worker/reconciler to read status.
+`legacy_delivery` applies only to older jobs without exact-script review or outbox references:
+processed unlisted YouTube plus published Spotify VIDEO is its explicit delivery objective,
+not canonical public weekly truth. Missing canonical evidence never falls back to legacy.
+Optional API YouTube OAuth secret-reference wiring is required only for legacy live readback;
+see the integration contract for its default-off deployment parameter.
 
 Rollback removes the new caller endpoint configuration and restores the previous images;
 it must not delete provider receipts/claims or relax either review or visibility gates.

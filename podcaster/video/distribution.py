@@ -800,7 +800,10 @@ def youtube_publication_metadata(
     suffix = f"\n\n{publication_marker}" if publication_marker else ""
     if len(suffix) > 5000:
         raise ValueError("YouTube publication marker exceeds the description limit")
-    return {"title": title[:100], "description": description[: 5000 - len(suffix)] + suffix}
+    return {
+        "title": clamp_youtube_title(title),
+        "description": description[: 5000 - len(suffix)] + suffix,
+    }
 
 
 def upload_to_youtube(
@@ -1786,16 +1789,6 @@ def distribute_video(
             language,
         )
     youtube_record = prior_published.get("youtube")
-    if (
-        isinstance(youtube_record, Mapping)
-        and youtube_record.get("outcome") == MANUAL_HANDOFF_REQUIRED
-        and youtube_record.get("retry_blocked") is False
-        and youtube_record.get("mutation_attempted") is False
-        and youtube_record.get("transport_status") == "not_attempted"
-        and youtube_record.get("evidence_source") == "youtube_oauth_before_upload"
-        and str(youtube_record.get("last_error_code") or "").startswith("youtube_oauth_")
-    ):
-        youtube_record = None
     youtube_reconciled = False
     if youtube_active and isinstance(youtube_record, Mapping):
         youtube_reconciled, reconcile_error = _reconcile_unknown_youtube_upload(
@@ -1975,26 +1968,6 @@ def distribute_video(
                     )
             if config.youtube_required and not exc.mutation_ambiguous:
                 youtube_required_failure = exc
-                # OAuth failure precedes videos.insert: only this proven no-create
-                # boundary may re-arm a canonical upload claim automatically.
-                if exc.retryable and exc.stage == "oauth_token" and on_published is not None:
-                    on_published(
-                        "youtube",
-                        {
-                            "status": "failed",
-                            "provider_status": "failed",
-                            "outcome": MANUAL_HANDOFF_REQUIRED,
-                            "provider": "youtube",
-                            "transport_status": "not_attempted",
-                            "verification": "none",
-                            "evidence_source": "youtube_oauth_before_upload",
-                            "mutation_attempted": False,
-                            "retry_blocked": False,
-                            "last_error_code": exc.code,
-                            "publish_run_id": publish_run_id,
-                            "at": datetime.now(timezone.utc).isoformat(),
-                        },
-                    )
             logger.error(
                 "YouTube distribution failed stage=%s code=%s retryable=%s",
                 exc.stage,

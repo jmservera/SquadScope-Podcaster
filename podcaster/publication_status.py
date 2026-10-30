@@ -8,6 +8,13 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 
+from podcaster.distribution_outbox import (
+    DistributionOutboxError,
+    DistributionOutboxRepository,
+    aggregate_exit_code,
+    outbox_id_for,
+    weekly_state_from_attempts,
+)
 from podcaster.progress import PROGRESS_SCHEMA_VERSION, read_progress
 from podcaster.publication_state import (
     CANONICAL_OUTCOMES,
@@ -20,6 +27,7 @@ from podcaster.publication_state import (
     publication_identity,
     read_evidence,
 )
+from podcaster.review import is_exact_script_job
 from podcaster.storage import StorageBackend
 from podcaster.video.youtube_reconcile import youtube_identity_tag
 
@@ -96,13 +104,184 @@ def _stage(state: Any, *, synthesis: bool = False) -> str:
     if not isinstance(state, dict):
         return "unknown"
     status = state.get("status")
-    if status == "completed":
+    if status == "completed" or (not synthesis and status == "prepared"):
         return "succeeded"
     if status in {"failed", "partial", "skipped"}:
         return "failed"
     if status in {"pending", "queued", "running", "started"}:
         return "started" if synthesis and status in {"running", "started"} else "pending"
     return "unknown"
+
+
+def _bound_outbox_receipts(leg: Mapping[str, Any], provider: str, attempt_ids: set[str]) -> bool:
+    receipts = leg.get("receipts")
+    verification = leg.get("verification")
+    history = leg.get("intent_history", [])
+    if (
+        not isinstance(receipts, list)
+        or not receipts
+        or not isinstance(verification, dict)
+        or not isinstance(history, list)
+    ):
+        return False
+    intents = [*history, leg.get("intent")]
+    if any(not isinstance(intent, dict) for intent in intents):
+        return False
+    by_id = {intent.get("intent_id"): intent for intent in intents}
+    if len(by_id) != len(intents) or None in by_id:
+        return False
+    receipt_ids = set()
+    seen_intents = set()
+    for receipt in receipts:
+        if not isinstance(receipt, dict):
+            return False
+        intent = by_id.get(receipt.get("intent_id"))
+        if (
+            intent is None
+            or not intent.get("consumed_at")
+            or receipt.get("receipt_id") in receipt_ids
+            or not receipt.get("receipt_id")
+            or receipt.get("intent_id") in seen_intents
+            or any(
+                receipt.get(field) != intent.get(field)
+                for field in ("operation", "operation_type", "consumed_owner")
+            )
+            or receipt.get("attempt_id") != intent.get("consumed_attempt_id")
+            or receipt.get("attempt_id") not in attempt_ids
+            or receipt.get("fencing_token") != intent.get("consumed_fence")
+            or receipt.get("provider") != provider
+            or intent.get("provider") != provider
+            or receipt.get("ambiguous") is not False
+            or receipt.get("transport_class") != "accepted"
+            or not receipt.get("provider_item_id")
+            or receipt["provider_item_id"] != verification.get("provider_item_id")
+            or _timestamp(receipt.get("at")) is None
+            or _timestamp(intent["consumed_at"]) is None
+            or _timestamp(receipt["at"]) < _timestamp(intent["consumed_at"])
+        ):
+            return False
+        receipt_ids.add(receipt["receipt_id"])
+        seen_intents.add(receipt["intent_id"])
+    return seen_intents == set(by_id) and _timestamp(verification.get("at")) is not None
+
+
+def _outbox_provider_status(
+    storage: StorageBackend,
+    outbox_id: Any,
+    identity: PublicationIdentity,
+    language: str,
+) -> dict[str, Any]:
+    """Project durable terminal readback without running a worker or reconciler."""
+    missing = {
+        "state": "unknown",
+        "external_verified": False,
+        "semantics": "canonical_public_outbox",
+        "weekly": {"state": "pending"},
+        "attempts": [],
+        "providers": {
+            provider: {"state": "unknown", "code": "outbox_missing", "checked_at": None}
+            for provider in ("youtube", "spotify")
+        },
+    }
+    if outbox_id is None:
+        return missing
+    if not isinstance(outbox_id, str) or not re.fullmatch(r"[0-9a-f]{64}", outbox_id):
+        raise PublicationStatusError("invalid_outbox_identity", 409)
+    try:
+        document = DistributionOutboxRepository(storage).read(outbox_id)
+    except DistributionOutboxError as exc:
+        raise PublicationStatusError("invalid_outbox_evidence", 409) from exc
+    if document is None:
+        return missing
+    expected = {
+        **{field: getattr(identity, field) for field in _IDENTITY_FIELDS},
+        "accepted_job_id": identity.accepted_job_id,
+    }
+    if document["publication_identity"] != expected:
+        raise PublicationStatusError("provider_identity_mismatch", 409)
+    legs = document["providers"]
+    objectives = document.get("provider_objectives")
+    if (
+        document["artifact"].get("media_kind") != "video"
+        or not isinstance(objectives, dict)
+        or set(legs) != set(objectives)
+        or any(not isinstance(leg, dict) for leg in legs.values())
+        or not isinstance(document.get("attempts"), list)
+        or not document["attempts"]
+        or any(not isinstance(attempt, dict) for attempt in document["attempts"])
+    ):
+        raise PublicationStatusError("invalid_outbox_evidence", 409)
+    try:
+        expected_id = outbox_id_for(identity, media_kind="video", provider_objectives=objectives)
+    except (DistributionOutboxError, TypeError) as exc:
+        raise PublicationStatusError("invalid_outbox_evidence", 409) from exc
+    if expected_id != outbox_id:
+        raise PublicationStatusError("provider_identity_mismatch", 409)
+    youtube = legs.get("youtube", {})
+    context = youtube.get("context")
+    if not isinstance(context, dict) or context.get("locale") != language:
+        raise PublicationStatusError("provider_language_mismatch", 409)
+
+    providers = {}
+    receipts_bound = True
+    for provider in ("youtube", "spotify"):
+        leg = legs.get(provider, {})
+        verification = leg.get("verification")
+        checked_at = verification.get("at") if isinstance(verification, dict) else None
+        result = leg.get("result")
+        state, code = "unknown", "provider_unconfirmed"
+        receipts = leg.get("receipts")
+        if result in {"failed_terminal", "poisoned"}:
+            state, code = "failed", "provider_failed"
+        elif result in {"pending_provider", "failed_retryable_pre_mutation"}:
+            state, code = "pending", "provider_pending"
+        elif result == "externally_verified_public":
+            state, code = "published", "terminal_public_readback"
+        if not isinstance(receipts, list) or not receipts:
+            receipts_bound = False
+            if result == "externally_verified_public":
+                state, code = "unknown", "receipt_missing"
+        elif (
+            not _bound_outbox_receipts(
+                leg, provider, {attempt.get("attempt_id") for attempt in document["attempts"]}
+            )
+            or verification.get("result") != result
+        ):
+            receipts_bound = False
+            state, code = "unknown", "receipt_ambiguous"
+        if objectives.get(provider) != "public":
+            receipts_bound = False
+            state, code = "unknown", "public_objective_missing"
+        providers[provider] = {"state": state, "code": code, "checked_at": checked_at}
+    weekly = weekly_state_from_attempts(document["attempts"], weekly_record=document)
+    green = (
+        receipts_bound
+        and weekly in {"published_verified", "published_verified_recovered"}
+        and weekly == document["weekly_aggregation"]["state"]
+        and aggregate_exit_code([document]) == 0
+    )
+    if not green:
+        for leg in providers.values():
+            if leg["state"] == "published":
+                leg.update(state="unknown", code="weekly_not_verified")
+    states = {leg["state"] for leg in providers.values()}
+    return {
+        "state": "published"
+        if green
+        else "failed"
+        if "failed" in states
+        else "unknown"
+        if "unknown" in states or weekly in {"identity_conflict", "provider_unknown"}
+        else "pending",
+        "external_verified": green,
+        "semantics": "canonical_public_outbox",
+        "weekly": {"state": weekly},
+        "attempts": [
+            {field: attempt.get(field) for field in ("attempt_id", "state", "terminal_outcome")}
+            for attempt in document["attempts"]
+        ],
+        "providers": providers,
+    }
 
 
 def publication_status(
@@ -178,6 +357,23 @@ def publication_status(
                 raise PublicationStatusError("invalid_progress", 409)
             if current.get("stage") == "synthesis":
                 synthesis = "started" if _fresh(current.get("at"), moment) else "unknown"
+    video_runner = generation.get("video_runner")
+    distribution = video_runner.get("distribution") if isinstance(video_runner, dict) else None
+    outbox_id = distribution.get("outbox_id") if isinstance(distribution, dict) else None
+    if outbox_id is not None or is_exact_script_job(manifest):
+        return {
+            "schema_version": STATUS_SCHEMA_VERSION,
+            "identity": expected,
+            "job_id": job_id,
+            "correlation_id": correlation_id,
+            "language": language,
+            "observed_at": moment.isoformat(),
+            "synthesis": {"state": synthesis},
+            "video": {"state": video},
+            "provider": _outbox_provider_status(storage, outbox_id, identity, language),
+        }
+    # Pre-exact-script jobs used distinct delivery objectives (unlisted YouTube
+    # plus Spotify VIDEO). They never certify the canonical public weekly truth.
     evidence = read_evidence(storage, job_id)
     if evidence is not None and evidence.get("corrupt"):
         raise PublicationStatusError("invalid_provider_evidence", 409)
@@ -305,6 +501,7 @@ def publication_status(
         "provider": {
             "state": provider_state,
             "external_verified": provider_state == "published",
+            "semantics": "legacy_delivery",
             "providers": providers,
         },
     }

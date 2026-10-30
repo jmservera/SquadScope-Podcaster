@@ -4,7 +4,11 @@ import json
 
 import pytest
 
-from podcaster.video.distribution import VideoDistributionConfig, upload_to_youtube
+from podcaster.video.distribution import (
+    VideoDistributionConfig,
+    upload_to_youtube,
+    youtube_publication_metadata,
+)
 from podcaster.video.youtube import build_snippet
 from podcaster.video.youtube_metadata import build_youtube_metadata
 from podcaster.video.youtube_title import clamp_youtube_title
@@ -86,10 +90,14 @@ def test_actual_resumable_paths_keep_week_locale_and_identity_tag(
         youtube_client_secret="test",
         youtube_refresh_token="test",
     )
+    marker = "Publication " + "b" * 64
+    composed = youtube_publication_metadata(title, "é" * 6000, publication_marker=marker)
+    assert len(composed["title"]) <= 100
+    assert len(composed["description"]) == 5000
     upload_to_youtube(
         video,
-        title,
-        "description",
+        composed["title"],
+        composed["description"],
         config,
         transport=CaptureTransport(),
         identity_tag=identity_tag,
@@ -98,5 +106,13 @@ def test_actual_resumable_paths_keep_week_locale_and_identity_tag(
     assert len(metadata) == 1
     assert metadata[0]["snippet"]["title"] == clamp_youtube_title(title)
     assert metadata[0]["snippet"]["title"].endswith(suffix)
+    assert metadata[0]["snippet"]["description"].endswith("\n\n" + marker)
     assert identity_tag in metadata[0]["snippet"]["tags"]
     assert metadata[0]["status"]["privacyStatus"] == "unlisted"
+
+
+def test_shared_metadata_preserves_existing_normal_title_and_description_limits():
+    composed = youtube_publication_metadata("Short title | W43 [ES]", "normal description")
+    assert composed == {"title": "Short title | W43 [ES]", "description": "normal description"}
+    assert len(youtube_publication_metadata("x" * 200, "d" * 6000)["title"]) == 100
+    assert len(youtube_publication_metadata("normal", "d" * 6000)["description"]) == 5000

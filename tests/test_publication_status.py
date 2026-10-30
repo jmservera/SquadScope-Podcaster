@@ -1,14 +1,24 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import io
 import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 
 import pytest
 
 from podcaster.api import GenerateHandler
+from podcaster.distribution_outbox import (
+    ArtifactReference,
+    DistributionOutboxRepository,
+    aggregate_exit_code,
+    exact_verification_proof,
+    outbox_path,
+)
 from podcaster.publication_state import (
     append_evidence,
     evidence_path,
@@ -19,6 +29,7 @@ from podcaster.publication_status import (
     publication_status,
     read_youtube_status,
 )
+from podcaster.storage import AzureBlobStorageBackend, StorageUnavailableError
 from podcaster.video.youtube_reconcile import youtube_identity_tag
 from tests.test_api import FakeHandler
 
@@ -35,6 +46,13 @@ class ReadOnlyStorage:
 
     def update_bytes(self, path, content_type, update):
         self.data[path] = update(self.data.get(path))
+
+    def blob_size(self, path):
+        return len(self.data[path])
+
+    def download_file(self, path, target):
+        target.write_bytes(self.data[path])
+        return True
 
 
 @pytest.fixture
@@ -97,6 +115,248 @@ def ready(identity, video_id):
 
 def save(storage, manifest):
     storage.data[f"jobs/{JOB}/manifest.json"] = json.dumps(manifest).encode()
+
+
+@pytest.fixture
+def canonical(accepted):
+    storage, manifest, query = accepted
+    identity = publication_identity(manifest, JOB, query["publish_run_id"])
+    content = b"reviewed-video"
+    artifact = ArtifactReference(
+        "immutable/video.mp4", hashlib.sha256(content).hexdigest(), len(content), "video"
+    )
+    storage.data[artifact.path] = content
+    repository = DistributionOutboxRepository(storage, now=lambda: NOW)
+    document, _ = repository.enqueue(
+        identity,
+        artifact,
+        provider_objectives={"youtube": "public", "spotify": "public"},
+        provider_context={"youtube": {"locale": "en"}},
+        enqueue_source="video_runner",
+        enqueue_version="v1",
+    )
+    manifest["review"] = {"snapshot": {}}
+    manifest["generation"].update(
+        synthesis_runner={"status": "completed"},
+        video_runner={"status": "prepared", "distribution": {"outbox_id": document["outbox_id"]}},
+    )
+    save(storage, manifest)
+    claim = repository.claim(
+        document["outbox_id"], owner="worker", execution_id="one", lease_seconds=300
+    )
+    for provider, provider_id, operation in (
+        ("youtube", "_ZD9E_zTjtM", "upload"),
+        ("spotify", "127359743", "create"),
+    ):
+        for current_operation in (operation, "public_promotion"):
+            repository.persist_intent(claim, provider=provider, operation=current_operation)
+            repository.consume_intent(
+                claim, provider=provider, provider_timeout_seconds=30, receipt_margin_seconds=10
+            )
+            repository.record_receipt(
+                claim,
+                provider=provider,
+                transport_class="accepted",
+                provider_item_id=provider_id,
+                native_state="public",
+            )
+        repository.record_verification(
+            claim,
+            provider=provider,
+            result="externally_verified_public",
+            source="provider_readback",
+            provider_item_id=provider_id,
+            native_state="public",
+            proof=exact_verification_proof(document, provider_item_id=provider_id),
+        )
+    document = repository.release(claim)
+    assert aggregate_exit_code([document]) == 0
+    return storage, manifest, query, document
+
+
+def test_current_outbox_completed_public_is_visible_without_legacy_or_mutation(canonical):
+    storage, _, query, document = canonical
+    before = copy.deepcopy(storage.data)
+    response = publication_status(
+        storage,
+        query,
+        now=NOW,
+        youtube_readback=MagicMock(side_effect=AssertionError("use durable terminal readback")),
+    )
+    assert response["provider"]["state"] == "published"
+    assert response["provider"]["external_verified"] is True
+    assert response["provider"]["semantics"] == "canonical_public_outbox"
+    assert response["provider"]["weekly"]["state"] == "published_verified"
+    assert response["provider"]["attempts"][0]["terminal_outcome"] == "published_verified"
+    assert response["video"]["state"] == "succeeded"
+    assert evidence_path(JOB) not in storage.data
+    assert storage.data == before
+    assert document["aggregate"]["result"] == "completed_public"
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing_outbox",
+        "missing_receipt",
+        "ambiguous",
+        "duplicate_receipt",
+        "wrong_provider",
+        "wrong_attempt",
+        "wrong_proof",
+        "missing_provider",
+        "weekly_conflict",
+    ],
+)
+def test_canonical_evidence_failures_cannot_fall_back_to_green_legacy(canonical, fault):
+    storage, manifest, query, document = canonical
+    receipts(storage, manifest)  # Deliberately green legacy evidence is not a fallback.
+    leg = document["providers"]["youtube"]
+    if fault == "missing_outbox":
+        storage.data.pop(outbox_path(document["outbox_id"]))
+    else:
+        if fault == "missing_receipt":
+            leg["receipts"] = []
+        elif fault == "ambiguous":
+            leg["receipts"][0]["ambiguous"] = True
+        elif fault == "duplicate_receipt":
+            leg["receipts"].append(copy.deepcopy(leg["receipts"][0]))
+        elif fault == "wrong_provider":
+            leg["receipts"][0]["provider"] = "spotify"
+        elif fault == "wrong_attempt":
+            leg["receipts"][0]["attempt_id"] = "another"
+        elif fault == "wrong_proof":
+            leg["verification"]["proof"]["evidence"]["article_sha256"] = "c" * 64
+        elif fault == "missing_provider":
+            document["providers"].pop("spotify")
+        else:
+            document["weekly_aggregation"]["unresolved_conditions"] = ["identity_conflict"]
+        storage.data[outbox_path(document["outbox_id"])] = json.dumps(document).encode()
+    before = copy.deepcopy(storage.data)
+    try:
+        result = publication_status(storage, query, now=NOW, youtube_readback=ready)
+    except PublicationStatusError as exc:
+        assert exc.status == 409
+    else:
+        assert result["provider"]["external_verified"] is False
+        assert result["provider"]["state"] != "published"
+    assert storage.data == before
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["week", "publish_run_id", "article_sha256", "manifest_sha256", "accepted_job_id", "locale"],
+)
+def test_outbox_identity_and_locale_are_bound_to_accepted_job(canonical, field):
+    storage, _, query, document = canonical
+    if field == "locale":
+        document["providers"]["youtube"]["context"]["locale"] = "es"
+    else:
+        document["publication_identity"][field] = "different"
+    storage.data[outbox_path(document["outbox_id"])] = json.dumps(document).encode()
+    with pytest.raises(PublicationStatusError) as error:
+        publication_status(storage, query, now=NOW)
+    assert error.value.status == 409
+
+
+def test_outbox_failed_attempt_truth_is_not_weekly_success(canonical):
+    storage, _, query, document = canonical
+    for leg in document["providers"].values():
+        leg["result"] = leg["verification"]["result"] = "failed_terminal"
+    document["attempts"][0]["terminal_outcome"] = "failed_terminal"
+    document["weekly_aggregation"]["state"] = "failed_terminal"
+    storage.data[outbox_path(document["outbox_id"])] = json.dumps(document).encode()
+    response = publication_status(storage, query, now=NOW)
+    assert response["provider"]["state"] == "failed"
+    assert response["provider"]["external_verified"] is False
+    assert response["provider"]["weekly"]["state"] == "failed_terminal"
+    assert response["provider"]["attempts"][0]["terminal_outcome"] == "failed_terminal"
+
+
+def test_green_latest_attempt_cannot_erase_prior_weekly_identity_uncertainty(canonical):
+    storage, _, query, document = canonical
+    prior = copy.deepcopy(document["attempts"][0])
+    prior.update(attempt_id="earlier-attempt", terminal_outcome="provider_unknown")
+    document["attempts"].insert(0, prior)
+    document["weekly_aggregation"]["evaluated_attempt_ids"].insert(0, prior["attempt_id"])
+    storage.data[outbox_path(document["outbox_id"])] = json.dumps(document).encode()
+    result = publication_status(storage, query, now=NOW)["provider"]
+    assert result["state"] == "unknown"
+    assert result["external_verified"] is False
+    assert result["weekly"]["state"] == "provider_unknown"
+    assert [attempt["terminal_outcome"] for attempt in result["attempts"]] == [
+        "provider_unknown",
+        "published_verified",
+    ]
+
+
+def test_exact_script_without_outbox_does_not_use_legacy_delivery(accepted):
+    storage, manifest, query = accepted
+    receipts(storage, manifest)
+    manifest["review"] = {"snapshot": {}}
+    save(storage, manifest)
+    response = publication_status(storage, query, now=NOW, youtube_readback=ready)
+    assert response["provider"]["state"] == "unknown"
+    assert response["provider"]["semantics"] == "canonical_public_outbox"
+
+
+def test_outbox_storage_unavailable_is_not_absent_or_legacy(canonical, monkeypatch):
+    storage, manifest, query, _ = canonical
+    receipts(storage, manifest)
+    get_bytes = storage.get_bytes
+
+    def unavailable(path):
+        if path.startswith("distribution-outbox/"):
+            raise StorageUnavailableError("unavailable")
+        return get_bytes(path)
+
+    monkeypatch.setattr(storage, "get_bytes", unavailable)
+    with pytest.raises(StorageUnavailableError):
+        publication_status(storage, query, now=NOW)
+
+
+@pytest.mark.parametrize("handler", ["stdlib", "fastapi"])
+@pytest.mark.parametrize("dependency", ["blob", "identity"])
+@pytest.mark.parametrize("http_status", [404, 500, 503])
+def test_real_azure_backend_transport_errors_are_sanitized_in_both_handlers(
+    accepted, monkeypatch, handler, dependency, http_status
+):
+    from fastapi.testclient import TestClient
+
+    from podcaster import monitoring
+
+    _, _, query = accepted
+    backend = AzureBlobStorageBackend("https://offline.blob.core.windows.net", "artifacts")
+    if dependency == "blob":
+        monkeypatch.setattr(backend._credential, "get_token", lambda _: "offline-token")
+    monkeypatch.setattr("podcaster.storage.time.sleep", lambda _: None)
+    monkeypatch.setenv("PODCASTER_API_KEY", "test-status-key")
+
+    def failed(request, **kwargs):
+        raise HTTPError(
+            request.full_url,
+            http_status,
+            "private-secret-detail",
+            {},
+            io.BytesIO(b"private-secret-body"),
+        )
+
+    monkeypatch.setattr("podcaster.storage.urlopen", failed)
+    headers = {"x-podcaster-api-key": "test-status-key"}
+    url = "/api/publication-status?" + urlencode(query)
+    if handler == "stdlib":
+        monkeypatch.setattr("podcaster.api.create_storage_backend", lambda: backend)
+        request = FakeHandler("GET", url, headers=headers)
+        GenerateHandler.do_GET(request)
+        status, body = request.response_code, request.get_response_json()
+    else:
+        monkeypatch.setattr(monitoring, "get_storage", lambda: backend)
+        with TestClient(monitoring.app, raise_server_exceptions=False) as client:
+            response = client.get(url, headers=headers)
+        status, body = response.status_code, response.json()
+    absent = dependency == "blob" and http_status == 404
+    assert status == (404 if absent else 503)
+    assert body == {"error": "job_not_found" if absent else "status_unavailable"}
 
 
 def test_known_w42_provider_ids_unlisted_and_spotify_video_are_terminal(accepted):
@@ -308,6 +568,26 @@ def test_status_oauth_failure_does_not_send_notifications(accepted, monkeypatch)
     notify.assert_not_called()
 
 
+@pytest.mark.parametrize("missing", ["client_id", "client_secret", "refresh_token"])
+def test_missing_api_readback_credential_fails_closed_without_provider_request(
+    accepted, monkeypatch, missing
+):
+    storage, manifest, _ = accepted
+    identity = receipts(storage, manifest)
+    monkeypatch.setenv("VIDEO_YOUTUBE_CLIENT_ID", "" if missing == "client_id" else "test-client")
+    monkeypatch.setenv(
+        "VIDEO_YOUTUBE_CLIENT_SECRET", "" if missing == "client_secret" else "test-secret"
+    )
+    monkeypatch.setattr(
+        "podcaster.video.distribution._load_youtube_refresh_token",
+        lambda: None if missing == "refresh_token" else "test-refresh",
+    )
+    transport = MagicMock(side_effect=AssertionError("missing credentials must not issue requests"))
+    monkeypatch.setattr("podcaster.video.distribution._DefaultTransport", transport)
+    assert read_youtube_status(identity, "_ZD9E_zTjtM") is None
+    transport.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "body",
     [
@@ -385,9 +665,7 @@ def test_real_youtube_readback_uses_exact_video_and_identity_without_upload(acce
     assert "/youtube/v3/videos?" in transport.request.call_args_list[1].args[0]
 
 
-def test_required_youtube_retry_preserves_spotify_and_rearms_only_no_create_claim(
-    accepted, tmp_path, monkeypatch
-):
+def test_legacy_oauth_failure_does_not_authorize_new_upload_claim(accepted, tmp_path, monkeypatch):
     from podcaster.publication_state import claim_evidence, latest_outcomes, read_evidence
     from podcaster.video.distribution import (
         VideoDistributionConfig,
@@ -427,15 +705,12 @@ def test_required_youtube_retry_preserves_spotify_and_rearms_only_no_create_clai
         }
     }
     upload = MagicMock(
-        side_effect=[
-            YouTubeDeliveryError(
-                "transient OAuth failure",
-                code="youtube_oauth_http_503",
-                stage="oauth_token",
-                retryable=True,
-            ),
-            ("_ZD9E_zTjtM", "https://youtube.com/watch?v=_ZD9E_zTjtM"),
-        ]
+        side_effect=YouTubeDeliveryError(
+            "transient OAuth failure",
+            code="youtube_oauth_http_503",
+            stage="oauth_token",
+            retryable=True,
+        )
     )
     spotify = MagicMock(side_effect=AssertionError("must never duplicate Spotify"))
     monkeypatch.setattr("podcaster.video.distribution.upload_to_youtube", upload)
@@ -465,36 +740,15 @@ def test_required_youtube_retry_preserves_spotify_and_rearms_only_no_create_clai
     assert first.youtube_required_failed and first.youtube_failure_retryable
     assert first.spotify_upload_updated and first.blob_path
     failed = latest_outcomes(read_evidence(storage, JOB))["youtube:video"]
-    assert failed["retry_blocked"] is False
+    assert failed["retry_blocked"] is True
     assert failed["mutation_attempted"] is False
     assert (
         claim_evidence(
             storage, identity, platform="youtube", media_kind="video", operation="upload_intent"
         )
-        is not None
-    )
-    assert (
-        claim_evidence(
-            storage, identity, platform="youtube", media_kind="video", operation="upload_intent"
-        )
         is None
-    )  # concurrent retry cannot acquire twice
-    second = distribute_video(
-        video,
-        JOB,
-        "title | W42",
-        "desc",
-        120,
-        config,
-        storage=FakeStorage(),
-        published=published,
-        publish_run_id=identity.publish_run_id,
-        on_published=record,
     )
-    assert second.youtube_id == "_ZD9E_zTjtM"
-    assert not second.youtube_required_failed
-    assert second.spotify_upload_updated
-    assert upload.call_count == 2
+    assert upload.call_count == 1
     spotify.assert_not_called()
     assert latest_outcomes(read_evidence(storage, JOB))["spotify:video"] == spotify_receipt
 

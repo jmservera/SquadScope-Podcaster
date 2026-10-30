@@ -79,7 +79,7 @@ from podcaster.spotify_mode import (
     spotify_audio_publish_enabled,
 )
 from podcaster.stage_progress import summarize as summarize_stage_progress
-from podcaster.storage import StorageBackend, create_storage_backend
+from podcaster.storage import StorageBackend, StorageUnavailableError, create_storage_backend
 from podcaster.validation import is_authorized, validate_payload_details
 
 logger = logging.getLogger(__name__)
@@ -713,7 +713,7 @@ def api_publication_status(request: Request):
         return JSONResponse(status_code=exc.status, content={"error": exc.code})
     except (ValueError, UnicodeDecodeError):
         return JSONResponse(status_code=400, content={"error": "invalid_evidence_or_query"})
-    except (OSError, AzureError):
+    except (OSError, AzureError, StorageUnavailableError):
         return JSONResponse(status_code=503, content={"error": "status_unavailable"})
     return JSONResponse(content=response, headers={"Cache-Control": "no-store"})
 
