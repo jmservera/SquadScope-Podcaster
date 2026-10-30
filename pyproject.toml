@@ -3,7 +3,7 @@
 # is reproducible too (#599). Without an exact pin, `pip install .` resolves
 # `setuptools` to the latest release satisfying the range each build, which
 # would let the build backend drift even though runtime deps are locked.
-requires = ["setuptools==83.0.0"]
+requires = ["setuptools==84.1.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
