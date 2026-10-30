@@ -16,6 +16,7 @@ from podcaster.distribution_outbox import (
     ArtifactReference,
     DistributionOutboxRepository,
     aggregate_exit_code,
+    exact_recovery_authorization_evidence,
     exact_verification_proof,
     outbox_path,
 )
@@ -192,6 +193,160 @@ def test_current_outbox_completed_public_is_visible_without_legacy_or_mutation(c
     assert evidence_path(JOB) not in storage.data
     assert storage.data == before
     assert document["aggregate"]["result"] == "completed_public"
+
+
+def test_authorized_read_only_recovery_preserves_failed_attempt_and_weekly_truth(accepted):
+    storage, manifest, query = accepted
+    repository = DistributionOutboxRepository(storage, now=lambda: NOW)
+    identity = publication_identity(manifest, JOB, query["publish_run_id"])
+    content = b"reviewed-recovery-video"
+    artifact = ArtifactReference(
+        "immutable/recovery.mp4", hashlib.sha256(content).hexdigest(), len(content), "video"
+    )
+    storage.data[artifact.path] = content
+    document, _ = repository.enqueue(
+        identity,
+        artifact,
+        provider_objectives={"youtube": "public", "spotify": "public"},
+        provider_context={"youtube": {"locale": "en"}},
+        enqueue_source="video_runner",
+        enqueue_version="v1",
+    )
+    manifest["review"] = {"snapshot": {}}
+    manifest["generation"]["video_runner"] = {
+        "status": "prepared",
+        "distribution": {"outbox_id": document["outbox_id"]},
+    }
+    save(storage, manifest)
+    first = repository.claim(
+        document["outbox_id"], owner="first", execution_id="failed", lease_seconds=300
+    )
+    for provider in ("youtube", "spotify"):
+        repository.record_verification(
+            first,
+            provider=provider,
+            result="failed_terminal",
+            source=f"{provider}_readback",
+            provider_item_id=f"{provider}-failed",
+            native_state="failed",
+        )
+    failed = repository.release(first)
+    failed_attempt = copy.deepcopy(failed["attempts"][0])
+    repository.authorize_recovery(
+        document["outbox_id"],
+        predecessor_attempt_id=first.attempt_id,
+        source="operator",
+        reason="no_mutation_proven",
+        evidence=exact_recovery_authorization_evidence(
+            failed,
+            predecessor_attempt_id=first.attempt_id,
+            expected_provider_item_ids={
+                provider: f"{provider}-recovered" for provider in ("youtube", "spotify")
+            },
+        ),
+    )
+    claim = repository.claim(
+        document["outbox_id"], owner="recovery", execution_id="readback", lease_seconds=300
+    )
+    for provider in ("youtube", "spotify"):
+        repository.persist_intent(
+            claim,
+            provider=provider,
+            operation="recovery_readback",
+            expected_provider_item_id=f"{provider}-recovered",
+        )
+        repository.record_verification(
+            claim,
+            provider=provider,
+            result="externally_verified_public",
+            source=f"{provider}_readback",
+            provider_item_id=f"{provider}-recovered",
+            native_state="public" if provider == "youtube" else "published",
+            proof=exact_verification_proof(
+                repository.read(document["outbox_id"]),
+                provider_item_id=f"{provider}-recovered",
+            ),
+        )
+    recovered = repository.release(claim)
+    assert aggregate_exit_code([recovered]) == 0
+    assert recovered["attempts"][0] == failed_attempt
+    assert all(leg["receipts"] == [] for leg in recovered["providers"].values())
+    before = copy.deepcopy(storage.data)
+    result = publication_status(
+        storage, query, now=NOW, youtube_readback=MagicMock(side_effect=AssertionError)
+    )["provider"]
+    assert result["state"] == "published"
+    assert result["external_verified"] is True
+    assert result["weekly"]["state"] == "published_verified_recovered"
+    assert [attempt["terminal_outcome"] for attempt in result["attempts"]] == [
+        "failed_terminal",
+        "published_verified",
+    ]
+    assert all(leg["state"] == "published" for leg in result["providers"].values())
+    assert storage.data == before
+
+    # Neither a missing separate authorization nor a mismatched expected ID can
+    # turn recovery readback into mutation-free success.
+    for fault in ("authorization", "expected_id", "proof"):
+        invalid = copy.deepcopy(recovered)
+        if fault == "authorization":
+            invalid["recovery_authz"] = []
+        elif fault == "expected_id":
+            invalid["providers"]["youtube"]["intent"]["expected_provider_item_id"] = "different"
+        else:
+            invalid["providers"]["youtube"]["verification"]["proof"]["evidence"][
+                "article_sha256"
+            ] = "c" * 64
+        storage.data[outbox_path(document["outbox_id"])] = json.dumps(invalid).encode()
+        try:
+            result = publication_status(storage, query, now=NOW)["provider"]
+        except PublicationStatusError as exc:
+            assert exc.status == 409
+        else:
+            assert result["state"] != "published"
+            assert result["external_verified"] is False
+
+
+@pytest.mark.parametrize("provider", ["youtube", "spotify"])
+@pytest.mark.parametrize("target", ["intent", "receipt", "both"])
+@pytest.mark.parametrize(
+    "intent_field,receipt_field,value",
+    [
+        ("consumed_owner", "consumed_owner", "absent"),
+        ("consumed_owner", "consumed_owner", None),
+        ("consumed_owner", "consumed_owner", ""),
+        ("consumed_owner", "consumed_owner", 7),
+        ("consumed_fence", "fencing_token", "absent"),
+        ("consumed_fence", "fencing_token", None),
+        ("consumed_fence", "fencing_token", "1"),
+        ("consumed_fence", "fencing_token", True),
+        ("consumed_fence", "fencing_token", 0),
+        ("consumed_fence", "fencing_token", -1),
+    ],
+)
+def test_mutation_requires_typed_consumed_owner_and_fence(
+    canonical, provider, target, intent_field, receipt_field, value
+):
+    storage, _, query, document = canonical
+    leg = document["providers"][provider]
+    fields = []
+    if target in {"intent", "both"}:
+        fields.extend((intent, intent_field) for intent in [*leg["intent_history"], leg["intent"]])
+    if target in {"receipt", "both"}:
+        fields.extend((receipt, receipt_field) for receipt in leg["receipts"])
+    for record, field in fields:
+        if value == "absent":
+            record.pop(field, None)
+        else:
+            record[field] = value
+    storage.data[outbox_path(document["outbox_id"])] = json.dumps(document).encode()
+    before = copy.deepcopy(storage.data)
+    result = publication_status(storage, query, now=NOW)["provider"]
+    assert result["state"] != "published"
+    assert result["external_verified"] is False
+    assert all(item["state"] != "published" for item in result["providers"].values())
+    assert result["providers"][provider]["code"] == "receipt_ambiguous"
+    assert storage.data == before
 
 
 @pytest.mark.parametrize(

@@ -139,6 +139,14 @@ def _bound_outbox_receipts(leg: Mapping[str, Any], provider: str, attempt_ids: s
         if (
             intent is None
             or not intent.get("consumed_at")
+            or not isinstance(intent.get("consumed_owner"), str)
+            or not _CORRELATION.fullmatch(intent["consumed_owner"])
+            or not isinstance(receipt.get("consumed_owner"), str)
+            or not _CORRELATION.fullmatch(receipt["consumed_owner"])
+            or type(intent.get("consumed_fence")) is not int
+            or intent["consumed_fence"] < 1
+            or type(receipt.get("fencing_token")) is not int
+            or receipt["fencing_token"] < 1
             or receipt.get("receipt_id") in receipt_ids
             or not receipt.get("receipt_id")
             or receipt.get("intent_id") in seen_intents
@@ -163,6 +171,27 @@ def _bound_outbox_receipts(leg: Mapping[str, Any], provider: str, attempt_ids: s
         receipt_ids.add(receipt["receipt_id"])
         seen_intents.add(receipt["intent_id"])
     return seen_intents == set(by_id) and _timestamp(verification.get("at")) is not None
+
+
+def _bound_recovery_readback(leg: Mapping[str, Any], provider: str) -> bool:
+    intent = leg.get("intent")
+    verification = leg.get("verification")
+    return (
+        leg.get("receipts") == []
+        and leg.get("intent_history", []) == []
+        and isinstance(intent, dict)
+        and intent.get("provider") == provider
+        and intent.get("operation") == "recovery_readback"
+        and intent.get("operation_type") == "readback"
+        and isinstance(verification, dict)
+        and bool(intent.get("expected_provider_item_id"))
+        and intent["expected_provider_item_id"] == verification.get("provider_item_id")
+        and _timestamp(verification.get("at")) is not None
+        and all(
+            intent.get(field) is None
+            for field in ("consumed_at", "consumed_owner", "consumed_fence", "consumed_attempt_id")
+        )
+    )
 
 
 def _outbox_provider_status(
@@ -222,6 +251,12 @@ def _outbox_provider_status(
     if not isinstance(context, dict) or context.get("locale") != language:
         raise PublicationStatusError("provider_language_mismatch", 409)
 
+    weekly = weekly_state_from_attempts(document["attempts"], weekly_record=document)
+    terminal_verified = (
+        weekly in {"published_verified", "published_verified_recovered"}
+        and weekly == document["weekly_aggregation"]["state"]
+        and aggregate_exit_code([document]) == 0
+    )
     providers = {}
     receipts_bound = True
     for provider in ("youtube", "spotify"):
@@ -237,7 +272,16 @@ def _outbox_provider_status(
             state, code = "pending", "provider_pending"
         elif result == "externally_verified_public":
             state, code = "published", "terminal_public_readback"
-        if not isinstance(receipts, list) or not receipts:
+        # Terminal aggregation revalidates the separate recovery authorization,
+        # including exact predecessor/successor identity and provider proof bindings.
+        recovery_readback = (
+            terminal_verified
+            and weekly == "published_verified_recovered"
+            and _bound_recovery_readback(leg, provider)
+        )
+        if recovery_readback:
+            pass
+        elif not isinstance(receipts, list) or not receipts:
             receipts_bound = False
             if result == "externally_verified_public":
                 state, code = "unknown", "receipt_missing"
@@ -253,13 +297,7 @@ def _outbox_provider_status(
             receipts_bound = False
             state, code = "unknown", "public_objective_missing"
         providers[provider] = {"state": state, "code": code, "checked_at": checked_at}
-    weekly = weekly_state_from_attempts(document["attempts"], weekly_record=document)
-    green = (
-        receipts_bound
-        and weekly in {"published_verified", "published_verified_recovered"}
-        and weekly == document["weekly_aggregation"]["state"]
-        and aggregate_exit_code([document]) == 0
-    )
+    green = receipts_bound and terminal_verified
     if not green:
         for leg in providers.values():
             if leg["state"] == "published":
