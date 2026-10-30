@@ -5,7 +5,7 @@ import hashlib
 import io
 import json
 from datetime import datetime, timedelta, timezone
-from http.client import HTTPResponse
+from http.client import HTTPConnection, HTTPResponse
 from types import MappingProxyType
 from unittest.mock import MagicMock
 from urllib.error import HTTPError, URLError
@@ -854,6 +854,169 @@ def _status_handler_response(monkeypatch, backend, query, handler):
     with TestClient(monitoring.app, raise_server_exceptions=False) as client:
         response = client.get(url, headers=headers)
     return response.status_code, response.json()
+
+
+def _encoded_provider_request(request):
+    class CapturingSocket:
+        def __init__(self):
+            self.data = b""
+
+        def sendall(self, data):
+            self.data += data
+
+    connection = HTTPConnection("offline.invalid")
+    connection.sock = socket = CapturingSocket()
+    url = urlsplit(request.full_url)
+    connection.request(
+        request.get_method(),
+        url.path + ("?" + url.query if url.query else ""),
+        headers=dict(request.header_items()),
+    )
+    return socket.data
+
+
+@pytest.mark.parametrize(
+    ("token", "encodable"),
+    [("offline-\u6f22", False), ("offline-\u00e9", True)],
+    ids=["non-latin1", "latin1"],
+)
+def test_real_provider_header_encoding_distinguishes_non_ascii_tokens(token, encodable):
+    from urllib.request import Request
+
+    request = Request(
+        "https://www.googleapis.com/youtube/v3/videos",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    if encodable:
+        assert b"Authorization: Bearer " + token.encode("latin-1") in _encoded_provider_request(
+            request
+        )
+    else:
+        with pytest.raises(UnicodeEncodeError):
+            _encoded_provider_request(request)
+
+
+@pytest.mark.parametrize("handler", ["stdlib", "fastapi"])
+@pytest.mark.parametrize(
+    ("token", "valid"),
+    [
+        ("offline-access", True),
+        ("AZaz09-._~+/==", True),
+        ("offline.header.payload.signature", True),
+        ("offline-\u6f22", False),
+        ("offline-\u00e9", False),
+        ("offline-\u200b", False),
+        ("offline-\x00", False),
+        ("offline-\x1f", False),
+        ("offline-\x7f", False),
+        ("offline-\r\n", False),
+        ("offline- token", False),
+        ("offline-\t", False),
+    ],
+    ids=[
+        "opaque-ascii",
+        "bearer-alphabet",
+        "dotted-ascii",
+        "non-latin1",
+        "latin1",
+        "zero-width",
+        "nul",
+        "unit-separator",
+        "del",
+        "crlf",
+        "space",
+        "tab",
+    ],
+)
+def test_actual_oauth_bearer_token_boundary(accepted, monkeypatch, caplog, handler, token, valid):
+    from functools import partial
+
+    from podcaster.video.distribution import (
+        VideoDistributionConfig,
+        YouTubeDeliveryError,
+        _DefaultTransport,
+        _get_youtube_access_token,
+    )
+
+    storage, manifest, query = accepted
+    identity = receipts(storage, manifest)
+    before = copy.deepcopy(storage.data)
+    backend = _offline_status_backend(monkeypatch, storage)
+    monkeypatch.setenv("VIDEO_YOUTUBE_CLIENT_ID", "offline-client")
+    monkeypatch.setenv("VIDEO_YOUTUBE_CLIENT_SECRET", "offline-secret")
+    monkeypatch.setattr(
+        "podcaster.video.distribution._load_youtube_refresh_token", lambda: "offline-refresh"
+    )
+    notify = MagicMock(side_effect=AssertionError("readback must not notify"))
+    monkeypatch.setattr("podcaster.video.distribution._notify_youtube_reauthorization", notify)
+    for module in ("podcaster.api", "podcaster.monitoring"):
+        monkeypatch.setattr(module + ".publication_status", partial(publication_status, now=NOW))
+    calls = []
+
+    def provider_response(request, **kwargs):
+        oauth = request.full_url == "https://oauth2.googleapis.com/token"
+        assert request.method == ("POST" if oauth else "GET")
+        calls.append("oauth" if oauth else "videos_list")
+        if oauth:
+            body = json.dumps({"access_token": token}).encode()
+        else:
+            assert valid
+            url = urlsplit(request.full_url)
+            assert (url.scheme, url.netloc, url.path) == (
+                "https",
+                "www.googleapis.com",
+                "/youtube/v3/videos",
+            )
+            assert parse_qs(url.query) == {
+                "id": ["_ZD9E_zTjtM"],
+                "part": ["snippet,status,processingDetails"],
+            }
+            encoded = _encoded_provider_request(request)
+            assert b"Authorization: Bearer " + token.encode("ascii") + b"\r\n" in encoded
+            body = json.dumps(
+                {
+                    "items": [
+                        {
+                            "id": "_ZD9E_zTjtM",
+                            "snippet": {"tags": [youtube_identity_tag(identity)]},
+                            "status": {"uploadStatus": "processed", "privacyStatus": "unlisted"},
+                            "processingDetails": {"processingStatus": "succeeded"},
+                        }
+                    ]
+                }
+            ).encode()
+        return _http_response(
+            b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
+        )
+
+    monkeypatch.setattr("podcaster.video.distribution.urlopen", provider_response)
+    if valid:
+        assert _get_youtube_access_token(VideoDistributionConfig(), _DefaultTransport()) == token
+    else:
+        with pytest.raises(YouTubeDeliveryError) as raised:
+            _get_youtube_access_token(VideoDistributionConfig(), _DefaultTransport())
+        assert raised.value.code == "youtube_oauth_missing_access_token"
+        assert raised.value.stage == "oauth_token"
+        assert raised.value.retryable is False
+        assert str(raised.value) == "YouTube token response missing access_token"
+        assert raised.value.__context__ is None
+    assert (read_youtube_status(identity, "_ZD9E_zTjtM") is not None) is valid
+    projected = publication_status(backend, query, now=NOW)
+    status, body = _status_handler_response(monkeypatch, backend, query, handler)
+    assert status == 200
+    assert body == projected
+    assert body["provider"]["state"] == ("published" if valid else "unknown")
+    assert body["provider"]["external_verified"] is valid
+    assert body["provider"]["providers"]["youtube"]["code"] == (
+        "processed_upload_readback" if valid else "readback_unavailable"
+    )
+    assert calls == ["oauth"] + (["oauth", "videos_list"] if valid else ["oauth"]) * 3
+    notify.assert_not_called()
+    assert storage.data == before
+    assert not any(
+        private in json.dumps(body) + caplog.text
+        for private in (token, "offline-refresh", "offline-secret", "UnicodeEncodeError")
+    )
 
 
 @pytest.mark.parametrize("handler", ["stdlib", "fastapi"])

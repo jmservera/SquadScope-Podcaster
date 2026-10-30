@@ -591,7 +591,7 @@ def _get_youtube_access_token(
     *,
     notify_reauthorization: bool = True,
 ) -> str:
-    """Exchange refresh token for a short-lived access token."""
+    """Exchange refresh token for a short-lived ASCII bearer access token."""
     data = urlencode(
         {
             "client_id": config.youtube_client_id,
@@ -650,6 +650,7 @@ def _get_youtube_access_token(
     if (
         not isinstance(access_token, str)
         or not access_token
+        or not access_token.isascii()
         or any(ch.isspace() or not ch.isprintable() for ch in access_token)
     ):
         raise YouTubeDeliveryError(
