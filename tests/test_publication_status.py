@@ -5,15 +5,17 @@ import hashlib
 import io
 import json
 from datetime import datetime, timedelta, timezone
+from http.client import HTTPResponse
 from unittest.mock import MagicMock
 from urllib.error import HTTPError
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode, urlsplit
 
 import pytest
 
 from podcaster.api import GenerateHandler
 from podcaster.distribution_outbox import (
     ArtifactReference,
+    DistributionOutboxError,
     DistributionOutboxRepository,
     aggregate_exit_code,
     exact_recovery_authorization_evidence,
@@ -807,22 +809,176 @@ def test_outbox_storage_unavailable_is_not_absent_or_legacy(canonical, monkeypat
         publication_status(storage, query, now=NOW)
 
 
+def _http_response(message):
+    class Socket:
+        def makefile(self, *args):
+            return io.BytesIO(message)
+
+    response = HTTPResponse(Socket())
+    response.begin()
+    return response
+
+
+def _offline_status_backend(monkeypatch, storage):
+    backend = AzureBlobStorageBackend("https://offline.blob.core.windows.net", "artifacts")
+    monkeypatch.setattr(backend._credential, "get_token", lambda _: "offline-token")
+
+    def read(request, **kwargs):
+        path = unquote(urlsplit(request.full_url).path).removeprefix("/artifacts/")
+        body = storage.data.get(path)
+        if body is None:
+            raise HTTPError(request.full_url, 404, "absent", {}, io.BytesIO())
+        return _http_response(
+            b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
+        )
+
+    monkeypatch.setattr("podcaster.storage.urlopen", read)
+    return backend
+
+
+def _status_handler_response(monkeypatch, backend, query, handler):
+    from fastapi.testclient import TestClient
+
+    from podcaster import monitoring
+
+    monkeypatch.setenv("PODCASTER_API_KEY", "test-status-key")
+    headers = {"x-podcaster-api-key": "test-status-key"}
+    url = "/api/publication-status?" + urlencode(query)
+    if handler == "stdlib":
+        monkeypatch.setattr("podcaster.api.create_storage_backend", lambda: backend)
+        request = FakeHandler("GET", url, headers=headers)
+        GenerateHandler.do_GET(request)
+        return request.response_code, request.get_response_json()
+    monkeypatch.setattr(monitoring, "get_storage", lambda: backend)
+    with TestClient(monitoring.app, raise_server_exceptions=False) as client:
+        response = client.get(url, headers=headers)
+    return response.status_code, response.json()
+
+
+@pytest.mark.parametrize("handler", ["stdlib", "fastapi"])
+@pytest.mark.parametrize("dependency", ["blob", "identity"])
+@pytest.mark.parametrize(
+    "message",
+    [
+        b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nprivate-fragment",
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\ninvalid-chunk\r\n",
+        b"private-invalid-status\r\n\r\n",
+    ],
+    ids=["truncated-content-length", "invalid-chunk", "invalid-status-line"],
+)
+def test_real_azure_http_read_failures_are_typed_and_sanitized(
+    accepted, monkeypatch, handler, dependency, message
+):
+    _, _, query = accepted
+    backend = AzureBlobStorageBackend("https://offline.blob.core.windows.net", "artifacts")
+    if dependency == "blob":
+        monkeypatch.setattr(backend._credential, "get_token", lambda _: "offline-token")
+    monkeypatch.setattr("podcaster.storage.time.sleep", lambda _: None)
+    monkeypatch.setattr(
+        "podcaster.storage.urlopen", lambda *args, **kwargs: _http_response(message)
+    )
+    with pytest.raises(StorageUnavailableError) as error:
+        backend.get_bytes(f"jobs/{JOB}/manifest.json")
+    assert str(error.value) in {"blob read failed", "managed identity token request failed"}
+    status, body = _status_handler_response(monkeypatch, backend, query, handler)
+    assert status == 503
+    assert body == {"error": "status_unavailable"}
+
+
+@pytest.mark.parametrize("handler", ["stdlib", "fastapi"])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("attempts", None),
+        ("attempts", {}),
+        ("attempts", "invalid"),
+        ("attempts", 0),
+        ("attempts", False),
+        ("attempts", [None]),
+        ("attempts", [[]]),
+        ("attempts", ["invalid"]),
+        ("attempts", [{}]),
+        ("attempts", [{"attempt_id": []}]),
+        ("recovery_authz", None),
+        ("recovery_authz", {}),
+        ("recovery_authz", [None]),
+        ("enqueue", None),
+        ("enqueue", []),
+        ("weekly_aggregation", None),
+        ("weekly_aggregation", []),
+        ("canonical_artifact", None),
+        ("canonical_artifact", []),
+    ],
+)
+def test_malformed_current_outbox_collections_are_409_without_mutation(
+    canonical, monkeypatch, handler, field, value
+):
+    storage, _, query, document = canonical
+    document[field] = value
+    storage.data[outbox_path(document["outbox_id"])] = json.dumps(document).encode()
+    before = copy.deepcopy(storage.data)
+    backend = _offline_status_backend(monkeypatch, storage)
+    with pytest.raises(DistributionOutboxError):
+        DistributionOutboxRepository(backend).read(document["outbox_id"])
+    status, body = _status_handler_response(monkeypatch, backend, query, handler)
+    assert status == 409
+    assert body == {"error": "invalid_outbox_evidence"}
+    assert storage.data == before
+
+
+@pytest.mark.parametrize("handler", ["stdlib", "fastapi"])
+@pytest.mark.parametrize("stage", ["synthesis_runner", "video_runner"])
+@pytest.mark.parametrize("value", [[], {}, None, 7, False])
+def test_malformed_manifest_stage_status_is_unknown_without_mutation(
+    canonical, monkeypatch, handler, stage, value
+):
+    storage, manifest, query, _ = canonical
+    manifest["generation"][stage]["status"] = value
+    save(storage, manifest)
+    before = copy.deepcopy(storage.data)
+    backend = _offline_status_backend(monkeypatch, storage)
+    status, body = _status_handler_response(monkeypatch, backend, query, handler)
+    assert status == 200
+    assert body["synthesis" if stage == "synthesis_runner" else "video"]["state"] == "unknown"
+    assert body["provider"]["state"] == "published"
+    assert body["provider"]["external_verified"] is True
+    assert storage.data == before
+
+
+@pytest.mark.parametrize("handler", ["stdlib", "fastapi"])
+def test_real_azure_current_status_positive_and_missing_outbox_controls(
+    canonical, monkeypatch, handler
+):
+    storage, _, query, document = canonical
+    backend = _offline_status_backend(monkeypatch, storage)
+    before = copy.deepcopy(storage.data)
+    status, body = _status_handler_response(monkeypatch, backend, query, handler)
+    assert status == 200
+    assert body["provider"]["state"] == "published"
+    assert body["provider"]["external_verified"] is True
+    assert body["synthesis"]["state"] == body["video"]["state"] == "succeeded"
+    assert storage.data == before
+    del storage.data[outbox_path(document["outbox_id"])]
+    before = copy.deepcopy(storage.data)
+    status, body = _status_handler_response(monkeypatch, backend, query, handler)
+    assert status == 200
+    assert body["provider"]["state"] == "unknown"
+    assert body["provider"]["external_verified"] is False
+    assert body["provider"]["providers"]["youtube"]["code"] == "outbox_missing"
+    assert storage.data == before
+
+
 @pytest.mark.parametrize("handler", ["stdlib", "fastapi"])
 @pytest.mark.parametrize("dependency", ["blob", "identity"])
 @pytest.mark.parametrize("http_status", [404, 500, 503])
 def test_real_azure_backend_transport_errors_are_sanitized_in_both_handlers(
     accepted, monkeypatch, handler, dependency, http_status
 ):
-    from fastapi.testclient import TestClient
-
-    from podcaster import monitoring
-
     _, _, query = accepted
     backend = AzureBlobStorageBackend("https://offline.blob.core.windows.net", "artifacts")
     if dependency == "blob":
         monkeypatch.setattr(backend._credential, "get_token", lambda _: "offline-token")
     monkeypatch.setattr("podcaster.storage.time.sleep", lambda _: None)
-    monkeypatch.setenv("PODCASTER_API_KEY", "test-status-key")
 
     def failed(request, **kwargs):
         raise HTTPError(
@@ -834,18 +990,7 @@ def test_real_azure_backend_transport_errors_are_sanitized_in_both_handlers(
         )
 
     monkeypatch.setattr("podcaster.storage.urlopen", failed)
-    headers = {"x-podcaster-api-key": "test-status-key"}
-    url = "/api/publication-status?" + urlencode(query)
-    if handler == "stdlib":
-        monkeypatch.setattr("podcaster.api.create_storage_backend", lambda: backend)
-        request = FakeHandler("GET", url, headers=headers)
-        GenerateHandler.do_GET(request)
-        status, body = request.response_code, request.get_response_json()
-    else:
-        monkeypatch.setattr(monitoring, "get_storage", lambda: backend)
-        with TestClient(monitoring.app, raise_server_exceptions=False) as client:
-            response = client.get(url, headers=headers)
-        status, body = response.status_code, response.json()
+    status, body = _status_handler_response(monkeypatch, backend, query, handler)
     absent = dependency == "blob" and http_status == 404
     assert status == (404 if absent else 503)
     assert body == {"error": "job_not_found" if absent else "status_unavailable"}
@@ -905,6 +1050,9 @@ def test_path_language_and_correlation_guards(accepted, field, value):
         ({"status": "failed"}, None, ("failed", "pending")),
         ({"status": "completed"}, {"status": "failed"}, ("succeeded", "failed")),
         ({"status": "nonsense"}, None, ("unknown", "pending")),
+        ({}, {}, ("unknown", "unknown")),
+        ({"status": "prepared"}, {"status": "prepared"}, ("unknown", "succeeded")),
+        ({"status": "queued"}, {"status": "started"}, ("pending", "pending")),
     ],
 )
 def test_stage_contract_states(accepted, synthesis, video, expected):

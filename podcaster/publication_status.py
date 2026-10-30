@@ -106,6 +106,8 @@ def _stage(state: Any, *, synthesis: bool = False) -> str:
     if not isinstance(state, dict):
         return "unknown"
     status = state.get("status")
+    if not isinstance(status, str):
+        return "unknown"
     if status == "completed" or (not synthesis and status == "prepared"):
         return "succeeded"
     if status in {"failed", "partial", "skipped"}:

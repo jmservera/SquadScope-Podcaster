@@ -10,9 +10,10 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import formatdate
+from http.client import HTTPException
 from pathlib import Path
 from typing import Callable, Protocol
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
@@ -573,6 +574,8 @@ class AzureBlobStorageBackend:
             if exc.code == 404:
                 return None, None
             raise StorageUnavailableError(f"blob read failed: HTTP {exc.code}") from exc
+        except (OSError, HTTPException) as exc:
+            raise StorageUnavailableError("blob read failed") from exc
 
     def list_blobs(self, prefix: str, *, limit: int = 10) -> list[str]:
         safe_prefix = _safe_blob_prefix(prefix)
@@ -1251,7 +1254,7 @@ def _request_managed_identity_token(resource: str) -> dict[str, object]:
             raise StorageUnavailableError(
                 f"managed identity token request failed: HTTP {exc.code}"
             ) from exc
-        except URLError as exc:
+        except (OSError, HTTPException) as exc:
             if attempt < max_attempts:
                 delay = backoff_delays[attempt - 1]
                 logger.warning(

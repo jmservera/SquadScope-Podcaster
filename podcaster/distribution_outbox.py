@@ -1375,6 +1375,18 @@ def _attempt_event(attempt: dict[str, Any], state: str, at: str, **details: Any)
 
 
 def _ensure_truth_fields(document: dict[str, Any]) -> None:
+    for field in ("attempts", "recovery_authz"):
+        if field in document and (
+            not isinstance(document[field], list)
+            or any(not isinstance(item, dict) for item in document[field])
+        ):
+            raise DistributionOutboxError(f"outbox {field} collection is malformed")
+    for attempt in document.get("attempts", []):
+        if not isinstance(attempt.get("attempt_id"), str) or not attempt["attempt_id"]:
+            raise DistributionOutboxError("outbox attempt identity is malformed")
+    for field in ("canonical_artifact", "weekly_aggregation", "enqueue"):
+        if field in document and not isinstance(document[field], dict):
+            raise DistributionOutboxError(f"outbox {field} is malformed")
     identity = document.get("publication_identity")
     artifact = document.get("artifact")
     if not isinstance(identity, Mapping) or not isinstance(artifact, Mapping):

@@ -92,6 +92,38 @@ def test_schema_round_trip_is_versioned_correlated_and_sanitized(setup):
         assert secret_key not in serialized.lower()
 
 
+def test_read_normalizes_missing_older_truth_fields_without_persisting(setup):
+    storage, repository, _clock, document, _created = setup
+    for field in (
+        "publication_digest",
+        "canonical_artifact",
+        "attempts",
+        "recovery_authz",
+        "recovery_authz_set",
+        "weekly_aggregation",
+        "enqueue",
+    ):
+        document.pop(field)
+    path = outbox_path(document["outbox_id"])
+    raw = json.dumps(document).encode()
+    storage.put_bytes(path, raw, "application/json")
+    normalized = repository.read(document["outbox_id"])
+    assert normalized["canonical_artifact"]["sha256"] == document["artifact"]["sha256"]
+    assert normalized["attempts"][0]["authz_source"] == "initial_enqueue"
+    assert normalized["weekly_aggregation"]["evaluated_attempt_ids"] == [
+        normalized["attempts"][0]["attempt_id"]
+    ]
+    assert normalized["weekly_aggregation"]["state"] == "pending"
+    assert normalized["recovery_authz"] == []
+    assert normalized["recovery_authz_set"]["authz_count"] == 0
+    assert normalized["enqueue"] == {}
+    assert storage.get_bytes(path) == raw
+    claim = repository.claim(
+        document["outbox_id"], owner="worker", execution_id="one", lease_seconds=300
+    )
+    assert claim.attempt_id
+
+
 def test_human_approval_is_durable_and_bound_to_publication_identity(
     tmp_path,
     identity,
