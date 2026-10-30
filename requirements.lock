@@ -123,7 +123,7 @@ pyjwt==2.15.1
     # via
     #   squadscope-podcaster (pyproject.toml)
     #   msal
-pytest==8.4.2
+pytest==9.2.0
     # via squadscope-podcaster (pyproject.toml)
 python-dotenv==1.2.4
     # via uvicorn
