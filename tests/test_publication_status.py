@@ -956,7 +956,7 @@ def test_actual_managed_identity_status_boundary(
         assert status == 200
         assert body["job_id"] == JOB
         assert body["provider"]["external_verified"] is False
-        assert any("offline.blob.core.windows.net" in url for url in calls)
+        assert any(urlsplit(url).hostname == "offline.blob.core.windows.net" for url in calls)
     else:
         assert status == 503
         assert body == {"error": "status_unavailable"}
