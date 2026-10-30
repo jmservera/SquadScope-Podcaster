@@ -26,7 +26,9 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
+
+from azure.core.exceptions import AzureError
 
 from podcaster.auth_core import create_token, get_credentials, verify_token
 from podcaster.credentials import CredentialStore
@@ -40,13 +42,14 @@ from podcaster.jobs import (
 )
 from podcaster.orchestration import process_review_decision
 from podcaster.podcast_config import PodcastConfigStore
+from podcaster.publication_status import PublicationStatusError, publication_status
 from podcaster.review import ReviewBindingError
 from podcaster.spotify_mode import (
     record_review_skip_outcome,
     review_publish_fields,
     spotify_audio_publish_enabled,
 )
-from podcaster.storage import create_storage_backend
+from podcaster.storage import StorageUnavailableError, create_storage_backend
 from podcaster.validation import is_authorized, validate_payload_details
 
 logger = logging.getLogger("podcaster.api")
@@ -100,12 +103,20 @@ def _cors_headers(handler: BaseHTTPRequestHandler) -> list[tuple[str, str]]:
     ]
 
 
-def _json_response(handler: BaseHTTPRequestHandler, status: int, body: dict[str, Any]) -> None:
+def _json_response(
+    handler: BaseHTTPRequestHandler,
+    status: int,
+    body: dict[str, Any],
+    *,
+    no_store: bool = False,
+) -> None:
     payload = json.dumps(body, separators=(",", ":")).encode("utf-8")
     handler.send_response(status)
     for name, value in _cors_headers(handler):
         handler.send_header(name, value)
     handler.send_header("Referrer-Policy", "no-referrer")
+    if no_store:
+        handler.send_header("Cache-Control", "no-store")
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(payload)))
     handler.end_headers()
@@ -149,7 +160,32 @@ class GenerateHandler(BaseHTTPRequestHandler):
         if path == "/api/podcast-config":
             GenerateHandler._handle_podcast_config_get(self)
             return
+        if path == "/api/publication-status":
+            GenerateHandler._handle_publication_status(self)
+            return
         _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not found"})
+
+    def _handle_publication_status(self) -> None:
+        if not is_authorized(dict(self.headers.items())):
+            _json_response(self, HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            return
+        try:
+            values = parse_qs(urlparse(self.path).query, keep_blank_values=True, max_num_fields=7)
+            if any(len(value) != 1 for value in values.values()):
+                raise PublicationStatusError("invalid_query", 400)
+            response = publication_status(
+                create_storage_backend(), {key: value[0] for key, value in values.items()}
+            )
+        except PublicationStatusError as exc:
+            _json_response(self, exc.status, {"error": exc.code})
+            return
+        except (ValueError, UnicodeDecodeError):
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "invalid_evidence_or_query"})
+            return
+        except (OSError, AzureError, StorageUnavailableError):
+            _json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": "status_unavailable"})
+            return
+        _json_response(self, HTTPStatus.OK, response, no_store=True)
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path

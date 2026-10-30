@@ -102,7 +102,11 @@ def test_deployed_api_and_worker_have_identical_effective_review_provider_finger
         for field in ("ttsDeploymentName", "ttsVoiceHostA", "ttsVoiceHostB"):
             assert references.get(field) == field
         assert references.get("ttsRuntimeEnvironment") == "ttsRuntimeEnvironment"
-        assert re.search(r"env:\s*concat\(\[.*?\], ttsRuntimeEnvironment\)", module, re.S)
+        assert re.search(
+            r"env:\s*concat\(\[.*?\], ttsRuntimeEnvironment(?:, youtubeReadbackEnvironment)?\)",
+            module,
+            re.S,
+        )
         values = {
             key: root_values[value] for key, value in references.items() if value in root_values
         }
@@ -123,6 +127,42 @@ def test_deployed_api_and_worker_have_identical_effective_review_provider_finger
 
 def _workflow_text() -> str:
     return WORKFLOW.read_text(encoding="utf-8")
+
+
+def test_api_youtube_status_credentials_are_optional_secret_refs_without_mutation_flags():
+    main = BICEP.read_text()
+    api = (ROOT / "infra/modules/api.bicep").read_text()
+    assert "param publicationStatusYoutubeReadbackEnabled bool = false" in main
+    assert "param publicationStatusYoutubeReadbackEnabled bool = false" in api
+    binding = re.search(r"module api 'modules/api.bicep'.*?\n  params: \{(.*?)\n  \}", main, re.S)[
+        1
+    ]
+    assert (
+        "publicationStatusYoutubeReadbackEnabled: publicationStatusYoutubeReadbackEnabled"
+        in binding
+    )
+    for parameter, name, environment in (
+        ("videoYoutubeClientId", "youtube-client-id", "VIDEO_YOUTUBE_CLIENT_ID"),
+        ("videoYoutubeClientSecret", "youtube-client-secret", "VIDEO_YOUTUBE_CLIENT_SECRET"),
+        ("videoYoutubeRefreshToken", "youtube-refresh-token", "VIDEO_YOUTUBE_REFRESH_TOKEN"),
+    ):
+        assert f"{parameter}: {parameter}" in binding
+        assert re.search(rf"@secure\(\)\s+param {parameter} string = ''", api)
+        assert f"!empty({parameter})" in api
+        assert f"{{ name: '{name}', value: {parameter} }}" in api
+        assert f"{{ name: '{environment}', secretRef: '{name}' }}" in api
+    assert "secrets: concat([" in api
+    assert "], youtubeReadbackSecrets)" in api
+    assert "], ttsRuntimeEnvironment, youtubeReadbackEnvironment)" in api
+    assert "var youtubeReadbackSecrets = youtubeReadbackConfigured ? [" in api
+    assert "var youtubeReadbackEnvironment = youtubeReadbackConfigured ? [" in api
+    for forbidden in (
+        "VIDEO_YOUTUBE_ENABLED",
+        "VIDEO_YOUTUBE_REQUIRED",
+        "roleAssignments",
+        "networkAcls",
+    ):
+        assert forbidden not in api
 
 
 def _release_workflow_text() -> str:

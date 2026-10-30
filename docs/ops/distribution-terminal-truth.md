@@ -99,6 +99,35 @@ reconciliation-only.
 
 ## Rollout and rollback
 
+### Read-only status adapter and separate legacy semantics
+
+Current exact-script jobs prepare a private MP4 and the existing outbox; separate
+artifact-bound media review authorizes distribution. Script/audio approval does not
+authorize provider upload or promotion. The status route does not change any mutation,
+queue-retry, visibility, or review policy. The obsolete direct-weekly automatic OAuth
+claim re-arm proposal is not part of this rollout.
+
+Deploy the reviewed API image before setting `PODCASTER_STATUS_ENDPOINT`
+in SquadScope's repository variables and `podcaster-real-generation` environment variables
+to the API's `/api/publication-status` URL. See the
+[terminal status contract](../integration-contract.md#read-only-terminal-status) for
+authentication, exact query identity, YouTube secret-read configuration, and receipt freshness.
+Smoke-test with an **existing** accepted identity/job/correlation only. Do not submit it
+again, mint a receipt, or repeat an upload to make the smoke green. A missing or stale receipt
+must remain explicit and be investigated.
+
+`provider.semantics=canonical_public_outbox` uses identity-bound durable outbox receipts,
+terminal verification and weekly proof aggregation. It exposes attempt outcomes separately
+from weekly truth and never invokes the worker/reconciler to read status.
+`legacy_delivery` applies only to older jobs without exact-script review or outbox references:
+processed unlisted YouTube plus published Spotify VIDEO is its explicit delivery objective,
+not canonical public weekly truth. Missing canonical evidence never falls back to legacy.
+Optional API YouTube OAuth secret-reference wiring is required only for legacy live readback;
+see the integration contract for its default-off deployment parameter.
+
+Rollback removes the new caller endpoint configuration and restores the previous images;
+it must not delete provider receipts/claims or relax either review or visibility gates.
+
 `DISTRIBUTION_OUTBOX_ENABLED` is disabled by default. Enable it only after the dedicated
 distribution queue and worker use the same release image and the alert queries below are active.
 Rollback disables new outbox routing and claims; it must not delete outbox records, consumed

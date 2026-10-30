@@ -28,8 +28,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from http.client import HTTPException
 
 from podcaster.publication_state import (
     DRAFT_CREATED,
@@ -356,13 +358,30 @@ def approve_and_publish(
 VIDEOS_LIST_URL = "https://www.googleapis.com/youtube/v3/videos"
 
 
+def valid_video_readback(metadata: object) -> bool:
+    """Validate consumed readback field types, allowing omitted optional fields."""
+    if not isinstance(metadata, Mapping):
+        return False
+    if any(
+        field in metadata and not isinstance(metadata[field], str)
+        for field in ("title", "description", "privacyStatus", "uploadStatus", "processingStatus")
+    ):
+        return False
+    if "tags" in metadata:
+        tags = metadata["tags"]
+        if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
+            return False
+    return True
+
+
 def get_video_snippet(
     video_id: str,
     access_token: str,
     *,
     transport: object | None = None,
+    require_exact_id: bool = False,
 ) -> dict[str, object] | None:
-    """Return authoritative metadata, status, and processing fields for a video."""
+    """Return structurally validated metadata/status fields, or unavailable."""
     from urllib.parse import urlencode
 
     if not video_id:
@@ -376,8 +395,8 @@ def get_video_snippet(
             method="GET",
             headers={"Authorization": f"Bearer {access_token}"},
         )
-    except Exception as exc:
-        logger.warning("videos.list error for %s: %s", video_id, exc)
+    except (OSError, HTTPException):
+        logger.warning("videos.list response unavailable for %s", video_id)
         return None
     if status != 200:
         logger.warning("videos.list HTTP %s for %s", status, video_id)
@@ -386,10 +405,25 @@ def get_video_snippet(
         data = json.loads(body.decode("utf-8") if isinstance(body, bytes) else body)
     except (ValueError, AttributeError):
         return None
+    if not isinstance(data, dict):
+        return None
     items = data.get("items") or []
+    if not isinstance(items, list):
+        return None
     if not items:
         return None
+    if require_exact_id and (
+        len(items) != 1 or not isinstance(items[0], dict) or items[0].get("id") != video_id
+    ):
+        return None
     item = items[0]
+    if not isinstance(item, dict):
+        return None
+    if any(
+        not isinstance(item.get(field, {}), dict) or not valid_video_readback(item.get(field, {}))
+        for field in ("snippet", "status", "processingDetails")
+    ):
+        return None
     return {
         **item.get("snippet", {}),
         **item.get("status", {}),

@@ -17,6 +17,69 @@ x-podcaster-api-key: <PODCASTER_API_KEY>
 
 `PODCASTER_API_KEY` must be stored as a GitHub Actions repository secret in `jmservera/SquadScope` and, for handoff workflows, as the same secret on environment `podcaster-real-generation`; the Podcaster deployment workflow syncs both without printing it. Do not log, echo, or include it in workflow summaries. Future OIDC caller auth may be added, but this header remains the compatibility contract until both repositories migrate.
 
+## Read-only terminal status
+
+`GET /api/publication-status` uses the same API-key header and returns
+`schema_version: "podcast_publication_status_v1"`. Set the SquadScope repository **and**
+`podcaster-real-generation` environment variable `PODCASTER_STATUS_ENDPOINT` to
+`https://<aca-app-fqdn>/api/publication-status` after deploying the reviewed API image.
+Do not append a job path or put credentials in the URL.
+
+Required query parameters are `week`, `publish_run_id`, `article_sha256`,
+`manifest_sha256`, `job_id`, and `correlation_id`. They must exactly match the accepted
+canonical job; the response correlation ID is the accepted job ID. `language` is optional
+(defaults to `en`), accepts `en`/`es`/`fr`, and must match that job's stored language.
+Duplicate, unknown, unsafe, or blank parameters are rejected.
+
+The response includes the exact four-field `identity`, `job_id`, `correlation_id`,
+`synthesis.state` (`pending`, `started`, `succeeded`, `failed`, `unknown`),
+`video.state` (`pending`, `succeeded`, `failed`, `unknown`), and
+`provider.state` (`pending`, `published`, `failed`, `unknown`) plus boolean
+`provider.external_verified`. Supplemental per-provider codes, check timestamps,
+language, and `observed_at` describe missing, incomplete, or stale evidence without
+returning logs, artifact paths, signed URLs, bodies, or secrets.
+
+This endpoint projects the existing manifest/progress and durable publication documents.
+It never generates, enqueues, mutates receipts, uploads, changes visibility, or promotes.
+The response's `provider.semantics` explicitly distinguishes:
+
+- `canonical_public_outbox`: exact-script jobs and jobs with an existing distribution
+  outbox reference use that outbox only. Both YouTube and Spotify VIDEO require bound
+  receipts and terminal public verification, validated by the existing weekly aggregation
+  proof rules. `provider.weekly.state` and `provider.attempts` retain weekly identity truth
+  separately from each attempt's outcome. Durable completed-public evidence does not require
+  a new live OAuth read on every poll. Missing references, ambiguous receipts, invalid proofs,
+  or identity/locale conflicts never fall back to legacy evidence.
+- `legacy_delivery`: only pre-exact-script jobs without an outbox reference use legacy
+  publication evidence. Their YouTube video must be identity-tagged and freshly read back
+  as **processed**, processing **succeeded**, and **unlisted or public**; Spotify must have
+  an identity-bound VIDEO publication receipt backed by authoritative provider readback.
+  This delivery objective does not certify canonical public weekly success.
+
+Audio-only, draft, private, ambiguous, or unverified delivery is not green. Legacy receipts
+older than 24 hours or over five minutes in the future are not reusable; polling does not
+refresh a persisted receipt's age.
+
+The API identity needs read access to job/progress/publication-evidence blobs and only the
+YouTube client ID, client-secret reference, and refresh-token reference used by the existing
+OAuth reader. No Spotify credentials are needed by this route. If Key Vault is used, grant
+only secret-read access to the YouTube reference, not vault write access. OAuth exchange and
+exact-video `videos.list` reads use three-second HTTP timeouts; no provider mutation is allowed.
+
+API deployment wiring is opt-in: set `publicationStatusYoutubeReadbackEnabled=true` in
+`infra/main.bicep` deployment parameters only when legacy live readback is needed. It passes
+the existing secure `videoYoutubeClientId`, `videoYoutubeClientSecret`, and
+`videoYoutubeRefreshToken` parameters to ACA secret references for the API, not plain-text
+environment values or outputs. The default is false; incomplete credentials emit no
+YouTube secrets/env and readback fails closed. This adds no roles, OAuth scopes, network
+access, upload flags, or provider-write paths. Do not enable the caller endpoint until
+the reviewed API image and required credential configuration have been validated.
+
+Errors are sanitized: `401` unauthenticated/unconfigured key, `400` invalid query,
+`404` missing job, `409` missing/malformed/mismatched canonical identity or evidence,
+and `503` storage unavailable. Valid accepted jobs can report pending stages or explicit
+unknown provider evidence without inventing success.
+
 ## Request body
 
 ```json

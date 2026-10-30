@@ -25,6 +25,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
@@ -62,6 +63,7 @@ from podcaster.video.youtube_reconcile import (
     tags_with_identity,
     youtube_identity_tag,
 )
+from podcaster.video.youtube_title import clamp_youtube_title
 
 logger = logging.getLogger(__name__)
 
@@ -467,6 +469,9 @@ def _read_http_error_body(exc: HTTPError) -> bytes:
 class _DefaultTransport:
     """Default HTTP transport using urllib."""
 
+    def __init__(self, *, timeout: float = 300) -> None:
+        self.timeout = timeout
+
     def request(
         self,
         url: str,
@@ -477,7 +482,7 @@ class _DefaultTransport:
     ) -> tuple[int, bytes]:
         req = Request(url, data=data, method=method, headers=headers or {})
         try:
-            with urlopen(req, timeout=300) as resp:
+            with urlopen(req, timeout=self.timeout) as resp:
                 return resp.status, resp.read()
         except HTTPError as exc:
             # Non-2xx responses (e.g. 308 "Resume Incomplete" during a resumable
@@ -495,7 +500,7 @@ class _DefaultTransport:
     ) -> tuple[int, dict[str, str], bytes]:
         req = Request(url, data=data, method=method, headers=headers or {})
         try:
-            with urlopen(req, timeout=300) as resp:
+            with urlopen(req, timeout=self.timeout) as resp:
                 resp_headers = {k.lower(): v for k, v in resp.getheaders()}
                 return resp.status, resp_headers, resp.read()
         except HTTPError as exc:
@@ -580,8 +585,13 @@ class StorageUploader(Protocol):
 # --- YouTube Upload ---
 
 
-def _get_youtube_access_token(config: VideoDistributionConfig, transport: HttpTransport) -> str:
-    """Exchange refresh token for a short-lived access token."""
+def _get_youtube_access_token(
+    config: VideoDistributionConfig,
+    transport: HttpTransport,
+    *,
+    notify_reauthorization: bool = True,
+) -> str:
+    """Exchange refresh token for a short-lived ASCII bearer access token."""
     data = urlencode(
         {
             "client_id": config.youtube_client_id,
@@ -605,9 +615,16 @@ def _get_youtube_access_token(config: VideoDistributionConfig, transport: HttpTr
             stage="oauth_token",
             retryable=True,
         ) from exc
+    except (HTTPException, OSError):
+        raise YouTubeDeliveryError(
+            "YouTube token refresh failed: response unavailable",
+            code="youtube_oauth_response_error",
+            stage="oauth_token",
+            retryable=False,
+        ) from None
     if status != 200:
         oauth_error, oauth_subtype = _extract_oauth_error_fields(body)
-        if oauth_error == "invalid_grant":
+        if oauth_error == "invalid_grant" and notify_reauthorization:
             _notify_youtube_reauthorization()
         code = f"youtube_oauth_{oauth_error}" if oauth_error else f"youtube_oauth_http_{status}"
         raise YouTubeDeliveryError(
@@ -629,8 +646,13 @@ def _get_youtube_access_token(config: VideoDistributionConfig, transport: HttpTr
             stage="oauth_token",
             retryable=False,
         ) from exc
-    access_token = token_data.get("access_token")
-    if not access_token:
+    access_token = token_data.get("access_token") if isinstance(token_data, dict) else None
+    if (
+        not isinstance(access_token, str)
+        or not access_token
+        or not access_token.isascii()
+        or any(ch.isspace() or not ch.isprintable() for ch in access_token)
+    ):
         raise YouTubeDeliveryError(
             "YouTube token response missing access_token",
             code="youtube_oauth_missing_access_token",
@@ -787,7 +809,10 @@ def youtube_publication_metadata(
     suffix = f"\n\n{publication_marker}" if publication_marker else ""
     if len(suffix) > 5000:
         raise ValueError("YouTube publication marker exceeds the description limit")
-    return {"title": title[:100], "description": description[: 5000 - len(suffix)] + suffix}
+    return {
+        "title": clamp_youtube_title(title),
+        "description": description[: 5000 - len(suffix)] + suffix,
+    }
 
 
 def upload_to_youtube(

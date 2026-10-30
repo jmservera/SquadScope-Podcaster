@@ -36,6 +36,18 @@ param podcasterApiKey string
 @description('API container image.')
 param apiImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 
+@description('Opt in to existing YouTube OAuth references for read-only legacy status readback.')
+param publicationStatusYoutubeReadbackEnabled bool = false
+
+@secure()
+param videoYoutubeClientId string = ''
+
+@secure()
+param videoYoutubeClientSecret string = ''
+
+@secure()
+param videoYoutubeRefreshToken string = ''
+
 @description('Optional container registry login server for the API image.')
 param containerRegistryServer string = ''
 
@@ -109,6 +121,17 @@ param maxReplicas int = 2
 var storageDnsSuffix = environment().suffixes.storage
 var hasContainerRegistry = !empty(containerRegistryServer)
 var apiAppName = '${baseName}-api'
+var youtubeReadbackConfigured = publicationStatusYoutubeReadbackEnabled && !empty(videoYoutubeClientId) && !empty(videoYoutubeClientSecret) && !empty(videoYoutubeRefreshToken)
+var youtubeReadbackSecrets = youtubeReadbackConfigured ? [
+  { name: 'youtube-client-id', value: videoYoutubeClientId }
+  { name: 'youtube-client-secret', value: videoYoutubeClientSecret }
+  { name: 'youtube-refresh-token', value: videoYoutubeRefreshToken }
+] : []
+var youtubeReadbackEnvironment = youtubeReadbackConfigured ? [
+  { name: 'VIDEO_YOUTUBE_CLIENT_ID', secretRef: 'youtube-client-id' }
+  { name: 'VIDEO_YOUTUBE_CLIENT_SECRET', secretRef: 'youtube-client-secret' }
+  { name: 'VIDEO_YOUTUBE_REFRESH_TOKEN', secretRef: 'youtube-refresh-token' }
+] : []
 
 resource apiApp 'Microsoft.App/containerApps@2025-01-01' = {
   name: apiAppName
@@ -123,7 +146,7 @@ resource apiApp 'Microsoft.App/containerApps@2025-01-01' = {
     environmentId: containerAppsEnvId
     configuration: {
       activeRevisionsMode: 'Single'
-      secrets: [
+      secrets: concat([
         {
           name: 'spotify-sp-dc'
           value: spotifySessionCookieDc
@@ -148,7 +171,7 @@ resource apiApp 'Microsoft.App/containerApps@2025-01-01' = {
           name: 'podcaster-api-key'
           value: podcasterApiKey
         }
-      ]
+      ], youtubeReadbackSecrets)
       ingress: {
         external: true
         targetPort: 8000
@@ -264,7 +287,7 @@ resource apiApp 'Microsoft.App/containerApps@2025-01-01' = {
               name: 'UI_AUTH_SECRET'
               secretRef: 'ui-auth-secret'
             }
-          ], ttsRuntimeEnvironment)
+          ], ttsRuntimeEnvironment, youtubeReadbackEnvironment)
         }
       ]
       scale: {

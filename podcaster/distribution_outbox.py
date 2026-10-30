@@ -1375,6 +1375,18 @@ def _attempt_event(attempt: dict[str, Any], state: str, at: str, **details: Any)
 
 
 def _ensure_truth_fields(document: dict[str, Any]) -> None:
+    for field in ("attempts", "recovery_authz"):
+        if field in document and (
+            not isinstance(document[field], list)
+            or any(not isinstance(item, dict) for item in document[field])
+        ):
+            raise DistributionOutboxError(f"outbox {field} collection is malformed")
+    for attempt in document.get("attempts", []):
+        if not isinstance(attempt.get("attempt_id"), str) or not attempt["attempt_id"]:
+            raise DistributionOutboxError("outbox attempt identity is malformed")
+    for field in ("canonical_artifact", "weekly_aggregation", "enqueue"):
+        if field in document and not isinstance(document[field], dict):
+            raise DistributionOutboxError(f"outbox {field} is malformed")
     identity = document.get("publication_identity")
     artifact = document.get("artifact")
     if not isinstance(identity, Mapping) or not isinstance(artifact, Mapping):
@@ -1511,6 +1523,13 @@ def _validate_document(document: Mapping[str, Any], expected_id: str) -> None:
         raise DistributionOutboxError("outbox correlation is incomplete")
     if not isinstance(providers, Mapping) or not providers:
         raise DistributionOutboxError("outbox provider objectives are missing")
+    for leg in providers.values():
+        if (
+            not isinstance(leg, Mapping)
+            or not isinstance(leg.get("result"), str)
+            or leg["result"] not in PROVIDER_RESULTS
+        ):
+            raise DistributionOutboxError("outbox provider result is invalid")
     if not _SHA256.fullmatch(str(artifact.get("sha256") or "")):
         raise DistributionOutboxError("outbox artifact digest is invalid")
     _safe_value(document)
@@ -2307,7 +2326,7 @@ class DistributionOutboxRepository:
             _attempt_event(
                 _active_attempt(document),
                 "intent_persisted",
-                _iso(self.now()),
+                intent["created_at"],
                 provider=provider,
                 intent_id=intent["intent_id"],
             )
@@ -2352,6 +2371,7 @@ class DistributionOutboxRepository:
                 intent["consumed_at"],
                 provider=provider,
                 intent_id=intent["intent_id"],
+                intent=dict(intent),
             )
             captured.update(intent)
 
@@ -2407,6 +2427,7 @@ class DistributionOutboxRepository:
                 receipt["at"],
                 provider=provider,
                 receipt_id=receipt["receipt_id"],
+                receipt=dict(receipt),
             )
             captured.update(receipt)
 
@@ -3534,6 +3555,341 @@ def four_cycle_acceptance(documents: Iterable[Mapping[str, Any]]) -> bool:
     return all((later - earlier).days == 7 for earlier, later in zip(parsed, parsed[1:]))
 
 
+def _proof_token(value: Any) -> bool:
+    return isinstance(value, str) and _SAFE_TOKEN.fullmatch(value) is not None
+
+
+def _proof_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment.astimezone(timezone.utc) if moment.tzinfo else None
+
+
+def _bound_outbox_operation(record: Mapping[str, Any], provider: str) -> bool:
+    operation = record.get("operation")
+    operation_type = record.get("operation_type")
+    return (
+        isinstance(operation, str)
+        and isinstance(operation_type, str)
+        and bool(operation_type)
+        and RECOVERY_MUTATION_OPERATION_TYPES.get(provider, {}).get(operation) == operation_type
+    )
+
+
+def _bound_outbox_receipts(
+    leg: Mapping[str, Any], provider: str, attempts: list[Mapping[str, Any]]
+) -> bool:
+    receipts = leg.get("receipts")
+    verification = leg.get("verification")
+    history = leg.get("intent_history", [])
+    if (
+        not isinstance(receipts, list)
+        or not receipts
+        or not isinstance(verification, dict)
+        or not isinstance(history, list)
+    ):
+        return False
+    intents = [*history, leg.get("intent")]
+    if any(
+        not isinstance(intent, dict)
+        or not _proof_token(intent.get("intent_id"))
+        or not _bound_outbox_operation(intent, provider)
+        for intent in intents
+    ):
+        return False
+    by_id = {intent.get("intent_id"): intent for intent in intents}
+    if len(by_id) != len(intents) or None in by_id:
+        return False
+    receipt_ids = set()
+    seen_intents = set()
+    for receipt in receipts:
+        if (
+            not isinstance(receipt, dict)
+            or not all(
+                _proof_token(receipt.get(field))
+                for field in ("receipt_id", "intent_id", "attempt_id", "provider_item_id")
+            )
+            or not _bound_outbox_operation(receipt, provider)
+        ):
+            return False
+        intent = by_id.get(receipt.get("intent_id"))
+        if (
+            intent is None
+            or not intent.get("consumed_at")
+            or not _proof_token(intent.get("consumed_owner"))
+            or not _proof_token(receipt.get("consumed_owner"))
+            or type(intent.get("consumed_fence")) is not int
+            or intent["consumed_fence"] < 1
+            or type(receipt.get("fencing_token")) is not int
+            or receipt["fencing_token"] < 1
+            or receipt.get("receipt_id") in receipt_ids
+            or receipt.get("intent_id") in seen_intents
+            or any(
+                receipt.get(field) != intent.get(field)
+                for field in ("operation", "operation_type", "consumed_owner")
+            )
+            or receipt.get("attempt_id") != intent.get("consumed_attempt_id")
+            or not attempts
+            or receipt.get("attempt_id") != attempts[-1].get("attempt_id")
+            or receipt.get("fencing_token") != intent.get("consumed_fence")
+            or receipt.get("provider") != provider
+            or intent.get("provider") != provider
+            or receipt.get("ambiguous") is not False
+            or receipt.get("transport_class") != "accepted"
+            or receipt["provider_item_id"] != verification.get("provider_item_id")
+            or _proof_timestamp(receipt.get("at")) is None
+            or _proof_timestamp(intent["consumed_at"]) is None
+            or _proof_timestamp(receipt["at"]) < _proof_timestamp(intent["consumed_at"])
+        ):
+            return False
+        attempt = attempts[-1]
+        events = attempt.get("events")
+        if not isinstance(events, list):
+            return False
+        claim = None
+        persisted = None
+        consumed = None
+        recorded = None
+        previous_at = attempt.get("authorized_at")
+        previous_fence = 0
+        for sequence, event in enumerate(events, start=1):
+            if (
+                not isinstance(event, Mapping)
+                or type(event.get("sequence")) is not int
+                or event["sequence"] != sequence
+                or event.get("event_type") != event.get("state")
+                or _proof_timestamp(event.get("at")) is None
+                or _proof_timestamp(previous_at) is None
+                or _proof_timestamp(event["at"]) < _proof_timestamp(previous_at)
+            ):
+                return False
+            previous_at = event["at"]
+            if event.get("state") in ("claimed", "reconciling"):
+                fence = event.get("fencing_token")
+                if (
+                    type(fence) is not int
+                    or fence <= previous_fence
+                    or not all(
+                        _proof_token(event.get(field))
+                        for field in ("owner", "claim_id", "execution_id")
+                    )
+                ):
+                    return False
+                previous_fence = fence
+                claim = event
+            elif event.get("provider") == provider:
+                if (
+                    event.get("state") == "intent_persisted"
+                    and event.get("intent_id") == intent["intent_id"]
+                ):
+                    if (
+                        persisted is not None
+                        or claim is None
+                        or claim["state"] != "claimed"
+                        or type(intent.get("created_fence")) is not int
+                        or intent["created_fence"] != claim["fencing_token"]
+                        or _proof_timestamp(intent.get("created_at")) is None
+                        or _proof_timestamp(event["at"]) < _proof_timestamp(intent["created_at"])
+                    ):
+                        return False
+                    persisted = event
+                elif (
+                    event.get("state") == "mutating"
+                    and event.get("intent_id") == intent["intent_id"]
+                ):
+                    if (
+                        persisted is None
+                        or consumed is not None
+                        or claim is None
+                        or claim["state"] != "claimed"
+                        or claim["owner"] != intent["consumed_owner"]
+                        or claim["fencing_token"] != intent["consumed_fence"]
+                        or event["at"] != intent["consumed_at"]
+                    ):
+                        return False
+                    consumed = event
+                elif (
+                    event.get("state") == "receipt_persisted"
+                    and event.get("receipt_id") == receipt["receipt_id"]
+                ):
+                    if (
+                        consumed is None
+                        or recorded is not None
+                        or claim is None
+                        or claim["owner"] != receipt["consumed_owner"]
+                        or claim["fencing_token"] != receipt["fencing_token"]
+                        or event["at"] != receipt["at"]
+                    ):
+                        return False
+                    recorded = event
+        if consumed is None or recorded is None:
+            return False
+        # Terminal snapshots retain older records; live attempts retain the same
+        # mutation evidence in their append-only consume/receipt events.
+        snapshot = attempt.get("provider_evidence")
+        retained = snapshot.get(provider) if isinstance(snapshot, Mapping) else None
+        try:
+            if "intent" in consumed and not _exact_canonical_equal(consumed["intent"], intent):
+                return False
+            if "receipt" in recorded and not _exact_canonical_equal(recorded["receipt"], receipt):
+                return False
+            if attempt.get("terminal_outcome"):
+                if not isinstance(retained, Mapping) or not isinstance(
+                    retained.get("receipts"), list
+                ):
+                    return False
+                matches = [
+                    item
+                    for item in retained["receipts"]
+                    if isinstance(item, Mapping) and item.get("receipt_id") == receipt["receipt_id"]
+                ]
+                if len(matches) != 1 or not _exact_canonical_equal(matches[0], receipt):
+                    return False
+                retained_intent = retained.get("intent")
+                if (
+                    isinstance(retained_intent, Mapping)
+                    and retained_intent.get("intent_id") == intent["intent_id"]
+                    and not _exact_canonical_equal(retained_intent, intent)
+                ):
+                    return False
+            elif "intent" not in consumed or "receipt" not in recorded:
+                return False
+        except DistributionOutboxError:
+            return False
+        receipt_ids.add(receipt["receipt_id"])
+        seen_intents.add(receipt["intent_id"])
+    return seen_intents == set(by_id) and _proof_timestamp(verification.get("at")) is not None
+
+
+def _bound_recovery_readback(leg: Mapping[str, Any], provider: str) -> bool:
+    intent = leg.get("intent")
+    verification = leg.get("verification")
+    return (
+        leg.get("receipts") == []
+        and leg.get("intent_history", []) == []
+        and isinstance(intent, dict)
+        and _proof_token(intent.get("intent_id"))
+        and intent.get("provider") == provider
+        and intent.get("operation") == "recovery_readback"
+        and intent.get("operation_type") == "readback"
+        and isinstance(verification, dict)
+        and leg.get("result") == "externally_verified_public"
+        and verification.get("result") == leg["result"]
+        and _proof_token(intent.get("expected_provider_item_id"))
+        and intent["expected_provider_item_id"] == verification.get("provider_item_id")
+        and _proof_timestamp(verification.get("at")) is not None
+        and all(
+            intent.get(field) is None
+            for field in ("consumed_at", "consumed_owner", "consumed_fence", "consumed_attempt_id")
+        )
+    )
+
+
+def _verification_claim_is_bound(
+    document: Mapping[str, Any],
+    attempt: Mapping[str, Any],
+    provider: str,
+    verification: Mapping[str, Any],
+) -> bool:
+    fence = verification.get("fencing_token")
+    if (
+        type(fence) is not int
+        or fence < 1
+        or type(document.get("fencing_token")) is not int
+        or document["fencing_token"] < fence
+        or verification.get("result") != "externally_verified_public"
+    ):
+        return False
+    events = attempt.get("events")
+    if not isinstance(events, list) or not events:
+        return False
+    claim_event = None
+    verification_claim = None
+    verification_event = None
+    previous_at = attempt.get("authorized_at")
+    previous_fence = 0
+    for sequence, event in enumerate(events, start=1):
+        if (
+            not isinstance(event, Mapping)
+            or type(event.get("sequence")) is not int
+            or event["sequence"] != sequence
+            or not _proof_token(event.get("state"))
+            or event.get("event_type") != event["state"]
+            or _proof_timestamp(event.get("at")) is None
+            or _proof_timestamp(previous_at) is None
+            or _proof_timestamp(event["at"]) < _proof_timestamp(previous_at)
+        ):
+            return False
+        previous_at = event["at"]
+        if event["state"] in ("claimed", "reconciling"):
+            event_fence = event.get("fencing_token")
+            if (
+                type(event_fence) is not int
+                or not previous_fence < event_fence <= document["fencing_token"]
+                or not all(
+                    _proof_token(event.get(field))
+                    for field in ("owner", "claim_id", "execution_id")
+                )
+            ):
+                return False
+            previous_fence = event_fence
+            claim_event = event
+        elif event["state"] == "verifying" and event.get("provider") == provider:
+            verification_claim = claim_event
+            verification_event = event
+    if (
+        claim_event is None
+        or claim_event["fencing_token"] != document["fencing_token"]
+        or verification_claim is None
+        or verification_event is None
+        or verification_claim["fencing_token"] != fence
+        or verification_event.get("at") != verification.get("at")
+        or verification_event.get("result") != verification["result"]
+    ):
+        return False
+
+    current = document.get("claim")
+    if current is not None:
+        if (
+            not isinstance(current, Mapping)
+            or type(current.get("fencing_token")) is not int
+            or current["fencing_token"] != document["fencing_token"]
+            or current.get("attempt_id") != attempt["attempt_id"]
+            or any(
+                not _proof_token(current.get(field)) or current[field] != claim_event.get(field)
+                for field in ("owner", "claim_id", "execution_id")
+            )
+            or current["fencing_token"] != claim_event["fencing_token"]
+        ):
+            return False
+    if not attempt.get("terminal_outcome"):
+        return current is not None
+
+    # Release freezes the original proof. Later reconciliation appends readbacks
+    # without rewriting that snapshot or borrowing a consumed mutation's fence.
+    snapshot = attempt.get("provider_evidence")
+    snapshot_leg = snapshot.get(provider) if isinstance(snapshot, Mapping) else None
+    if not isinstance(snapshot_leg, Mapping):
+        return False
+    retained = snapshot_leg.get("verification")
+    readbacks = attempt.get("post_terminal_readbacks", [])
+    if not isinstance(readbacks, list):
+        return False
+    for readback in readbacks:
+        if not isinstance(readback, Mapping):
+            return False
+        if readback.get("provider") == provider:
+            retained = readback.get("verification")
+    try:
+        return isinstance(retained, Mapping) and _exact_canonical_equal(retained, verification)
+    except DistributionOutboxError:
+        return False
+
+
 def _authoritative_green_document(document: Mapping[str, Any]) -> bool:
     aggregation = document.get("weekly_aggregation")
     attempts = document.get("attempts")
@@ -3541,9 +3897,11 @@ def _authoritative_green_document(document: Mapping[str, Any]) -> bool:
     identity = document.get("publication_identity")
     artifact = document.get("artifact")
     canonical = document.get("canonical_artifact")
+    aggregate = document.get("aggregate")
+    objectives = document.get("provider_objectives")
     if not all(
         isinstance(value, Mapping)
-        for value in (aggregation, providers, identity, artifact, canonical)
+        for value in (aggregation, providers, identity, artifact, canonical, aggregate, objectives)
     ) or not isinstance(attempts, list):
         return False
     state = aggregation.get("state")
@@ -3551,50 +3909,97 @@ def _authoritative_green_document(document: Mapping[str, Any]) -> bool:
         return False
     if (
         aggregation.get("rule_version") != "weekly-publication-truth-v1"
-        or not aggregation.get("decision_id")
-        or not all(identity.get(field) for field in ("week", "accepted_job_id", "publish_run_id"))
-        or not _SHA256.fullmatch(str(identity.get("article_sha256") or ""))
-        or not _SHA256.fullmatch(str(identity.get("manifest_sha256") or ""))
-        or not _SHA256.fullmatch(str(document.get("publication_digest") or ""))
-        or not _SHA256.fullmatch(str(artifact.get("sha256") or ""))
+        or not _proof_token(aggregation.get("decision_id"))
+        or not _proof_token(document.get("outbox_id"))
+        or not all(
+            _proof_token(identity.get(field))
+            for field in ("week", "accepted_job_id", "publish_run_id")
+        )
+        or not all(
+            isinstance(value, str) and _SHA256.fullmatch(value)
+            for value in (
+                identity.get("article_sha256"),
+                identity.get("manifest_sha256"),
+                document.get("publication_digest"),
+                artifact.get("sha256"),
+            )
+        )
+        or not _proof_token(artifact.get("media_kind"))
         or canonical.get("selected") is not True
         or canonical.get("artifact_id") != artifact.get("sha256")
-        or not canonical.get("selection_version")
+        or not _proof_token(canonical.get("selection_version"))
         or document.get("publication_digest") != _publication_digest(identity, artifact)
+        or not providers
+        or set(providers) != set(objectives)
+        or any(
+            not _proof_token(provider) or objective != "public"
+            for provider, objective in objectives.items()
+        )
+        or not attempts
+        or any(
+            not isinstance(attempt, Mapping)
+            or attempt.get("record_version") != ATTEMPT_RECORD_VERSION
+            or not _proof_token(attempt.get("attempt_id"))
+            for attempt in attempts
+        )
     ):
         return False
     evaluated = aggregation.get("evaluated_attempt_ids")
-    attempt_ids = [
-        attempt.get("attempt_id") for attempt in attempts if isinstance(attempt, Mapping)
-    ]
-    if evaluated != attempt_ids or aggregation.get("winning_attempt_id") not in attempt_ids:
+    attempt_ids = [attempt["attempt_id"] for attempt in attempts]
+    winner = attempts[-1]
+    if (
+        len(set(attempt_ids)) != len(attempt_ids)
+        or evaluated != attempt_ids
+        or aggregation.get("winning_attempt_id") != winner["attempt_id"]
+        or winner.get("terminal_outcome") not in (None, "published_verified")
+    ):
         return False
-    if aggregation.get("unresolved_conditions") or not aggregation.get("proof_references"):
+    references = aggregation.get("proof_references")
+    if (
+        aggregation.get("unresolved_conditions") != []
+        or not isinstance(references, list)
+        or not references
+        or not all(_proof_token(reference) for reference in references)
+    ):
         return False
     if state == "published_verified_recovered":
-        winner = next(
-            (
-                attempt
-                for attempt in attempts
-                if isinstance(attempt, Mapping)
-                and attempt.get("attempt_id") == aggregation.get("winning_attempt_id")
-            ),
-            None,
-        )
         authz = document.get("recovery_authz")
         if (
-            not isinstance(winner, Mapping)
-            or not winner.get("predecessor_attempt_id")
+            not winner.get("predecessor_attempt_id")
             or not isinstance(authz, list)
             or not _recovery_authorization_is_valid(document, winner, authz)
         ):
             return False
+    elif (
+        len(attempts) != 1
+        or winner.get("predecessor_attempt_id") is not None
+        or winner.get("authz_source") != "initial_enqueue"
+        or not _proof_token(winner.get("authz_id"))
+    ):
+        return False
     verified_provider_ids: list[str] = []
-    for leg in providers.values():
-        if not isinstance(leg, Mapping) or leg.get("result") != "externally_verified_public":
+    for provider, leg in providers.items():
+        if (
+            not isinstance(leg, Mapping)
+            or leg.get("result") != "externally_verified_public"
+            or not (
+                _bound_outbox_receipts(leg, provider, attempts)
+                or (
+                    state == "published_verified_recovered"
+                    and _bound_recovery_readback(leg, provider)
+                )
+            )
+        ):
             return False
         verification = leg.get("verification")
-        if not isinstance(verification, Mapping):
+        if (
+            not isinstance(verification, Mapping)
+            or not _verification_claim_is_bound(document, winner, provider, verification)
+            or not all(
+                _proof_token(verification.get(field))
+                for field in ("provider_item_id", "native_state", "source")
+            )
+        ):
             return False
         proof = verification.get("proof")
         evidence = proof.get("evidence") if isinstance(proof, Mapping) else None
@@ -3617,7 +4022,7 @@ def _authoritative_green_document(document: Mapping[str, Any]) -> bool:
             or not all(proof.get(field) is True for field in VERIFICATION_PROOF_FIELDS)
             or rebound.get("green") is not True
             or any(rebound.get(field) != proof.get(field) for field in VERIFICATION_PROOF_FIELDS)
-            or provider_item_id not in aggregation.get("proof_references", [])
+            or provider_item_id not in references
             or str(verification.get("native_state") or "").lower() not in ("public", "published")
             or (
                 "readback" not in str(verification.get("source") or "")
@@ -3628,11 +4033,11 @@ def _authoritative_green_document(document: Mapping[str, Any]) -> bool:
         verified_provider_ids.append(str(provider_item_id))
     if len(set(verified_provider_ids)) != len(verified_provider_ids) or sorted(
         verified_provider_ids
-    ) != sorted(aggregation.get("proof_references", [])):
+    ) != sorted(references):
         return False
     return (
         aggregation.get("worker_exit_class") == "zero"
-        and document.get("aggregate", {}).get("externally_verified_public") is True
+        and aggregate.get("externally_verified_public") is True
     )
 
 

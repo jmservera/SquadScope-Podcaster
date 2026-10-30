@@ -214,6 +214,9 @@ param deployApiApp bool = true
 @description('HTTP API container image (#131).')
 param apiImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 
+@description('Optionally pass existing YouTube OAuth credentials to API read-only legacy status readback. Does not enable provider mutations.')
+param publicationStatusYoutubeReadbackEnabled bool = false
+
 @description('Spotify show ID for auto-publish (#182). Empty disables publishing.')
 param spotifyShowId string = ''
 
@@ -707,6 +710,10 @@ module api 'modules/api.bicep' = if (deployApiApp) {
     synthesisQueueName: synthesisQueueName
     podcasterApiKey: podcasterApiKey
     apiImage: apiImage
+    publicationStatusYoutubeReadbackEnabled: publicationStatusYoutubeReadbackEnabled
+    videoYoutubeClientId: videoYoutubeClientId
+    videoYoutubeClientSecret: videoYoutubeClientSecret
+    videoYoutubeRefreshToken: videoYoutubeRefreshToken
     containerRegistryServer: acrLoginServer
     corsOrigins: deployUiApp ? 'https://${uiAppName}.${aca.outputs.defaultDomain}' : ''
     openAiEndpoint: openAiEndpoint
