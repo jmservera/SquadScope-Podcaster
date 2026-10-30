@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 
 from podcaster.distribution_outbox import (
+    RECOVERY_MUTATION_OPERATION_TYPES,
     DistributionOutboxError,
     DistributionOutboxRepository,
     aggregate_exit_code,
@@ -113,6 +114,21 @@ def _stage(state: Any, *, synthesis: bool = False) -> str:
     return "unknown"
 
 
+def _outbox_token(value: Any) -> bool:
+    return isinstance(value, str) and _CORRELATION.fullmatch(value) is not None
+
+
+def _bound_outbox_operation(record: Mapping[str, Any], provider: str) -> bool:
+    operation = record.get("operation")
+    operation_type = record.get("operation_type")
+    return (
+        isinstance(operation, str)
+        and isinstance(operation_type, str)
+        and bool(operation_type)
+        and RECOVERY_MUTATION_OPERATION_TYPES.get(provider, {}).get(operation) == operation_type
+    )
+
+
 def _bound_outbox_receipts(leg: Mapping[str, Any], provider: str, attempt_ids: set[str]) -> bool:
     receipts = leg.get("receipts")
     verification = leg.get("verification")
@@ -125,7 +141,12 @@ def _bound_outbox_receipts(leg: Mapping[str, Any], provider: str, attempt_ids: s
     ):
         return False
     intents = [*history, leg.get("intent")]
-    if any(not isinstance(intent, dict) for intent in intents):
+    if any(
+        not isinstance(intent, dict)
+        or not _outbox_token(intent.get("intent_id"))
+        or not _bound_outbox_operation(intent, provider)
+        for intent in intents
+    ):
         return False
     by_id = {intent.get("intent_id"): intent for intent in intents}
     if len(by_id) != len(intents) or None in by_id:
@@ -133,7 +154,14 @@ def _bound_outbox_receipts(leg: Mapping[str, Any], provider: str, attempt_ids: s
     receipt_ids = set()
     seen_intents = set()
     for receipt in receipts:
-        if not isinstance(receipt, dict):
+        if (
+            not isinstance(receipt, dict)
+            or not all(
+                _outbox_token(receipt.get(field))
+                for field in ("receipt_id", "intent_id", "attempt_id", "provider_item_id")
+            )
+            or not _bound_outbox_operation(receipt, provider)
+        ):
             return False
         intent = by_id.get(receipt.get("intent_id"))
         if (
@@ -180,11 +208,14 @@ def _bound_recovery_readback(leg: Mapping[str, Any], provider: str) -> bool:
         leg.get("receipts") == []
         and leg.get("intent_history", []) == []
         and isinstance(intent, dict)
+        and _outbox_token(intent.get("intent_id"))
         and intent.get("provider") == provider
         and intent.get("operation") == "recovery_readback"
         and intent.get("operation_type") == "readback"
         and isinstance(verification, dict)
-        and bool(intent.get("expected_provider_item_id"))
+        and leg.get("result") == "externally_verified_public"
+        and verification.get("result") == leg["result"]
+        and _outbox_token(intent.get("expected_provider_item_id"))
         and intent["expected_provider_item_id"] == verification.get("provider_item_id")
         and _timestamp(verification.get("at")) is not None
         and all(
@@ -237,7 +268,10 @@ def _outbox_provider_status(
         or any(not isinstance(leg, dict) for leg in legs.values())
         or not isinstance(document.get("attempts"), list)
         or not document["attempts"]
-        or any(not isinstance(attempt, dict) for attempt in document["attempts"])
+        or any(
+            not isinstance(attempt, dict) or not _outbox_token(attempt.get("attempt_id"))
+            for attempt in document["attempts"]
+        )
     ):
         raise PublicationStatusError("invalid_outbox_evidence", 409)
     try:

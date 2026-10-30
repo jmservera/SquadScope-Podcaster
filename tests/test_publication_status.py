@@ -195,7 +195,8 @@ def test_current_outbox_completed_public_is_visible_without_legacy_or_mutation(c
     assert document["aggregate"]["result"] == "completed_public"
 
 
-def test_authorized_read_only_recovery_preserves_failed_attempt_and_weekly_truth(accepted):
+@pytest.fixture
+def recovered(accepted):
     storage, manifest, query = accepted
     repository = DistributionOutboxRepository(storage, now=lambda: NOW)
     identity = publication_identity(manifest, JOB, query["publish_run_id"])
@@ -271,6 +272,11 @@ def test_authorized_read_only_recovery_preserves_failed_attempt_and_weekly_truth
     assert aggregate_exit_code([recovered]) == 0
     assert recovered["attempts"][0] == failed_attempt
     assert all(leg["receipts"] == [] for leg in recovered["providers"].values())
+    return storage, query, recovered
+
+
+def test_authorized_read_only_recovery_preserves_failed_attempt_and_weekly_truth(recovered):
+    storage, query, document = recovered
     before = copy.deepcopy(storage.data)
     result = publication_status(
         storage, query, now=NOW, youtube_readback=MagicMock(side_effect=AssertionError)
@@ -288,7 +294,7 @@ def test_authorized_read_only_recovery_preserves_failed_attempt_and_weekly_truth
     # Neither a missing separate authorization nor a mismatched expected ID can
     # turn recovery readback into mutation-free success.
     for fault in ("authorization", "expected_id", "proof"):
-        invalid = copy.deepcopy(recovered)
+        invalid = copy.deepcopy(document)
         if fault == "authorization":
             invalid["recovery_authz"] = []
         elif fault == "expected_id":
@@ -305,6 +311,106 @@ def test_authorized_read_only_recovery_preserves_failed_attempt_and_weekly_truth
         else:
             assert result["state"] != "published"
             assert result["external_verified"] is False
+
+
+@pytest.mark.parametrize("provider", ["youtube", "spotify"])
+@pytest.mark.parametrize(
+    "value", ["absent", None, "", "failed_terminal", "pending_provider", 7, True, {}]
+)
+def test_recovery_requires_matching_public_verification_result(recovered, provider, value):
+    storage, query, document = recovered
+    verification = document["providers"][provider]["verification"]
+    if value == "absent":
+        verification.pop("result")
+    else:
+        verification["result"] = value
+    storage.data[outbox_path(document["outbox_id"])] = json.dumps(document).encode()
+    before = copy.deepcopy(storage.data)
+    result = publication_status(storage, query, now=NOW)["provider"]
+    assert result["state"] != "published"
+    assert result["external_verified"] is False
+    assert all(item["state"] != "published" for item in result["providers"].values())
+    assert storage.data == before
+
+
+@pytest.mark.parametrize("provider", ["youtube", "spotify"])
+@pytest.mark.parametrize("target", ["intent", "receipt", "both"])
+@pytest.mark.parametrize("field", ["operation", "operation_type"])
+@pytest.mark.parametrize("value", ["absent", None, "", "unsupported", 7, True, {}])
+def test_mutation_requires_valid_bound_operation(canonical, provider, target, field, value):
+    storage, _, query, document = canonical
+    leg = document["providers"][provider]
+    records = []
+    if target in {"intent", "both"}:
+        records.extend([*leg["intent_history"], leg["intent"]])
+    if target in {"receipt", "both"}:
+        records.extend(leg["receipts"])
+    for record in records:
+        if value == "absent":
+            record.pop(field)
+        else:
+            record[field] = value
+    storage.data[outbox_path(document["outbox_id"])] = json.dumps(document).encode()
+    before = copy.deepcopy(storage.data)
+    result = publication_status(storage, query, now=NOW)["provider"]
+    assert result["state"] != "published"
+    assert result["external_verified"] is False
+    assert all(item["state"] != "published" for item in result["providers"].values())
+    assert result["providers"][provider]["code"] == "receipt_ambiguous"
+    assert storage.data == before
+
+
+@pytest.mark.parametrize("provider", ["youtube", "spotify"])
+@pytest.mark.parametrize("fault", ["wrong_type", "wrong_provider_operation"])
+def test_mutation_rejects_symmetric_valid_but_mismatched_operation(canonical, provider, fault):
+    storage, _, query, document = canonical
+    leg = document["providers"][provider]
+    for record in [*leg["intent_history"], leg["intent"], *leg["receipts"]]:
+        record.update(
+            operation="upload" if provider == "spotify" else "create",
+            operation_type="create",
+        )
+        if fault == "wrong_type":
+            record.update(operation="public_promotion", operation_type="create")
+    storage.data[outbox_path(document["outbox_id"])] = json.dumps(document).encode()
+    result = publication_status(storage, query, now=NOW)["provider"]
+    assert result["external_verified"] is False
+    assert result["providers"][provider]["code"] == "receipt_ambiguous"
+
+
+@pytest.mark.parametrize("provider", ["youtube", "spotify"])
+@pytest.mark.parametrize("field", ["intent_id", "receipt_id"])
+@pytest.mark.parametrize("value", [7, True, {}, []])
+def test_mutation_requires_token_shaped_evidence_ids(canonical, provider, field, value):
+    storage, _, query, document = canonical
+    leg = document["providers"][provider]
+    for record in [*leg["intent_history"], leg["intent"], *leg["receipts"]]:
+        if field in record:
+            record[field] = value
+    storage.data[outbox_path(document["outbox_id"])] = json.dumps(document).encode()
+    before = copy.deepcopy(storage.data)
+    result = publication_status(storage, query, now=NOW)["provider"]
+    assert result["state"] != "published"
+    assert result["external_verified"] is False
+    assert result["providers"][provider]["code"] == "receipt_ambiguous"
+    assert storage.data == before
+
+
+@pytest.mark.parametrize("provider", ["youtube", "spotify"])
+@pytest.mark.parametrize("value", ["absent", None, "", 7, True, {}, []])
+def test_recovery_requires_token_shaped_intent_id(recovered, provider, value):
+    storage, query, document = recovered
+    intent = document["providers"][provider]["intent"]
+    if value == "absent":
+        intent.pop("intent_id")
+    else:
+        intent["intent_id"] = value
+    storage.data[outbox_path(document["outbox_id"])] = json.dumps(document).encode()
+    before = copy.deepcopy(storage.data)
+    result = publication_status(storage, query, now=NOW)["provider"]
+    assert result["state"] != "published"
+    assert result["external_verified"] is False
+    assert storage.data == before
 
 
 @pytest.mark.parametrize("provider", ["youtube", "spotify"])

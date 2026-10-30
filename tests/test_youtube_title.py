@@ -64,10 +64,28 @@ def test_unbounded_identity_suffix_is_rejected():
         clamp_youtube_title("topic | W43 " + "x" * 100)
 
 
+def test_rightmost_valid_marker_preserves_suffix_whitespace_and_trailing_text():
+    topic = "Comparison | W42 " + "agent updates " * 10
+    suffix = "  — 2026-W43 [ES]  | W44invalid  "
+    title = clamp_youtube_title(topic + suffix)
+    assert title.startswith("Comparison | W42 ")
+    assert title.endswith(suffix)
+    assert len(title) <= 100
+    assert clamp_youtube_title(title) == title
+
+
 @pytest.mark.parametrize("chunked", [False, True])
 @pytest.mark.parametrize("suffix", [" | W42", " | 2026-W43 [ES]", " | W43 [FR]"])
+@pytest.mark.parametrize(
+    "topic",
+    [
+        "é宇宙🤖" * 100,
+        "Comparison | W42 " + "agent updates " * 10,
+        "Comparison | W43 " + "agent updates " * 10,
+    ],
+)
 def test_actual_resumable_paths_keep_week_locale_and_identity_tag(
-    tmp_path, monkeypatch, chunked, suffix
+    tmp_path, monkeypatch, chunked, suffix, topic
 ):
     metadata = []
 
@@ -82,7 +100,7 @@ def test_actual_resumable_paths_keep_week_locale_and_identity_tag(
     )
     video = tmp_path / "episode.mp4"
     video.write_bytes(b"x" * 4096)
-    title = "é宇宙🤖" * 100 + suffix
+    title = topic + suffix
     identity_tag = "sqpub-" + "a" * 32
     config = VideoDistributionConfig(
         youtube_enabled=True,
