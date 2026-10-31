@@ -1263,6 +1263,11 @@ class _GenerationDiagnostics:
         if upstream_error is not None:
             headers = upstream_error.headers
             retry_after = headers.get("Retry-After") if headers is not None else None
+            retry_after = (
+                retry_after.strip(" \t")
+                if isinstance(retry_after, str) and len(retry_after) <= 80
+                else None
+            )
             record["provider_http_status"] = (
                 upstream_error.code
                 if type(upstream_error.code) is int and 100 <= upstream_error.code <= 599

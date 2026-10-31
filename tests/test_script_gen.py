@@ -118,7 +118,7 @@ def _production_observation_fixture(mode):
             headers["apim-request-id"] = (
                 "request-123" if mode == "429" else "PRIVATE_HEADER\nhttps://secret.example"
             )
-            headers["Retry-After"] = "17" if mode == "429" else "9999999999999999999"
+            headers["Retry-After"] = "17 \t" if mode == "429" else "9999999999999999999"
             headers["Authorization"] = "PRIVATE_SECRET"
             headers["x-unbounded"] = "PRIVATE_" * 10000
             nonlocal failure
@@ -1815,9 +1815,16 @@ class TestScriptQualityContract:
         assert len(requests) == 1
 
     @pytest.mark.parametrize("mode", ["missing", "metadata", "hostile", "429", "503"])
-    def test_production_default_logging_observes_only_safe_generation_events(self, mode):
+    def test_production_default_logging_observes_only_safe_generation_events(
+        self, mode, monkeypatch
+    ):
         import subprocess
         import sys
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        if mode == "missing":
+            monkeypatch.chdir(root / "tests")
 
         result = subprocess.run(
             [
@@ -1830,6 +1837,7 @@ class TestScriptQualityContract:
             capture_output=True,
             text=True,
             timeout=30,
+            cwd=root,
         )
         assert result.returncode == 0, result.stderr
         summary = json.loads(result.stdout)
