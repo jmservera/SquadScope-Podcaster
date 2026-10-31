@@ -1560,9 +1560,10 @@ def _merge_length_expansion(
     additions = {}
     hosts = (generation.podcast_config.host_a.name, generation.podcast_config.host_b.name)
     existing = {text.strip() for text in spoken_turns(dialogue, generation.podcast_config)}
-    canonical_existing = set(
-        spoken_turns(generation.canonicalize(dialogue), generation.podcast_config)
-    )
+    canonical_existing = {
+        speech.casefold()
+        for speech in spoken_turns(generation.canonicalize(dialogue), generation.podcast_config)
+    }
     disclosure = generation.podcast_config.ai_voice_disclosure.strip()
     for insertion in insertions:
         if not isinstance(insertion, dict) or set(insertion) != {"section_index", "turns"}:
@@ -1590,10 +1591,10 @@ def _merge_length_expansion(
                 for speech in spoken_turns(generation.canonicalize(turn), generation.podcast_config)
                 if speech != disclosure
             ]
-            if len(canonical_turns) != 1 or canonical_turns[0] in canonical_existing:
+            if len(canonical_turns) != 1 or canonical_turns[0].casefold() in canonical_existing:
                 return None
             existing.add(text.strip())
-            canonical_existing.add(canonical_turns[0])
+            canonical_existing.add(canonical_turns[0].casefold())
             words += len(text.split())
         if words > allowed[index]["add_words"] + 20:
             return None
@@ -2120,16 +2121,16 @@ def generate_script(
                     original_turns = parse_script_segments(script, podcast_config)
                     original = iter(original_turns)
                     expected = next(original, None)
-                    seen = {text for _, text in original_turns}
+                    seen = {text.casefold() for _, text in original_turns}
                     canonical_preserved = True
                     for turn in parse_script_segments(candidate, podcast_config):
                         if turn == expected:
                             expected = next(original, None)
-                        elif turn[1] in seen:
+                        elif turn[1].casefold() in seen:
                             canonical_preserved = False
                             break
                         else:
-                            seen.add(turn[1])
+                            seen.add(turn[1].casefold())
                     remaining = iter(guarded.splitlines(keepends=True))
                     if (
                         canonical_preserved

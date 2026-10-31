@@ -1394,6 +1394,12 @@ class TestGroundedLengthExpansion:
             "canonical_additions_repeat",
             "canonical_opening_loss",
             "canonical_duplicate_hosts",
+            "canonical_existing_uppercase",
+            "canonical_existing_uppercase_markdown",
+            "canonical_additions_case_repeat",
+            "canonical_existing_unicode_case",
+            "canonical_additions_unicode_case",
+            "canonical_candidate_case_repeat",
         ],
     )
     @pytest.mark.parametrize("history", [False, True])
@@ -1427,6 +1433,8 @@ class TestGroundedLengthExpansion:
                 for turn, host in enumerate(hosts * 2):
                     budget = 75 if section == 0 else remaining // (20 - section * 4 - turn)
                     text = f"snapshot{version}-{section}-{turn} " + "evidence " * (budget - 1)
+                    if result == "canonical_existing_unicode_case" and section == 1 and turn == 1:
+                        text = text.replace(f"snapshot{version}-{section}-{turn}", "Straße")
                     lines.append(f"{host}: {text.strip()}")
                     remaining -= budget
             lines.append(f"{hosts[1]}: {closing}")
@@ -1485,18 +1493,51 @@ class TestGroundedLengthExpansion:
                     elif result == "newurl":
                         turn += " https://github.com/unsupported/repository"
                     elif (
-                        result in ("canonical_existing_repeat", "canonical_existing_variant")
+                        result
+                        in (
+                            "canonical_existing_repeat",
+                            "canonical_existing_variant",
+                            "canonical_existing_uppercase",
+                            "canonical_existing_uppercase_markdown",
+                            "canonical_existing_unicode_case",
+                        )
                         and not additions
                     ):
                         text = rewritten.splitlines()[8].partition(":")[2].strip()
+                        if result in (
+                            "canonical_existing_uppercase",
+                            "canonical_existing_uppercase_markdown",
+                            "canonical_existing_unicode_case",
+                        ):
+                            text = text.upper()
                         turn = (
                             f"{hosts[1]}: **{text}**"
-                            if result == "canonical_existing_repeat"
+                            if result
+                            in (
+                                "canonical_existing_repeat",
+                                "canonical_existing_uppercase_markdown",
+                            )
                             else f"{hosts[1]}: [{text}](#source)"
+                            if result == "canonical_existing_variant"
+                            else f"{hosts[1]}: {text}"
                         )
-                    elif result == "canonical_additions_repeat" and len(additions) < 2:
+                    elif (
+                        result
+                        in (
+                            "canonical_additions_repeat",
+                            "canonical_additions_case_repeat",
+                            "canonical_additions_unicode_case",
+                        )
+                        and len(additions) < 2
+                    ):
                         text = " ".join(["A grounded source contrast."] * 5)
-                        turn = f"Theo: **{text}**" if not additions else f"Vera: _{text}_"
+                        if result == "canonical_additions_unicode_case":
+                            text = text.replace("grounded", "Straße")
+                        if additions and result != "canonical_additions_repeat":
+                            text = text.upper()
+                        turn = (
+                            f"{hosts[0]}: **{text}**" if not additions else f"{hosts[1]}: _{text}_"
+                        )
                     elif result == "canonical_opening_loss" and not additions:
                         turn = (
                             "Theo: Keep the existing evidence limits in view. "
@@ -1534,6 +1575,18 @@ class TestGroundedLengthExpansion:
                 return original_rewrite(dialogue, names)
 
             monkeypatch.setattr(script_gen, "rewrite_spoken_repo_names", lossy_guard)
+
+        if result == "canonical_candidate_case_repeat":
+            original_rewrite = script_gen.rewrite_spoken_repo_names
+
+            def case_repeat_guard(dialogue, names):
+                guarded = original_rewrite(dialogue, names)
+                if "expanded-" in dialogue:
+                    text = rewritten.splitlines()[8].partition(":")[2].strip()
+                    return guarded.replace(inserted[0], f"{hosts[1]}: **{text.upper()}**")
+                return guarded
+
+            monkeypatch.setattr(script_gen, "rewrite_spoken_repo_names", case_repeat_guard)
 
         caplog.set_level("WARNING", logger="podcaster.script_gen")
         arguments = dict(
