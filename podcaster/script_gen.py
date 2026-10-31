@@ -1124,18 +1124,18 @@ class _GenerationDiagnostics:
         * (1 + 2 * MAX_OWNERSHIP_REPAIRS + MAX_REPO_COVERAGE_REPAIRS)
     )
 
-    def counts(self, dialogue: str) -> dict[str, Any]:
+    def counts(self, dialogue: str, *, canonical: bool = False) -> dict[str, Any]:
         if not dialogue:
             return {"spoken_words": None, "host_turns": None, "sections": []}
         if len(dialogue) > MAX_SCRIPT_CHARS + 4000:
             return {"spoken_words": None, "host_turns": None, "sections": []}
-        canonical = self.canonicalize(dialogue)
-        turns = spoken_turns(canonical, self.podcast_config)
+        script = dialogue if canonical else self.canonicalize(dialogue)
+        turns = spoken_turns(script, self.podcast_config)
         # Diagnostic-only copy: the parser's own informational log must not repeat
         # generated titles. Speech and section boundaries remain untouched.
         diagnostic_lines = []
         section_count = 0
-        for line in canonical.splitlines():
+        for line in script.splitlines():
             if match_section_header(line) is not None:
                 section_count += 1
                 line = "## Section: diagnostic"
@@ -1157,8 +1157,8 @@ class _GenerationDiagnostics:
             "section_count": section_count,
         }
 
-    def constraint(self, current: str) -> str:
-        counts = self.counts(current)
+    def constraint(self, current: str, *, canonical: bool = False) -> str:
+        counts = self.counts(current, canonical=canonical)
         measured = counts["spoken_words"]
         minimum, maximum = self.word_range if self.word_range else (None, None)
         shortfall = (
@@ -1198,6 +1198,7 @@ class _GenerationDiagnostics:
         *,
         response: Mapping[str, Any] | None = None,
         max_tokens: int | None = None,
+        canonical: bool = False,
     ) -> None:
         response = response or {}
         usage = response.get("usage")
@@ -1230,7 +1231,7 @@ class _GenerationDiagnostics:
                 for key in ("prompt_tokens", "completion_tokens", "total_tokens")
             },
             "reasoning_tokens": _observed_integer(details.get("reasoning_tokens")),
-            **self.counts(dialogue),
+            **self.counts(dialogue, canonical=canonical),
         }
         logger.info("script_generation_observation %s", json.dumps(record, separators=(",", ":")))
 
@@ -1252,6 +1253,7 @@ def _request_dialogue(
     """
 
     if generation is not None:
+        current_is_canonical = False
         current = next(
             (
                 message["content"]
@@ -1262,13 +1264,17 @@ def _request_dialogue(
         )
         if not current and stage == "editorial":
             current = generation.previous_script
-        generation.observe(stage + "_before", current, max_tokens=max_tokens)
+            current_is_canonical = True
+        generation.observe(
+            stage + "_before", current, max_tokens=max_tokens, canonical=current_is_canonical
+        )
         if generation.word_range is not None:
             messages = [
                 *messages[:-1],
                 {
                     **messages[-1],
-                    "content": messages[-1]["content"] + generation.constraint(current),
+                    "content": messages[-1]["content"]
+                    + generation.constraint(current, canonical=current_is_canonical),
                 },
             ]
         generation.calls_used += 1
@@ -1514,7 +1520,7 @@ def generate_script(
         podcast_config=podcast_config,
         canonicalize=_canonicalize_observation,
         word_range=word_range,
-        targets=_section_word_targets(script_directions, safe_content, word_range),
+        targets=_section_word_targets(script_directions, article_evidence, word_range),
         deployment=_observed_identifier(config.chat_deployment),
         api_version=_observed_identifier(config.api_version),
         previous_script=previous_script or "",

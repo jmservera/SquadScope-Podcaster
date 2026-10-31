@@ -1713,6 +1713,10 @@ class TestScriptQualityContract:
             "Week Ahead",
             "Outro",
         )
+        configured_beats = () if later_guard == "repository" else beats
+        expected_target_titles = (
+            ["Source contrasts", "Evidence limits"] if later_guard == "repository" else list(beats)
+        )
 
         def draft(words, *, defect=None):
             lines = []
@@ -1735,6 +1739,20 @@ class TestScriptQualityContract:
             return "\n".join(lines)
 
         short = draft(20)
+        if later_guard == "section":
+            short = short.replace("source ", "`[two source words](https://example.com/a b c)` ", 1)
+        previous = (
+            _format_script(
+                week="2026-W44",
+                article_url="https://example.com/w44",
+                article_sha256="",
+                dialogue=short,
+                podcast_config=config,
+                generated_at=datetime.now(timezone.utc),
+            )
+            if later_guard == "section"
+            else None
+        )
         long_defective = draft(250 if later_guard == "section" else 140, defect=later_guard)
         final = draft(140) if valid_final else short
         dialogues = [short, long_defective, final]
@@ -1770,19 +1788,24 @@ class TestScriptQualityContract:
                 week="2026-W44",
                 article_title="Unlogged article title",
                 article_url="https://example.com/w44",
-                article_content=_article_with_repos(6),
+                article_content=(
+                    _article_with_repos(6)
+                    + "\n## Source contrasts\nThese projects have different tradeoffs."
+                    + "\n## Evidence limits\nWatch for source-backed maintenance evidence."
+                    + "\n## References\nhttps://github.com/org/tool-1"
+                ),
                 config=_mock_config(),
                 podcast_config=config,
                 script_directions=ScriptDirections(
                     episode_style=EpisodeStyle(
                         format="8-10 minutes, 1001-1700 spoken words",
                         tone="Concise, not rushed",
-                        segment_order=beats,
+                        segment_order=configured_beats,
                     )
                 ),
                 token_provider=_fake_token_provider,
                 transport=transport,
-                previous_script=short if later_guard == "section" else None,
+                previous_script=previous,
                 repair_feedback="Remove unsupported assertions."
                 if later_guard == "section"
                 else None,
@@ -1809,19 +1832,23 @@ class TestScriptQualityContract:
             block = prompt.split("Ordered grounded section targets;", 1)[1]
             targets = json.loads(block.split("\n" + FENCE_OPEN, 1)[1].split(FENCE_CLOSE, 1)[0])
             allocations.append(targets)
-            assert [title for title, _ in targets] == list(beats)
+            assert [title for title, _ in targets] == expected_target_titles
             assert 1001 <= sum(words for _, words in targets) <= 1700
             assert "Expand ONLY from supplied source contrasts" in prompt
             assert "Do not pad with repeated claims or invent facts" in prompt
             if index or later_guard == "section":
-                current = dialogues[index - 1] if index else short
-                canonical = _format_script(
-                    week="2026-W44",
-                    article_url="https://example.com/w44",
-                    article_sha256="",
-                    dialogue=current,
-                    podcast_config=config,
-                    generated_at=datetime.now(timezone.utc),
+                current = dialogues[index - 1] if index else previous
+                canonical = (
+                    current
+                    if index == 0
+                    else _format_script(
+                        week="2026-W44",
+                        article_url="https://example.com/w44",
+                        article_sha256="",
+                        dialogue=current,
+                        podcast_config=config,
+                        generated_at=datetime.now(timezone.utc),
+                    )
                 )
                 count = sum(
                     len(turn.split()) for turn in script_gen.spoken_turns(canonical, config)
