@@ -1071,11 +1071,16 @@ def _section_word_targets(
     beats = list(directions.episode_style.segment_order) if directions else []
     beats = [beat.strip() for beat in beats if beat.strip()]
     if not beats:
-        beats = [
-            match.group(1).strip()
-            for match in re.finditer(r"^#{2,3}\s+(.+)$", article, re.MULTILINE)
-            if match.group(1).strip().lower() not in ("references", "sources", "links")
-        ]
+        for line in article.splitlines():
+            marks = 3 if line.startswith("###") else 2
+            if not line.startswith("#" * marks):
+                continue
+            rest = line[marks:]
+            if not rest or not rest[0].isspace():
+                continue
+            title = rest.strip()
+            if title and title.lower() not in ("references", "sources", "links"):
+                beats.append(title)
     if not beats:
         beats = ["Source discussion", "Evidence limits and what to watch"]
     # Adjacent beats remain in source/caller order even when they share a title card.

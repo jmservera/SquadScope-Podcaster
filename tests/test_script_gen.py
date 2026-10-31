@@ -1790,6 +1790,9 @@ class TestScriptQualityContract:
                 article_url="https://example.com/w44",
                 article_content=(
                     _article_with_repos(6)
+                    + "\n##"
+                    + " " * 1200
+                    + "\n"
                     + "\n## Source contrasts\nThese projects have different tradeoffs."
                     + "\n## Evidence limits\nWatch for source-backed maintenance evidence."
                     + "\n## References\nhttps://github.com/org/tool-1"
