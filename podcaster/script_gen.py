@@ -1305,9 +1305,9 @@ class _GenerationDiagnostics:
                 section_words=_observed_integer(section_words),
                 section_budget=_observed_integer(section_budget),
                 candidate_words=_observed_integer(candidate_words),
-                minimum=self.word_range[0] if self.word_range else None,
-                maximum=self.word_range[1] if self.word_range else None,
-                shortfall=max(0, self.word_range[0] - measured)
+                minimum=_observed_integer(self.word_range[0]) if self.word_range else None,
+                maximum=_observed_integer(self.word_range[1]) if self.word_range else None,
+                shortfall=_observed_integer(max(0, self.word_range[0] - measured))
                 if self.word_range and measured is not None
                 else None,
             )

@@ -1557,6 +1557,7 @@ class TestGroundedLengthExpansion:
             assert rejections[0]["rejection_reason"] == expected[scenario]
             assert rejections[0]["spoken_words"] == 796
             assert rejections[0]["shortfall"] == 205
+            assert (rejections[0]["minimum"], rejections[0]["maximum"]) == (1001, 1700)
             assert rejections[0]["candidate_words"] is None
             if scenario == "spoken21":
                 assert rejections[0]["section_index"] == 1
