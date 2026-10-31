@@ -50,6 +50,22 @@ The script is the source material for TTS synthesis. It must meet these constrai
 - Dialogue or quoted speech uses quotation marks (TTS respects these for intonation)
 - No orphan abbreviations; define context on every mention
 
+#### Grounded episode length
+- The caller's explicit spoken-word range is a hard, inclusive constraint;
+  caller duration is soft pacing guidance, not a competing validator.
+- Drafts and complete-dialogue repairs share a deterministic spoken allocation
+  across ordered caller beats (or source headings). Adjacent beats may share a
+  section without losing their order, hosts, repository coverage or disclosures.
+- Clean short sentences do not mean a short episode. Expand through source-backed
+  contrasts, caveats, evidence limits and what-to-watch questions, never repetition
+  or invented adoption, incidence or novelty.
+- Bounded `script_generation_observation` logs report canonical speech and section
+  counts around existing generation/repair stages, actual available provider
+  finish/model/usage fields, and configured/used call budgets. Missing provider
+  fields are null. Section identities and generated/source text are not retained
+  in these observations. Counts are observations, not grounding approval or proof
+  of a unique production cause; existing final quality and human-review gates apply.
+
 #### No unspoken markup
 - No `[action]` or `[pause]` directives in the body
 - No inline instructions for TTS (use script metadata for tone/speed guidance)
