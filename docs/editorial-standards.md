@@ -66,6 +66,9 @@ The script is the source material for TTS synthesis. It must meet these constrai
   turns are inserted before existing closing turns, preserving every original
   line. Malformed, non-host, repeated-turn, oversized or non-progressing additions
   are rejected, and the same canonical range, section and grounding gates apply.
+  The existing ownership-tone rule also validates actual canonical host speech
+  after formatting and dialogue guards, before accepting a candidate. Markdown
+  cannot hide banned reporter narration; metadata is excluded from this check.
   Sectionless, overlength and structural repairs retain complete-dialogue output.
   This prevents replacement losses; offline preservation tests do not establish
   actual model improvement or approve the grounding of added speech.

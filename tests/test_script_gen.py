@@ -1400,6 +1400,18 @@ class TestGroundedLengthExpansion:
             "canonical_existing_unicode_case",
             "canonical_additions_unicode_case",
             "canonical_candidate_case_repeat",
+            "canonical_ownership_article",
+            "canonical_ownership_this_article",
+            "canonical_ownership_report_says",
+            "canonical_ownership_report_mentions",
+            "canonical_ownership_according_report",
+            "canonical_ownership_according_roundup",
+            "canonical_ownership_according_analysis",
+            "canonical_ownership_roundup",
+            "canonical_ownership_in_report",
+            "canonical_ownership_article_notes",
+            "canonical_ownership_after_guard",
+            "canonical_ownership_valid",
         ],
     )
     @pytest.mark.parametrize("history", [False, True])
@@ -1418,6 +1430,13 @@ class TestGroundedLengthExpansion:
             )
             if result == "canonical_duplicate_hosts":
                 config = replace(config, host_b=replace(config.host_b, name=config.host_a.name))
+            if result == "canonical_ownership_valid":
+                config = replace(
+                    config,
+                    name="According to the article",
+                    host_a=replace(config.host_a, name="Théo"),
+                    host_b=replace(config.host_b, name="Véra"),
+                )
         hosts = (config.host_a.name, config.host_b.name)
 
         def draft(words, version):
@@ -1481,7 +1500,7 @@ class TestGroundedLengthExpansion:
                     if not words:
                         continue
                     text = f"expanded-{item['section_index']} " + "contrast " * (words - 1)
-                    turn = "Theo: " + text.strip()
+                    turn = f"{hosts[0]}: " + text.strip()
                     if result == "nonhost":
                         turn = turn.replace("Theo:", "Mallory:")
                     elif result == "oversize":
@@ -1492,6 +1511,28 @@ class TestGroundedLengthExpansion:
                         turn += " According to the article, that is a claim."
                     elif result == "newurl":
                         turn += " https://github.com/unsupported/repository"
+                    elif result.startswith("canonical_ownership_") and not additions:
+                        phrases = {
+                            "article": "According to the **article**, that is a claim.",
+                            "this_article": "This _article_ describes a claim.",
+                            "report_says": "The [report](#source) says a claim.",
+                            "report_mentions": "The `report` mentions a claim.",
+                            "according_report": "**According** to this report, a claim.",
+                            "according_roundup": "According to the _roundup_, a claim.",
+                            "according_analysis": "According to this [analysis](#source), a claim.",
+                            "roundup": "The **roundup** mentions a claim.",
+                            "in_report": "In this _report_, a claim.",
+                            "article_notes": "As the **article** notes, a claim.",
+                        }
+                        phrase = phrases.get(result.removeprefix("canonical_ownership_"))
+                        if phrase:
+                            turn = f"{hosts[0]}: {phrase}"
+                        elif result == "canonical_ownership_valid":
+                            prefix = "According to GitHub stars: `Straße` remains qualified."
+                            turn = f"{hosts[0]}: {prefix} " + "contrast " * (
+                                words - len(prefix.split())
+                            )
+                            turn = turn.strip()
                     elif (
                         result
                         in (
@@ -1588,6 +1629,19 @@ class TestGroundedLengthExpansion:
 
             monkeypatch.setattr(script_gen, "rewrite_spoken_repo_names", case_repeat_guard)
 
+        if result == "canonical_ownership_after_guard":
+            original_rewrite = script_gen.rewrite_spoken_repo_names
+
+            def ownership_guard(dialogue, names):
+                guarded = original_rewrite(dialogue, names)
+                if "expanded-" in dialogue:
+                    return guarded.replace(
+                        inserted[0], f"{hosts[0]}: According to the **article**, that is a claim."
+                    )
+                return guarded
+
+            monkeypatch.setattr(script_gen, "rewrite_spoken_repo_names", ownership_guard)
+
         caplog.set_level("WARNING", logger="podcaster.script_gen")
         arguments = dict(
             week="2026-W44",
@@ -1621,14 +1675,24 @@ class TestGroundedLengthExpansion:
             token_provider=_fake_token_provider,
             transport=transport,
         )
-        if result in ("valid", "canonical_valid", "canonical_duplicate_hosts"):
+        if result in (
+            "valid",
+            "canonical_valid",
+            "canonical_duplicate_hosts",
+            "canonical_ownership_valid",
+        ):
             script = generate_script(**arguments)
             assert (
                 sum(len(text.split()) for text in script_gen.spoken_turns(script, config)) == 1234
             )
             body = script.split("---", 2)[-1]
+            inserted_lines = set(inserted)
+            inserted_lines.update(
+                f"{host}: {script_gen._normalize_spoken_markdown(text).strip()}"
+                for host, _, text in (line.partition(":") for line in inserted)
+            )
             without_insertions = "\n".join(
-                line for line in body.splitlines() if line not in inserted
+                line for line in body.splitlines() if line not in inserted_lines
             )
             assert rewritten in without_insertions
             if canonical_fixture:
@@ -1643,6 +1707,10 @@ class TestGroundedLengthExpansion:
                 remaining = iter(script_gen.spoken_turns(script, config))
                 assert all(turn in remaining for turn in original_turns)
                 assert original_turns[0] == config.ai_voice_disclosure
+                assert original_turns[-1] == config.ai_voice_disclosure
+                if result == "canonical_ownership_valid":
+                    assert "Title: According to the article" in script
+                    assert "According to GitHub stars: Straße remains qualified." in script
             assert "Source SHA256: fixture-source-hash" in script
         elif result == "incomplete":
             with pytest.raises(script_gen.ScriptQualityError, match="completion incomplete"):

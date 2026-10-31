@@ -2133,7 +2133,13 @@ def generate_script(
                             seen.add(turn[1].casefold())
                     remaining = iter(guarded.splitlines(keepends=True))
                     if (
-                        canonical_preserved
+                        not find_violations(
+                            "\n".join(
+                                f"Host: {speech}"
+                                for speech in spoken_turns(candidate, podcast_config)
+                            )
+                        )
+                        and canonical_preserved
                         and expected is None
                         and all(line in remaining for line in dialogue.splitlines(keepends=True))
                     ):
