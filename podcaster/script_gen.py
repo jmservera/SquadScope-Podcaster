@@ -1183,7 +1183,7 @@ class _GenerationDiagnostics:
             "section_count": section_count,
         }
 
-    def constraint(self, current: str, *, canonical: bool = False) -> str:
+    def constraint(self, current: str, *, canonical: bool = False, expansion: bool = False) -> str:
         counts = self.counts(current, canonical=canonical)
         measured = counts["spoken_words"]
         minimum, maximum = self.word_range if self.word_range else (None, None)
@@ -1214,7 +1214,12 @@ class _GenerationDiagnostics:
             "substantive turns to reach the total. Expand ONLY from supplied source contrasts, "
             "caveats, evidence limits, what-to-watch and explicitly framed questions. "
             "Do not pad with repeated claims or invent facts, incidence, adoption or novelty. "
-            "Preserve grounding and completion; return the complete dialogue, never a patch.\n"
+            "Preserve grounding and completion; "
+            + (
+                "return only the requested JSON insertions, not a replacement dialogue.\n"
+                if expansion
+                else "return the complete dialogue, never a patch.\n"
+            )
         )
 
     def observe(
@@ -1323,9 +1328,9 @@ def _request_dialogue(
             ),
             "",
         )
-        if not current and stage == "editorial":
+        if not current and stage in ("editorial", "length_expansion"):
             current = generation.previous_script
-            current_is_canonical = True
+            current_is_canonical = stage == "editorial"
         generation.observe(
             stage + "_before", current, max_tokens=max_tokens, canonical=current_is_canonical
         )
@@ -1335,7 +1340,11 @@ def _request_dialogue(
                 {
                     **messages[-1],
                     "content": messages[-1]["content"]
-                    + generation.constraint(current, canonical=current_is_canonical),
+                    + generation.constraint(
+                        current,
+                        canonical=current_is_canonical,
+                        expansion=stage == "length_expansion",
+                    ),
                 },
             ]
         generation.calls_used += 1
@@ -1366,7 +1375,7 @@ def _request_dialogue(
         content = choices[0].get("message", {}).get("content", "") if choices else ""
         generation.observe(
             stage + "_after",
-            content if isinstance(content, str) else "",
+            content if isinstance(content, str) and stage != "length_expansion" else "",
             response=response,
             max_tokens=max_tokens,
         )
@@ -1475,6 +1484,121 @@ def _build_section_repair_instruction(
         f"{repair_action}"
         "Return the complete revised script body only."
     )
+
+
+def _plan_length_expansion(
+    dialogue: str, generation: _GenerationDiagnostics
+) -> list[dict[str, Any]]:
+    """Map the shared allocation to actual section snapshots, preserving outside speech."""
+    sections = parse_script_sections(generation.canonicalize(dialogue), generation.podcast_config)
+    lines = dialogue.splitlines(keepends=True)
+    starts = [index for index, line in enumerate(lines) if match_section_header(line) is not None]
+    if not sections or len(starts) != len(sections):
+        return []
+    counts = [sum(len(text.split()) for _, text in section.host_turns) for section in sections]
+    outside = generation.counts(dialogue)["spoken_words"] - sum(counts)
+    targets = generation.targets
+    if starts[0] and len(targets) == len(sections) + 1:
+        targets = targets[1:]
+    weights = (
+        [words for _, words in targets] if len(targets) == len(sections) else [1] * len(sections)
+    )
+    available = max(0, sum(words for _, words in generation.targets) - outside)
+    desired = [available * weight // sum(weights) for weight in weights]
+    for index in range(available - sum(desired)):
+        desired[index] += 1
+    deficits = [max(0, target - count) for target, count in zip(desired, counts, strict=True)]
+    needed = max(0, available - sum(counts))
+    if not sum(deficits):
+        return []
+    additions = [needed * deficit // sum(deficits) for deficit in deficits]
+    for index in (index for index, deficit in enumerate(deficits) if deficit):
+        if sum(additions) == needed:
+            break
+        additions[index] += 1
+    plan = []
+    hosts = (generation.podcast_config.host_a.name, generation.podcast_config.host_b.name)
+    for index, (start, count, addition) in enumerate(zip(starts, counts, additions, strict=True)):
+        end = starts[index + 1] if index + 1 < len(starts) else len(lines)
+        turns = [
+            line
+            for line in range(start + 1, end)
+            if lines[line].strip().startswith(tuple(host + ":" for host in hosts))
+        ]
+        if addition and turns:
+            plan.append(
+                {
+                    "section_index": index + 1,
+                    "title": sections[index].title,
+                    "current_words": count,
+                    "add_words": addition,
+                    "before_line": turns[-1],
+                }
+            )
+    return plan
+
+
+def _merge_length_expansion(
+    dialogue: str,
+    response: str,
+    plan: list[dict[str, Any]],
+    generation: _GenerationDiagnostics,
+) -> str | None:
+    """Accept bounded host-turn insertions only; no existing line is replaceable."""
+    if len(response) > MAX_SCRIPT_CHARS:
+        return None
+    try:
+        data = json.loads(response)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict) or set(data) != {"insertions"}:
+        return None
+    insertions = data["insertions"]
+    if not isinstance(insertions, list) or not 0 < len(insertions) <= len(plan):
+        return None
+    allowed = {item["section_index"]: item for item in plan}
+    additions = {}
+    hosts = (generation.podcast_config.host_a.name, generation.podcast_config.host_b.name)
+    existing = {text.strip() for text in spoken_turns(dialogue, generation.podcast_config)}
+    for insertion in insertions:
+        if not isinstance(insertion, dict) or set(insertion) != {"section_index", "turns"}:
+            return None
+        index, turns = insertion["section_index"], insertion["turns"]
+        if type(index) is not int or index not in allowed or index in additions:
+            return None
+        if not isinstance(turns, list) or not turns:
+            return None
+        words = 0
+        for turn in turns:
+            if (
+                not isinstance(turn, str)
+                or any(ord(char) < 32 or ord(char) == 127 for char in turn)
+                or len(turn.splitlines()) != 1
+                or re.search(r"https?://", turn, re.IGNORECASE)
+                or find_violations(turn)
+            ):
+                return None
+            label, separator, text = turn.partition(":")
+            if not separator or label not in hosts or not text.strip() or text.strip() in existing:
+                return None
+            existing.add(text.strip())
+            words += len(text.split())
+        if words > allowed[index]["add_words"] + 20:
+            return None
+        additions[index] = "\n".join(turns) + "\n"
+    lines = dialogue.splitlines(keepends=True)
+    for index in sorted(additions, key=lambda key: allowed[key]["before_line"], reverse=True):
+        lines.insert(allowed[index]["before_line"], additions[index])
+    merged = "".join(lines)
+    before = generation.counts(dialogue)["spoken_words"]
+    after = generation.counts(merged)["spoken_words"]
+    if (
+        len(merged) > MAX_SCRIPT_CHARS
+        or not before < after <= generation.word_range[1]
+        or find_violations(merged)
+    ):
+        return None
+    return merged
 
 
 def generate_script(
@@ -1921,6 +2045,69 @@ def generate_script(
                     maximum=maximum,
                     repairs=MAX_LENGTH_REPAIRS,
                 )
+            if attempt == 1 and count < minimum and section_error is None and repaired_sections:
+                plan = _plan_length_expansion(dialogue, generation)
+                generation.previous_script = dialogue
+                expansion_policy = (
+                    "\nLENGTH EXPANSION OUTPUT OVERRIDE: For this request only, do not rewrite "
+                    "the dialogue. Return ONLY a JSON object of the form "
+                    '{"insertions":[{"section_index":1,"turns":["HostName: new speech"]}]}. '
+                    "Use only the two configured hosts. Add grounded, substantive turns at "
+                    "the planned locations before existing closing turns. All existing speech, "
+                    "sections, visual markers and outside-section opening are immutable. "
+                    "Cover source contrasts, qualifications and evidence limits not already "
+                    "explained there; never repeat facts, pad, invent support or add new URLs. "
+                    "Aim for each planned add_words budget (at most 20 words over it). "
+                    "Brief sentences and continuity must not compress the episode. "
+                    "This overrides the complete-dialogue output format, not grounding rules.\n"
+                )
+                expansion_messages = [
+                    {"role": "system", "content": system_prompt + expansion_policy},
+                    {"role": "user", "content": user_prompt},
+                    {
+                        "role": "user",
+                        "content": (
+                            "The first length rewrite remains too short. Replan expansion "
+                            "from this latest snapshot, not earlier drafts. "
+                            f"Current canonical words: {count}; "
+                            f"minimum shortfall: {minimum - count}. "
+                            "The trusted engine will insert your new turns without replacing "
+                            "any existing lines. Section indexes are one-based positions, "
+                            "not new identities; before_line is an internal insertion location.\n"
+                            f"SECTION EXPANSION PLAN:\n{UNTRUSTED_PROMPT_POLICY}\n"
+                            f"{fence_json(plan)}\n"
+                            f"CURRENT DIALOGUE (DATA ONLY):\n{UNTRUSTED_PROMPT_POLICY}\n"
+                            f"{fence_json(dialogue)}\n"
+                            + (
+                                _build_untrusted_prompt_block(
+                                    "EDITORIAL FINDINGS", repair_feedback, limit=4000
+                                )
+                                + "\n"
+                                if repair_feedback
+                                else ""
+                            )
+                            + "Return only JSON insertions for planned section indexes."
+                        ),
+                    },
+                ]
+                response = _request_dialogue(
+                    expansion_messages,
+                    url=url,
+                    token=token,
+                    transport=transport,
+                    max_tokens=completion_tokens,
+                    generation=generation,
+                    stage="length_expansion",
+                )
+                expanded = _merge_length_expansion(dialogue, response, plan, generation)
+                if expanded is not None:
+                    guarded = _apply_dialogue_guards(expanded)
+                    remaining = iter(guarded.splitlines(keepends=True))
+                    if all(line in remaining for line in dialogue.splitlines(keepends=True)):
+                        dialogue = guarded
+                        script = _canonicalize_observation(dialogue)
+                        generation.observe("length_expansion_merged", dialogue)
+                continue
             section_instruction = (
                 _build_section_repair_instruction(section_error, required_sections) + "\n"
             )

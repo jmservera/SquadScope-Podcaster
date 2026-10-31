@@ -59,6 +59,21 @@ The script is the source material for TTS synthesis. It must meet these constrai
 - Clean short sentences do not mean a short episode. Expand through source-backed
   contrasts, caveats, evidence limits and what-to-watch questions, never repetition
   or invented adoption, incidence or novelty.
+- If the first length rewrite remains short with valid sections, the second
+  existing length repair requests section-indexed JSON insertions, not another
+  whole-script replacement. Budgets are replanned from actual canonical section
+  counts; opening speech outside sections remains counted and unchanged. New
+  turns are inserted before existing closing turns, preserving every original
+  line. Malformed, non-host, repeated-turn, oversized or non-progressing additions
+  are rejected, and the same canonical range, section and grounding gates apply.
+  Sectionless, overlength and structural repairs retain complete-dialogue output.
+  This prevents replacement losses; offline preservation tests do not establish
+  actual model improvement or approve the grounding of added speech.
+- Expansion requests use the latest fenced snapshot instead of accumulating
+  earlier short assistant drafts. `length_expansion_after` retains provider
+  metadata with speech counts null (JSON is not a dialogue);
+  `length_expansion_merged` and final validation measure the actual merged script.
+  No response text is logged.
 - Bounded `script_generation_observation` logs report canonical speech and section
   counts around existing generation/repair stages, actual available provider
   finish/model/usage fields, and configured/used call budgets. Missing provider

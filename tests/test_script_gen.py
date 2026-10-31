@@ -1372,6 +1372,190 @@ class TestShowIntroPromptLiteral:
         assert "Start with a one-line show description" not in prompt
 
 
+class TestGroundedLengthExpansion:
+    @pytest.mark.parametrize(
+        "result",
+        [
+            "valid",
+            "underexpanded",
+            "replacement",
+            "nonhost",
+            "oversize",
+            "repeated",
+            "ownership",
+            "newurl",
+            "duplicate",
+            "guardloss",
+            "incomplete",
+        ],
+    )
+    @pytest.mark.parametrize("history", [False, True])
+    def test_second_underlength_repair_preserves_snapshot_and_fails_closed(
+        self, result, history, caplog, monkeypatch
+    ):
+        import re
+
+        from podcaster.config import EpisodeStyle, HistoricalContext, ScriptDirections
+
+        config = PodcastConfig(ai_voice_disclosure="Synthetic voices.")
+
+        def draft(words, version):
+            # Synthetic count-matched drafts, not retained production text.
+            lines = ["Theo: Synthetic voices."]
+            remaining = words - 4
+            for section in range(5):
+                lines.append(f"## Section: Evidence {section}")
+                for turn, host in enumerate(("Theo", "Vera", "Theo", "Vera")):
+                    budget = 75 if section == 0 else remaining // (20 - section * 4 - turn)
+                    text = f"snapshot{version}-{section}-{turn} " + "evidence " * (budget - 1)
+                    lines.append(f"{host}: {text.strip()}")
+                    remaining -= budget
+            lines.append("Vera: Synthetic voices.")
+            return "\n".join(lines)
+
+        initial, rewritten = draft(718, 1), draft(858, 2)
+        requests = []
+        inserted = []
+
+        def transport(request):
+            body = json.loads(request.data)
+            requests.append(body)
+            if len(requests) < 3:
+                dialogue = initial if len(requests) == 1 else rewritten
+            else:
+                assert [message["role"] for message in body["messages"]] == [
+                    "system",
+                    "user",
+                    "user",
+                ]
+                assert "LENGTH EXPANSION OUTPUT OVERRIDE" in body["messages"][0]["content"]
+                prompt = body["messages"][-1]["content"]
+                blocks = re.findall(
+                    "\n" + re.escape(FENCE_OPEN) + "(.*?)" + re.escape(FENCE_CLOSE), prompt
+                )
+                plan, snapshot = json.loads(blocks[0]), json.loads(blocks[1])
+                assert snapshot == rewritten
+                assert 1 not in [item["section_index"] for item in plan]
+                assert "snapshot1" not in json.dumps(body)
+                assert ("Retain scoped evidence limits." in prompt) == history
+                assert "Current canonical words: 858; minimum shortfall: 143" in prompt
+                assert sum(item["add_words"] for item in plan) == 1234 - 858
+                additions = []
+                for item in plan:
+                    words = item["add_words"]
+                    if result == "underexpanded":
+                        words = 22 if not additions else 0
+                    if not words:
+                        continue
+                    text = f"expanded-{item['section_index']} " + "contrast " * (words - 1)
+                    turn = "Theo: " + text.strip()
+                    if result == "nonhost":
+                        turn = turn.replace("Theo:", "Mallory:")
+                    elif result == "oversize":
+                        turn += " excess" * 100
+                    elif result == "repeated":
+                        turn = rewritten.splitlines()[3]
+                    elif result == "ownership":
+                        turn += " According to the article, that is a claim."
+                    elif result == "newurl":
+                        turn += " https://github.com/unsupported/repository"
+                    additions.append({"section_index": item["section_index"], "turns": [turn]})
+                    inserted.append(turn)
+                if result == "duplicate":
+                    additions = [additions[0], additions[0]]
+                dialogue = (
+                    draft(880, 3)
+                    if result == "replacement"
+                    else json.dumps({"insertions": additions})
+                )
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {"content": dialogue},
+                            "finish_reason": "length"
+                            if result == "incomplete" and len(requests) == 3
+                            else "stop",
+                        }
+                    ]
+                }
+            ).encode()
+
+        if result == "guardloss":
+            original_rewrite = script_gen.rewrite_spoken_repo_names
+
+            def lossy_guard(dialogue, names):
+                if "expanded-" in dialogue:
+                    return dialogue.replace(rewritten.splitlines()[3], "Vera: Lost.")
+                return original_rewrite(dialogue, names)
+
+            monkeypatch.setattr(script_gen, "rewrite_spoken_repo_names", lossy_guard)
+
+        caplog.set_level("WARNING", logger="podcaster.script_gen")
+        arguments = dict(
+            week="2026-W44",
+            article_title="Synthetic additive repair",
+            article_url="https://example.com/immutable",
+            article_sha256="fixture-source-hash",
+            article_content=VALID_ARTICLE_CONTENT,
+            config=_mock_config(),
+            podcast_config=config,
+            script_directions=ScriptDirections(
+                show_intro="Synthetic voices.",
+                cold_open="A grounded question.",
+                episode_style=EpisodeStyle(
+                    format="8-10 minutes, 1001-1700 spoken words",
+                    tone="Concise, not rushed.",
+                    segment_order=(
+                        "The Signal",
+                        "The Noise Check",
+                        "The Gap",
+                        "Receipts Round",
+                        "Week Ahead",
+                        "Outro",
+                    ),
+                ),
+            ),
+            historical_context=HistoricalContext(summary="Brief continuity, not less substance.")
+            if history
+            else None,
+            previous_script=initial if history else None,
+            repair_feedback="Retain scoped evidence limits." if history else None,
+            token_provider=_fake_token_provider,
+            transport=transport,
+        )
+        if result == "valid":
+            script = generate_script(**arguments)
+            assert (
+                sum(len(text.split()) for text in script_gen.spoken_turns(script, config)) == 1234
+            )
+            body = script.split("---", 2)[-1]
+            without_insertions = "\n".join(
+                line for line in body.splitlines() if line not in inserted
+            )
+            assert rewritten in without_insertions
+            assert "Source SHA256: fixture-source-hash" in script
+        elif result == "incomplete":
+            with pytest.raises(script_gen.ScriptQualityError, match="completion incomplete"):
+                generate_script(**arguments)
+        else:
+            expected = 880 if result == "underexpanded" else 858
+            with pytest.raises(
+                script_gen.ScriptQualityError, match=rf"{expected} spoken words.*exhausted 2"
+            ):
+                generate_script(**arguments)
+        assert len(requests) == 3
+        assert all(request["max_tokens"] == 6100 for request in requests)
+        assert "snapshot" not in caplog.text
+        expansions = [
+            json.loads(record.message.split("script_generation_observation ", 1)[1])
+            for record in caplog.records
+            if "script_generation_observation " in record.message
+            and '"stage":"length_expansion_after"' in record.message
+        ]
+        assert expansions[0]["spoken_words"] is None
+
+
 class TestScriptQualityContract:
     @pytest.mark.parametrize("grounding_repair", [False, True])
     def test_generation_repairs_and_audit_share_raw_article_and_news_windows(
@@ -1971,7 +2155,8 @@ class TestScriptQualityContract:
         final = draft(140) if valid_final else short
         dialogues = [short, long_defective, final]
         if not valid_final and later_guard != "section":
-            dialogues.extend([long_defective, final])
+            # The final repair now refuses this whole-dialogue response as an insertion.
+            dialogues.append(long_defective)
         requests = []
         caplog.set_level("INFO", logger="podcaster.script_gen")
 
@@ -2108,13 +2293,18 @@ class TestScriptQualityContract:
                 podcast_config=config,
                 generated_at=datetime.now(timezone.utc),
             )
-            assert row["spoken_words"] == sum(
-                len(turn.split()) for turn in script_gen.spoken_turns(canonical, config)
-            )
-            sections = parse_script_sections(canonical, config)
-            assert [item["spoken_words"] for item in row["sections"]] == [
-                sum(len(text.split()) for _, text in section.host_turns) for section in sections
-            ]
+            if row["stage"] == "length_expansion_after":
+                assert row["spoken_words"] is None
+                assert row["host_turns"] is None
+                assert row["sections"] == []
+            else:
+                assert row["spoken_words"] == sum(
+                    len(turn.split()) for turn in script_gen.spoken_turns(canonical, config)
+                )
+                sections = parse_script_sections(canonical, config)
+                assert [item["spoken_words"] for item in row["sections"]] == [
+                    sum(len(text.split()) for _, text in section.host_turns) for section in sections
+                ]
             assert len(json.dumps(row)) < 2000
             assert row["finish_reason"] == "stop"
             assert row["deployment"] == "chat"
