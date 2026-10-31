@@ -1070,6 +1070,20 @@ def _section_word_targets(
         return ()
     beats = list(directions.episode_style.segment_order) if directions else []
     beats = [beat.strip() for beat in beats if beat.strip()]
+    opening = []
+    if directions:
+        if directions.show_intro:
+            opening.append("Show Intro")
+        if directions.cold_open or any(
+            beat.lower() in _COLD_OPEN_SEGMENT_ALIASES for beat in beats
+        ):
+            opening.append("Cold Open")
+        beats = [
+            beat
+            for beat in beats
+            if beat.lower() not in _SHOW_INTRO_SEGMENT_ALIASES
+            and beat.lower() not in _COLD_OPEN_SEGMENT_ALIASES
+        ]
     if not beats:
         for line in article.splitlines():
             marks = 3 if line.startswith("###") else 2
@@ -1084,14 +1098,20 @@ def _section_word_targets(
     if not beats:
         beats = ["Source discussion", "Evidence limits and what to watch"]
     # Adjacent beats remain in source/caller order even when they share a title card.
-    groups = min(6, len(beats))
+    groups = min(5 if opening else 6, len(beats))
     identities = [
         " / ".join(beats[index * len(beats) // groups : (index + 1) * len(beats) // groups])
         for index in range(groups)
     ]
     target = bounds[0] + (bounds[1] - bounds[0]) // 3
-    quotient, remainder = divmod(target, groups)
-    return tuple((title, quotient + (index < remainder)) for index, title in enumerate(identities))
+    # The strict episode structure owns opening order. Share one modest opening
+    # budget rather than assigning a full discussion section to a short cold open.
+    opening_words = max(1, target // 10) if opening else 0
+    quotient, remainder = divmod(target - opening_words, groups)
+    targets = tuple(
+        (title, quotient + (index < remainder)) for index, title in enumerate(identities)
+    )
+    return ((" / ".join(opening), opening_words), *targets) if opening else targets
 
 
 def _observed_integer(value: Any) -> int | None:

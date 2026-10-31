@@ -1713,9 +1713,26 @@ class TestScriptQualityContract:
             "Week Ahead",
             "Outro",
         )
-        configured_beats = () if later_guard == "repository" else beats
+        configured_beats = (
+            ("Cold Open", "Show Intro", *beats)
+            if later_guard == "ownership"
+            else (() if later_guard == "repository" else beats)
+        )
         expected_target_titles = (
-            ["Source contrasts", "Evidence limits"] if later_guard == "repository" else list(beats)
+            [
+                "Show Intro / Cold Open",
+                "The Signal",
+                "The Noise Check",
+                "The Gap",
+                "Receipts Round",
+                "Week Ahead / Outro",
+            ]
+            if later_guard == "ownership"
+            else (
+                ["Source contrasts", "Evidence limits"]
+                if later_guard == "repository"
+                else list(beats)
+            )
         )
 
         def draft(words, *, defect=None):
@@ -1800,11 +1817,13 @@ class TestScriptQualityContract:
                 config=_mock_config(),
                 podcast_config=config,
                 script_directions=ScriptDirections(
+                    show_intro="The show." if later_guard == "ownership" else "",
+                    cold_open="An evidence-backed question." if later_guard == "ownership" else "",
                     episode_style=EpisodeStyle(
                         format="8-10 minutes, 1001-1700 spoken words",
                         tone="Concise, not rushed",
                         segment_order=configured_beats,
-                    )
+                    ),
                 ),
                 token_provider=_fake_token_provider,
                 transport=transport,
