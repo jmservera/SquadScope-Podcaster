@@ -65,6 +65,17 @@ The script is the source material for TTS synthesis. It must meet these constrai
   fields are null. Section identities and generated/source text are not retained
   in these observations. Counts are observations, not grounding approval or proof
   of a unique production cause; existing final quality and human-review gates apply.
+- These allowlisted events use the normal WARNING console path so the default
+  production uvicorn entrypoint retains them without enabling application or HTTP
+  client INFO logs, changing root logging, or adding handlers. WARNING here marks
+  operational visibility, not a failed quality gate. Per-section counts exclude
+  speech before the first section; the canonical total still includes that speech.
+- Provider HTTP failures emit the same bounded event with an `_error` stage before
+  propagating the original exception. Only HTTP status, a validated request ID from
+  `apim-request-id`/`x-request-id`/`x-ms-request-id`, and a bounded numeric
+  `Retry-After` in seconds are retained; unavailable or unsafe values are null.
+  Response bodies, reasons, URLs and other headers are never copied into this
+  event or prompts. Failed calls consume the existing call count without retry.
 
 #### No unspoken markup
 - No `[action]` or `[pause]` directives in the body

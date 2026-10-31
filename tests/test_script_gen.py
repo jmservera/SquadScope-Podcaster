@@ -82,6 +82,126 @@ def _make_transport(dialogue: str):
     return transport
 
 
+def _production_observation_fixture(mode):
+    """Isolated default uvicorn application load with a mocked urllib boundary."""
+    import io
+    import logging
+    from email.message import Message
+    from unittest.mock import patch
+    from urllib.error import HTTPError
+
+    import uvicorn
+
+    from podcaster.config import EpisodeStyle, ScriptDirections
+
+    server_config = uvicorn.Config("podcaster.monitoring:app")
+    server_config.load()
+    for name in ("podcaster.script_gen", "httpx", "azure.core.pipeline"):
+        logging.getLogger(name).info("PRIVATE_SENSITIVE_INFO")
+
+    def dialogue(words):
+        return "\n".join(
+            f"## Section: PRIVATE_TITLE_{section}\n"
+            + "\n".join(
+                f"{host}: " + "source " * words for host in ("Theo", "Vera", "Theo", "Vera")
+            )
+            for section in range(2)
+        )
+
+    calls = []
+    failure = None
+
+    def urlopen(request, timeout):
+        calls.append(json.loads(request.data))
+        if len(calls) == 2 and mode in ("429", "503"):
+            headers = Message()
+            headers["apim-request-id"] = (
+                "request-123" if mode == "429" else "PRIVATE_HEADER\nhttps://secret.example"
+            )
+            headers["Retry-After"] = "17" if mode == "429" else "9999999999999999999"
+            headers["Authorization"] = "PRIVATE_SECRET"
+            headers["x-unbounded"] = "PRIVATE_" * 10000
+            nonlocal failure
+            failure = HTTPError(
+                "https://secret.example/?token=PRIVATE_URL",
+                int(mode),
+                "PRIVATE_ERROR_REASON",
+                headers,
+                io.BytesIO(b"PRIVATE_PROVIDER_BODY"),
+            )
+            raise failure
+        response = {
+            "choices": [
+                {
+                    "message": {"content": dialogue(20 if len(calls) == 1 else 140)},
+                    "finish_reason": "stop",
+                }
+            ],
+            "untrusted": "PRIVATE_RESPONSE",
+        }
+        if mode == "metadata":
+            response.update(
+                model="gpt-test",
+                model_version="2026-10-31",
+                usage={
+                    "prompt_tokens": 321,
+                    "completion_tokens": 456,
+                    "total_tokens": 777,
+                    "completion_tokens_details": {"reasoning_tokens": 12},
+                },
+            )
+        elif mode == "hostile":
+            response.update(
+                model="sk-PRIVATE_SECRET",
+                model_version="https://secret.example/\nPRIVATE_LOG_INJECTION",
+                usage={
+                    "prompt_tokens": True,
+                    "completion_tokens": -1,
+                    "total_tokens": 10**30,
+                    "completion_tokens_details": {"reasoning_tokens": "PRIVATE_VALUE"},
+                },
+            )
+        return io.BytesIO(json.dumps(response).encode())
+
+    failed_closed = False
+    script = None
+    with patch("urllib.request.urlopen", urlopen):
+        try:
+            script = generate_script(
+                week="2026-W44",
+                article_title="PRIVATE_ARTICLE_TITLE",
+                article_url="https://example.com/w44",
+                article_content=VALID_ARTICLE_CONTENT,
+                config=_mock_config(),
+                podcast_config=PodcastConfig(ai_voice_disclosure="Synthetic voices."),
+                script_directions=ScriptDirections(
+                    episode_style=EpisodeStyle(format="1001-1700 words")
+                ),
+                token_provider=_fake_token_provider,
+            )
+        except HTTPError as exc:
+            assert exc is failure
+            assert exc.fp.read() == b"PRIVATE_PROVIDER_BODY"
+            failed_closed = True
+    print(
+        json.dumps(
+            {
+                "calls": len(calls),
+                "failed_closed": failed_closed,
+                "root_level": logging.getLogger().getEffectiveLevel(),
+                "root_handlers": len(logging.getLogger().handlers),
+                "script_logger_handlers": len(logging.getLogger("podcaster.script_gen").handlers),
+                "section_words": [
+                    sum(len(text.split()) for _, text in section.host_turns)
+                    for section in script_gen.parse_script_sections(script, PodcastConfig())
+                ]
+                if script
+                else None,
+            }
+        )
+    )
+
+
 class TestScriptGenConfig:
     def test_ready_when_all_present(self):
         config = _mock_config(ready=True)
@@ -1693,6 +1813,75 @@ class TestScriptQualityContract:
         with pytest.raises(ValueError, match="incomplete|no truncation accepted"):
             generate()
         assert len(requests) == 1
+
+    @pytest.mark.parametrize("mode", ["missing", "metadata", "hostile", "429", "503"])
+    def test_production_default_logging_observes_only_safe_generation_events(self, mode):
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import runpy; "
+                "runpy.run_path('tests/test_script_gen.py')"
+                "['_production_observation_fixture'](" + repr(mode) + ")",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        summary = json.loads(result.stdout)
+        observations = [
+            json.loads(line.split("script_generation_observation ", 1)[1])
+            for line in result.stderr.splitlines()
+            if "script_generation_observation " in line
+        ]
+        assert summary["root_level"] == 30
+        assert summary["calls"] == 2
+        assert len({row["invocation"] for row in observations}) == 1
+        assert all(row["calls_used"] <= row["call_budget"] == 20 for row in observations)
+        assert all(
+            row["requested_tokens"] == 6100
+            for row in observations
+            if row["stage"].endswith(("_before", "_after", "_error"))
+        )
+        assert all(row["deployment"] == "chat" for row in observations)
+        completed = [row for row in observations if row["stage"].endswith("_after")]
+        assert completed[0]["spoken_words"] == 164
+        assert completed[0]["section_count"] == 2
+        assert len(completed[0]["sections"]) == 2
+        if mode in ("429", "503"):
+            error = next(row for row in observations if row["stage"] == "length_error")
+            assert summary["failed_closed"] is True
+            assert len(completed) == 1
+            assert error["calls_used"] == 2
+            assert error["provider_http_status"] == int(mode)
+            assert error["provider_request_id"] == ("request-123" if mode == "429" else None)
+            assert error["provider_retry_after_seconds"] == (17 if mode == "429" else None)
+            assert error["spoken_words"] is None
+            assert error["finish_reason"] is None
+            assert error["usage"]["total_tokens"] is None
+        else:
+            assert summary["failed_closed"] is False
+            repaired = next(row for row in observations if row["stage"] == "length_after")
+            canonical = [row for row in observations if row["stage"] == "final_validation"][-1]
+            assert canonical["spoken_words"] == repaired["spoken_words"] == 1124
+            assert [row["spoken_words"] for row in canonical["sections"]] == summary[
+                "section_words"
+            ]
+            assert repaired["repair_reason"] == "length"
+            assert repaired["finish_reason"] == "stop"
+            assert repaired["model_version"] == ("2026-10-31" if mode == "metadata" else None)
+            assert repaired["usage"]["total_tokens"] == (777 if mode == "metadata" else None)
+            assert repaired["reasoning_tokens"] == (12 if mode == "metadata" else None)
+        assert "PRIVATE_" not in result.stderr
+        assert "secret.example" not in result.stderr
+        assert "source source" not in result.stderr
+        assert "sk-" not in result.stderr
+        assert summary["script_logger_handlers"] == 0
+        assert summary["root_handlers"] == 0
 
     @pytest.mark.parametrize("later_guard", ["ownership", "repository", "section"])
     @pytest.mark.parametrize("valid_final", [True, False])
