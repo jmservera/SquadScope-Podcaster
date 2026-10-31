@@ -1112,6 +1112,7 @@ class _GenerationDiagnostics:
     deployment: str | None
     api_version: str | None
     previous_script: str = ""
+    required_sections: tuple[str, ...] = ()
     invocation: str = field(default_factory=lambda: uuid4().hex)
     calls_used: int = 0
     # Upper bound from existing nested helper ceilings, not additional repair admission.
@@ -1160,11 +1161,6 @@ class _GenerationDiagnostics:
         counts = self.counts(current)
         measured = counts["spoken_words"]
         minimum, maximum = self.word_range if self.word_range else (None, None)
-        titles = tuple(
-            title
-            for line in current.splitlines()
-            if (title := match_section_header(line)) is not None
-        )
         shortfall = (
             max(0, minimum - measured) if minimum is not None and measured is not None else None
         )
@@ -1185,7 +1181,7 @@ class _GenerationDiagnostics:
             + f"Current canonical spoken words: {measured}; "
             f"shortfall: {shortfall}.\n"
             f"Current required ordered section identities:\n{UNTRUSTED_PROMPT_POLICY}\n"
-            f"{fence_json(titles)}\n"
+            f"{fence_json(self.required_sections)}\n"
             "Preserve fixed hosts, ownership voice, repository target/floor and coverage, "
             "visual markers, disclosure, two-to-six sections and at least four host turns "
             "per section. Keep clean short sentences, not a short episode: use enough "
@@ -1522,6 +1518,7 @@ def generate_script(
         deployment=_observed_identifier(config.chat_deployment),
         api_version=_observed_identifier(config.api_version),
         previous_script=previous_script or "",
+        required_sections=required_sections,
     )
 
     token_provider = token_provider or ManagedIdentityTokenCredential().get_token
@@ -1592,6 +1589,7 @@ def generate_script(
         required_sections = tuple(
             section.title for section in parse_script_sections(dialogue, podcast_config)
         )
+        generation.required_sections = required_sections
 
     def _validate_draft_sections(draft_sections):
         remaining = iter(section.title for section in draft_sections)

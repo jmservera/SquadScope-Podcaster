@@ -1514,6 +1514,14 @@ class TestScriptQualityContract:
         with pytest.raises(ValueError, match="section"):
             generate()
         assert len(requests) == 3
+        for request in requests[1:]:
+            contract = request["messages"][-1]["content"].split(
+                "Current required ordered section identities:", 1
+            )[1]
+            identities = json.loads(
+                contract.split("\n" + FENCE_OPEN, 1)[1].split(FENCE_CLOSE, 1)[0]
+            )
+            assert identities == ["Context", "Security limits", "Outlook"]
 
     @pytest.mark.parametrize("delimiter_attempt", [False, True])
     def test_second_length_repair_losslessly_fences_bounded_section_diagnostics(
