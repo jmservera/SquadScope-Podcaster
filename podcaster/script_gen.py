@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from dataclasses import replace as _dataclass_replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Mapping
+from urllib.error import HTTPError
 from urllib.request import Request
 from uuid import uuid4
 
@@ -1224,6 +1225,7 @@ class _GenerationDiagnostics:
         response: Mapping[str, Any] | None = None,
         max_tokens: int | None = None,
         canonical: bool = False,
+        upstream_error: HTTPError | None = None,
     ) -> None:
         response = response or {}
         usage = response.get("usage")
@@ -1235,17 +1237,17 @@ class _GenerationDiagnostics:
         choice = choice if isinstance(choice, dict) else {}
         finish = choice.get("finish_reason")
         record = {
-            "stage": stage,
-            "invocation": self.invocation,
-            "repair_reason": stage.split("_", 1)[0]
+            "stage": _observed_identifier(stage),
+            "invocation": _observed_identifier(self.invocation),
+            "repair_reason": _observed_identifier(stage.split("_", 1)[0])
             if stage.startswith(("ownership_", "repository_", "section_", "length_", "editorial_"))
             else None,
             "call": self.calls_used,
             "call_budget": self.call_budget,
             "calls_used": self.calls_used,
-            "requested_tokens": max_tokens,
-            "deployment": self.deployment,
-            "api_version": self.api_version,
+            "requested_tokens": _observed_integer(max_tokens),
+            "deployment": _observed_identifier(self.deployment),
+            "api_version": _observed_identifier(self.api_version),
             "model": _observed_identifier(response.get("model")),
             "model_version": _observed_identifier(response.get("model_version")),
             "finish_reason": finish
@@ -1258,7 +1260,41 @@ class _GenerationDiagnostics:
             "reasoning_tokens": _observed_integer(details.get("reasoning_tokens")),
             **self.counts(dialogue, canonical=canonical),
         }
-        logger.info("script_generation_observation %s", json.dumps(record, separators=(",", ":")))
+        if upstream_error is not None:
+            headers = upstream_error.headers
+            retry_after = headers.get("Retry-After") if headers is not None else None
+            retry_after = (
+                retry_after.strip(" \t")
+                if isinstance(retry_after, str) and len(retry_after) <= 80
+                else None
+            )
+            record["provider_http_status"] = (
+                upstream_error.code
+                if type(upstream_error.code) is int and 100 <= upstream_error.code <= 599
+                else None
+            )
+            record["provider_request_id"] = (
+                next(
+                    (
+                        safe
+                        for key in ("apim-request-id", "x-request-id", "x-ms-request-id")
+                        if (safe := _observed_identifier(headers.get(key))) is not None
+                    ),
+                    None,
+                )
+                if headers is not None
+                else None
+            )
+            record["provider_retry_after_seconds"] = (
+                int(retry_after)
+                if isinstance(retry_after, str) and re.fullmatch(r"[0-9]{1,9}", retry_after)
+                else None
+            )
+        # Uvicorn's default config leaves application INFO disabled. Only this
+        # allowlisted, bounded event crosses the normal WARNING console threshold.
+        logger.warning(
+            "script_generation_observation %s", json.dumps(record, separators=(",", ":"))
+        )
 
 
 def _request_dialogue(
@@ -1318,7 +1354,12 @@ def _request_dialogue(
             "Content-Type": "application/json",
         },
     )
-    raw_response = transport(request)
+    try:
+        raw_response = transport(request)
+    except HTTPError as exc:
+        if generation is not None:
+            generation.observe(stage + "_error", "", max_tokens=max_tokens, upstream_error=exc)
+        raise
     response = json.loads(raw_response.decode("utf-8"))
     if generation is not None:
         choices = response.get("choices", [])
