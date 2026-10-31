@@ -1375,6 +1375,200 @@ class TestShowIntroPromptLiteral:
 
 class TestGroundedLengthExpansion:
     @pytest.mark.parametrize(
+        "scenario",
+        ["formatted", "spoken21", "envelope", "boolean_index", "ownership", "raw_loss"],
+    )
+    def test_canonical_budget_and_safe_rejection_boundaries(self, scenario, caplog, monkeypatch):
+        import re
+
+        from podcaster.config import EpisodeStyle, ScriptDirections
+
+        config = PodcastConfig()
+        hosts = (config.host_a.name, config.host_b.name)
+        disclosure = config.ai_voice_disclosure
+        requests, insertions, guarded_drafts = [], [], []
+
+        def prose(words, identity):
+            return " ".join([identity, *["evidence"] * (words - 1)])
+
+        def distribute(words, turns):
+            quotient, remainder = divmod(words, turns)
+            return [quotient + (index < remainder) for index in range(turns)]
+
+        # Matches observed numbers only; no production content or section identity.
+        opening = distribute(108 - len(disclosure.split()), 3)
+        lines = [
+            f"{hosts[0]}: {prose(opening[0], 'opening')}",
+            f"{hosts[1]}: {disclosure}",
+            f"{hosts[1]}: {prose(opening[1], 'question')}",
+            f"{hosts[0]}: {prose(opening[2], 'qualification')}",
+        ]
+        ordinal = 0
+        for section, (words, turns) in enumerate(
+            zip([201, 125, 109, 101, 152], [9, 6, 6, 6, 7], strict=True)
+        ):
+            lines.append(f"## Section: Evidence {section}")
+            budgets = (
+                distribute(words - len(disclosure.split()), turns - 1) + [len(disclosure.split())]
+                if section == 4
+                else distribute(words, turns)
+            )
+            for turn, budget in enumerate(budgets):
+                text = prose(budget, f"original-{ordinal}")
+                if section == 4 and turn == turns - 2:
+                    closing = f"Thank you for listening. Find notes at {config.spoken_site}."
+                    text = (
+                        prose(budget - len(closing.split()), f"original-{ordinal}") + " " + closing
+                    )
+                if section == 4 and turn == turns - 1:
+                    text = disclosure
+                lines.append(f"{hosts[ordinal % 2]}: {text}")
+                ordinal += 1
+        snapshot = "\n".join(lines)
+
+        original_guard = script_gen.rewrite_spoken_repo_names
+
+        def guard(dialogue, names):
+            guarded = original_guard(dialogue, names)
+            if "addition-" in dialogue:
+                if scenario == "raw_loss":
+                    guarded = guarded.replace(
+                        "## Section: Evidence 0\n", "## Section: Evidence 0 \n"
+                    )
+                guarded_drafts.append(guarded)
+            return guarded
+
+        monkeypatch.setattr(script_gen, "rewrite_spoken_repo_names", guard)
+
+        def transport(request):
+            body = json.loads(request.data)
+            requests.append(body)
+            content = snapshot
+            if len(requests) == 3:
+                prompt = body["messages"][-1]["content"]
+                blocks = re.findall(
+                    "\n" + re.escape(FENCE_OPEN) + "(.*?)" + re.escape(FENCE_CLOSE), prompt
+                )
+                plan, current = json.loads(blocks[0]), json.loads(blocks[1])
+                assert current == snapshot
+                assert [item["current_words"] for item in plan] == [201, 125, 109, 101, 152]
+                assert [item["add_words"] for item in plan] == [26, 100, 116, 124, 72]
+                assert "Current canonical words: 796; minimum shortfall: 205." in prompt
+                policy = body["messages"][0]["content"]
+                example = json.loads(
+                    policy.split("JSON object of the form ", 1)[1].split("}. ", 1)[0] + "}"
+                )
+                assert example == {
+                    "insertions": [{"section_index": 1, "turns": [f"{hosts[0]}: new speech"]}]
+                }
+                assert "exactly section_index and turns" in policy
+                assert "not a string or boolean" in policy
+                assert "used at most once" in policy
+                assert "single-line strings" in policy
+                assert "20 spoken words over it per section, summed across turns" in policy
+                for item in plan:
+                    budget = item["add_words"]
+                    index = item["section_index"]
+                    if scenario == "spoken21" and index == 1:
+                        budget += 21
+                    text = prose(budget, f"addition-{index}")
+                    if scenario == "formatted" and index == 1:
+                        text = " ".join(
+                            f"` {word} `" if position < 11 else word
+                            for position, word in enumerate(text.split())
+                        )
+                        assert len(text.split()) == 48
+                    if scenario == "ownership" and index == 1:
+                        text = "According to the **article**, a claim."
+                    insertions.append({"section_index": index, "turns": [f"{hosts[0]}: {text}"]})
+                if scenario == "boolean_index":
+                    insertions[0]["section_index"] = True
+                payload = {"insertions": insertions}
+                if scenario == "envelope":
+                    payload["private-raw-marker"] = "do not log this payload"
+                content = json.dumps(payload)
+            return json.dumps(
+                {
+                    "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 123, "completion_tokens": 456, "total_tokens": 579},
+                }
+            ).encode()
+
+        arguments = dict(
+            week="2026-W44",
+            article_title="Synthetic budget evidence",
+            article_url="https://example.com/synthetic",
+            article_content=VALID_ARTICLE_CONTENT + "\n" + snapshot,
+            config=_mock_config(),
+            podcast_config=config,
+            script_directions=ScriptDirections(
+                show_intro="Our synthetic discussion.",
+                cold_open="What counts as useful evidence?",
+                episode_style=EpisodeStyle(
+                    format="8-10 minutes, 1001-1700 spoken words",
+                    segment_order=("Signal", "Noise", "Gap", "Receipts", "Ahead", "Outro"),
+                ),
+            ),
+            token_provider=_fake_token_provider,
+            transport=transport,
+        )
+        if scenario == "formatted":
+            script = generate_script(**arguments)
+            assert (
+                sum(len(text.split()) for text in script_gen.spoken_turns(script, config)) == 1234
+            )
+            original = _format_script(
+                week=arguments["week"],
+                article_url=arguments["article_url"],
+                article_sha256="",
+                dialogue=snapshot,
+                podcast_config=config,
+            )
+            remaining = iter(parse_script_segments(script, config))
+            assert all(turn in remaining for turn in parse_script_segments(original, config))
+            remaining_lines = iter(guarded_drafts[-1].splitlines(keepends=True))
+            assert all(line in remaining_lines for line in snapshot.splitlines(keepends=True))
+            assert "Thank you for listening." in script
+        else:
+            with pytest.raises(script_gen.ScriptQualityError, match="796 spoken words"):
+                generate_script(**arguments)
+
+        assert len(requests) == 3
+        assert all(request["max_tokens"] == 6100 for request in requests)
+        observations = [
+            json.loads(record.message.split("script_generation_observation ", 1)[1])
+            for record in caplog.records
+            if "script_generation_observation " in record.message
+        ]
+        response = next(row for row in observations if row["stage"] == "length_expansion_after")
+        assert response["spoken_words"] is None
+        assert response["usage"]["total_tokens"] == 579
+        rejections = [row for row in observations if row["stage"] == "length_expansion_rejected"]
+        if scenario == "formatted":
+            assert not rejections
+        else:
+            expected = {
+                "spoken21": "section_budget",
+                "envelope": "envelope_keys",
+                "boolean_index": "section_index",
+                "ownership": "canonical_ownership",
+                "raw_loss": "old_raw_loss",
+            }
+            assert rejections[0]["rejection_reason"] == expected[scenario]
+            assert rejections[0]["spoken_words"] == 796
+            assert rejections[0]["shortfall"] == 205
+            assert rejections[0]["candidate_words"] is None
+            if scenario == "spoken21":
+                assert rejections[0]["section_index"] == 1
+                assert rejections[0]["section_words"] == 47
+                assert rejections[0]["section_budget"] == 46
+        diagnostic_text = json.dumps(observations)
+        assert all(
+            marker not in diagnostic_text
+            for marker in ("original-", "addition-", "private-raw-marker", "According to")
+        )
+
+    @pytest.mark.parametrize(
         "result",
         [
             "valid",
@@ -1731,6 +1925,30 @@ class TestGroundedLengthExpansion:
             and '"stage":"length_expansion_after"' in record.message
         ]
         assert expansions[0]["spoken_words"] is None
+        rejection_codes = [
+            json.loads(record.message.split("script_generation_observation ", 1)[1])[
+                "rejection_reason"
+            ]
+            for record in caplog.records
+            if "script_generation_observation " in record.message
+            and '"stage":"length_expansion_rejected"' in record.message
+        ]
+        expected_codes = {
+            "replacement": "json_decode",
+            "nonhost": "host_or_raw_duplicate",
+            "oversize": "section_budget",
+            "repeated": "host_or_raw_duplicate",
+            "ownership": "turn_content",
+            "newurl": "turn_content",
+            "duplicate": "section_index",
+            "guardloss": "canonical_duplicate",
+            "incomplete": "incomplete",
+            "canonical_candidate_case_repeat": "canonical_duplicate",
+            "canonical_opening_loss": "canonical_duplicate",
+            "canonical_ownership_after_guard": "canonical_ownership",
+        }
+        if result in expected_codes:
+            assert rejection_codes == [expected_codes[result]]
 
 
 class TestScriptQualityContract:

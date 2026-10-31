@@ -1129,6 +1129,33 @@ def _observed_identifier(value: Any) -> str | None:
     return None
 
 
+_EXPANSION_REJECTION_CODES = frozenset(
+    (
+        "response_chars",
+        "json_decode",
+        "envelope_keys",
+        "insertions_list",
+        "insertion_keys",
+        "section_index",
+        "turns_list",
+        "turn_content",
+        "host_or_raw_duplicate",
+        "canonical_turn_or_duplicate",
+        "section_budget",
+        "merged_constraints",
+        "canonical_duplicate",
+        "old_canonical_loss",
+        "old_raw_loss",
+        "canonical_ownership",
+        "final_range",
+        "final_sections",
+        "no_choices",
+        "incomplete",
+        "guard_error",
+    )
+)
+
+
 @dataclass
 class _GenerationDiagnostics:
     podcast_config: PodcastConfig
@@ -1231,6 +1258,11 @@ class _GenerationDiagnostics:
         max_tokens: int | None = None,
         canonical: bool = False,
         upstream_error: HTTPError | None = None,
+        rejection_reason: str | None = None,
+        section_index: int | None = None,
+        section_words: int | None = None,
+        section_budget: int | None = None,
+        candidate_words: int | None = None,
     ) -> None:
         response = response or {}
         usage = response.get("usage")
@@ -1265,6 +1297,20 @@ class _GenerationDiagnostics:
             "reasoning_tokens": _observed_integer(details.get("reasoning_tokens")),
             **self.counts(dialogue, canonical=canonical),
         }
+        if rejection_reason in _EXPANSION_REJECTION_CODES:
+            measured = record["spoken_words"]
+            record.update(
+                rejection_reason=rejection_reason,
+                section_index=_observed_integer(section_index),
+                section_words=_observed_integer(section_words),
+                section_budget=_observed_integer(section_budget),
+                candidate_words=_observed_integer(candidate_words),
+                minimum=self.word_range[0] if self.word_range else None,
+                maximum=self.word_range[1] if self.word_range else None,
+                shortfall=max(0, self.word_range[0] - measured)
+                if self.word_range and measured is not None
+                else None,
+            )
         if upstream_error is not None:
             headers = upstream_error.headers
             retry_after = headers.get("Retry-After") if headers is not None else None
@@ -1381,9 +1427,23 @@ def _request_dialogue(
         )
     choices = response.get("choices", [])
     if not choices:
+        if generation is not None and stage == "length_expansion":
+            generation.observe(
+                "length_expansion_rejected",
+                current,
+                response=response,
+                rejection_reason="no_choices",
+            )
         raise ValueError("LLM returned no choices for script generation")
     finish_reason = choices[0].get("finish_reason")
     if finish_reason not in (None, "stop"):
+        if generation is not None and stage == "length_expansion":
+            generation.observe(
+                "length_expansion_rejected",
+                current,
+                response=response,
+                rejection_reason="incomplete",
+            )
         raise ScriptQualityError("incomplete", budget=max_tokens)
     logger.info("script completion accepted max_tokens=%d", max_tokens)
     return choices[0].get("message", {}).get("content", "").strip()
@@ -1545,17 +1605,23 @@ def _merge_length_expansion(
     generation: _GenerationDiagnostics,
 ) -> str | None:
     """Accept bounded host-turn insertions only; no existing line is replaceable."""
+
+    def reject(reason: str, **numbers: int | None) -> None:
+        generation.observe(
+            "length_expansion_rejected", dialogue, rejection_reason=reason, **numbers
+        )
+
     if len(response) > MAX_SCRIPT_CHARS:
-        return None
+        return reject("response_chars")
     try:
         data = json.loads(response)
     except (ValueError, TypeError):
-        return None
+        return reject("json_decode")
     if not isinstance(data, dict) or set(data) != {"insertions"}:
-        return None
+        return reject("envelope_keys")
     insertions = data["insertions"]
     if not isinstance(insertions, list) or not 0 < len(insertions) <= len(plan):
-        return None
+        return reject("insertions_list")
     allowed = {item["section_index"]: item for item in plan}
     additions = {}
     hosts = (generation.podcast_config.host_a.name, generation.podcast_config.host_b.name)
@@ -1567,12 +1633,12 @@ def _merge_length_expansion(
     disclosure = generation.podcast_config.ai_voice_disclosure.strip()
     for insertion in insertions:
         if not isinstance(insertion, dict) or set(insertion) != {"section_index", "turns"}:
-            return None
+            return reject("insertion_keys")
         index, turns = insertion["section_index"], insertion["turns"]
         if type(index) is not int or index not in allowed or index in additions:
-            return None
+            return reject("section_index", section_index=_observed_integer(index))
         if not isinstance(turns, list) or not turns:
-            return None
+            return reject("turns_list", section_index=index)
         words = 0
         for turn in turns:
             if (
@@ -1582,22 +1648,27 @@ def _merge_length_expansion(
                 or re.search(r"https?://", turn, re.IGNORECASE)
                 or find_violations(turn)
             ):
-                return None
+                return reject("turn_content", section_index=index)
             label, separator, text = turn.partition(":")
             if not separator or label not in hosts or not text.strip() or text.strip() in existing:
-                return None
+                return reject("host_or_raw_duplicate", section_index=index)
             canonical_turns = [
                 speech
                 for speech in spoken_turns(generation.canonicalize(turn), generation.podcast_config)
                 if speech != disclosure
             ]
             if len(canonical_turns) != 1 or canonical_turns[0].casefold() in canonical_existing:
-                return None
+                return reject("canonical_turn_or_duplicate", section_index=index)
             existing.add(text.strip())
             canonical_existing.add(canonical_turns[0].casefold())
-            words += len(text.split())
+            words += len(canonical_turns[0].split())
         if words > allowed[index]["add_words"] + 20:
-            return None
+            return reject(
+                "section_budget",
+                section_index=index,
+                section_words=words,
+                section_budget=allowed[index]["add_words"] + 20,
+            )
         additions[index] = "\n".join(turns) + "\n"
     lines = dialogue.splitlines(keepends=True)
     for index in sorted(additions, key=lambda key: allowed[key]["before_line"], reverse=True):
@@ -1610,7 +1681,7 @@ def _merge_length_expansion(
         or not before < after <= generation.word_range[1]
         or find_violations(merged)
     ):
-        return None
+        return reject("merged_constraints", candidate_words=after)
     return merged
 
 
@@ -2051,6 +2122,12 @@ def generate_script(
                 else "final canonical script section constraints failed"
             )
             if attempt == MAX_LENGTH_REPAIRS:
+                generation.observe(
+                    "final_rejected",
+                    dialogue,
+                    rejection_reason="final_sections" if section_error else "final_range",
+                    candidate_words=count,
+                )
                 raise ScriptQualityError(
                     "final_sections" if section_error else "final_range",
                     count=count,
@@ -2064,13 +2141,27 @@ def generate_script(
                 expansion_policy = (
                     "\nLENGTH EXPANSION OUTPUT OVERRIDE: For this request only, do not rewrite "
                     "the dialogue. Return ONLY a JSON object of the form "
-                    '{"insertions":[{"section_index":1,"turns":["HostName: new speech"]}]}. '
+                    '{"insertions":[{"section_index":1,"turns":['
+                    + json.dumps(f"{podcast_config.host_a.name}: new speech")
+                    + "]}]}. "
+                    "The envelope has exactly the insertions key, with a nonempty list no "
+                    "longer than the plan. Each entry has exactly section_index and turns; "
+                    "do not copy title, current_words, add_words or before_line. "
+                    "Each section_index is a JSON integer (not a string or boolean), "
+                    "a planned one-based position used at most once. "
+                    "Each turns value is a nonempty list of single-line strings using "
+                    "an exact configured host label and colon followed by nonempty speech, "
+                    "without control characters. No code fences or extra keys. "
+                    "Never duplicate old or new speech, including after canonical Markdown "
+                    "normalization and case-insensitive comparison. "
                     "Use only the two configured hosts. Add grounded, substantive turns at "
                     "the planned locations before existing closing turns. All existing speech, "
                     "sections, visual markers and outside-section opening are immutable. "
                     "Cover source contrasts, qualifications and evidence limits not already "
                     "explained there; never repeat facts, pad, invent support or add new URLs. "
-                    "Aim for each planned add_words budget (at most 20 words over it). "
+                    "Aim for each planned add_words canonical spoken-word budget "
+                    "(at most 20 spoken words over it per section, summed across turns; "
+                    "host labels and unspoken Markdown do not count). "
                     "Brief sentences and continuity must not compress the episode. "
                     "This overrides the complete-dialogue output format, not grounding rules.\n"
                 )
@@ -2116,7 +2207,15 @@ def generate_script(
                 if expanded is not None:
                     from podcaster.episode import parse_script_segments
 
-                    guarded = _apply_dialogue_guards(expanded)
+                    try:
+                        guarded = _apply_dialogue_guards(expanded)
+                    except (ScriptQualityError, ValueError):
+                        generation.observe(
+                            "length_expansion_rejected",
+                            dialogue,
+                            rejection_reason="guard_error",
+                        )
+                        raise
                     candidate = _canonicalize_observation(guarded)
                     original_turns = parse_script_segments(script, podcast_config)
                     original = iter(original_turns)
@@ -2132,20 +2231,35 @@ def generate_script(
                         else:
                             seen.add(turn[1].casefold())
                     remaining = iter(guarded.splitlines(keepends=True))
-                    if (
-                        not find_violations(
-                            "\n".join(
-                                f"Host: {speech}"
-                                for speech in spoken_turns(candidate, podcast_config)
-                            )
+                    canonical_ownership = find_violations(
+                        "\n".join(
+                            f"Host: {speech}" for speech in spoken_turns(candidate, podcast_config)
                         )
-                        and canonical_preserved
-                        and expected is None
-                        and all(line in remaining for line in dialogue.splitlines(keepends=True))
-                    ):
+                    )
+                    raw_preserved = all(
+                        line in remaining for line in dialogue.splitlines(keepends=True)
+                    )
+                    rejection = (
+                        "canonical_ownership"
+                        if canonical_ownership
+                        else "canonical_duplicate"
+                        if not canonical_preserved
+                        else "old_canonical_loss"
+                        if expected is not None
+                        else "old_raw_loss"
+                        if not raw_preserved
+                        else None
+                    )
+                    if rejection is None:
                         dialogue = guarded
                         script = candidate
                         generation.observe("length_expansion_merged", dialogue)
+                    else:
+                        generation.observe(
+                            "length_expansion_rejected",
+                            dialogue,
+                            rejection_reason=rejection,
+                        )
                 continue
             section_instruction = (
                 _build_section_repair_instruction(section_error, required_sections) + "\n"
