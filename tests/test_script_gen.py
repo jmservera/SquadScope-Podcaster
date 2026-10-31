@@ -1514,11 +1514,21 @@ class TestScriptQualityContract:
         with pytest.raises(ValueError, match="section"):
             generate()
         assert len(requests) == 3
+        for request in requests[1:]:
+            contract = request["messages"][-1]["content"].split(
+                "Current required ordered section identities:", 1
+            )[1]
+            identities = json.loads(
+                contract.split("\n" + FENCE_OPEN, 1)[1].split(FENCE_CLOSE, 1)[0]
+            )
+            assert identities == ["Context", "Security limits", "Outlook"]
 
     @pytest.mark.parametrize("delimiter_attempt", [False, True])
     def test_second_length_repair_losslessly_fences_bounded_section_diagnostics(
         self, delimiter_attempt
     ):
+        import re
+
         from podcaster.sanitization import FENCE_CLOSE, FENCE_OPEN
 
         title = "NIBBLER_CANARY"
@@ -1544,7 +1554,13 @@ class TestScriptQualityContract:
         fenced, instructions = data.split(FENCE_CLOSE, 1)
         assert "NIBBLER_CANARY" in fenced
         assert title in json.loads(fenced)
-        assert "NIBBLER_CANARY" not in instructions.split("Fix ONLY", 1)[1]
+        trusted_instructions = re.sub(
+            re.escape(FENCE_OPEN) + ".*?" + re.escape(FENCE_CLOSE),
+            "",
+            instructions.split("Fix ONLY", 1)[1],
+            flags=re.DOTALL,
+        )
+        assert "NIBBLER_CANARY" not in trusted_instructions
         assert FENCE_OPEN not in fenced
         assert "Repair failed final script constraints" in instructions
         identities = instructions.split("REQUIRED ORDERED SECTION IDENTITIES", 1)[1]
@@ -1677,3 +1693,235 @@ class TestScriptQualityContract:
         with pytest.raises(ValueError, match="incomplete|no truncation accepted"):
             generate()
         assert len(requests) == 1
+
+    @pytest.mark.parametrize("later_guard", ["ownership", "repository", "section"])
+    @pytest.mark.parametrize("valid_final", [True, False])
+    def test_shared_contract_survives_real_last_writers_and_observes_actual_metadata(
+        self, later_guard, valid_final, caplog
+    ):
+        import re
+
+        from podcaster.config import EpisodeStyle, ScriptDirections
+        from podcaster.sections import parse_script_sections
+
+        config = PodcastConfig(ai_voice_disclosure="Synthetic voices.")
+        beats = (
+            "The Signal",
+            "The Noise Check",
+            "The Gap",
+            "Receipts Round",
+            "Week Ahead",
+            "Outro",
+        )
+        configured_beats = (
+            ("Cold Open", "Show Intro", *beats)
+            if later_guard == "ownership"
+            else (() if later_guard == "repository" else beats)
+        )
+        expected_target_titles = (
+            [
+                "Show Intro / Cold Open",
+                "The Signal",
+                "The Noise Check",
+                "The Gap",
+                "Receipts Round",
+                "Week Ahead / Outro",
+            ]
+            if later_guard == "ownership"
+            else (
+                ["Source contrasts", "Evidence limits"]
+                if later_guard == "repository"
+                else list(beats)
+            )
+        )
+
+        def draft(words, *, defect=None):
+            lines = []
+            for index, title in enumerate(("Source contrasts", "Evidence limits")):
+                lines.append(f"## Section: {title}")
+                if index == 0 and defect != "repository":
+                    lines.extend(
+                        f"## Visual: repo https://github.com/org/tool-{number}"
+                        for number in range(1, 7)
+                    )
+                hosts = (
+                    ("Theo",)
+                    if defect == "section" and index == 1
+                    else ("Theo", "Vera", "Theo", "Vera")
+                )
+                for host in hosts:
+                    lines.append(f"{host}: " + "source " * words)
+            if defect == "ownership":
+                lines[-1] += " According to the article, this needs scrutiny."
+            return "\n".join(lines)
+
+        short = draft(20)
+        if later_guard == "section":
+            short = short.replace("source ", "`[two source words](https://example.com/a b c)` ", 1)
+        previous = (
+            _format_script(
+                week="2026-W44",
+                article_url="https://example.com/w44",
+                article_sha256="",
+                dialogue=short,
+                podcast_config=config,
+                generated_at=datetime.now(timezone.utc),
+            )
+            if later_guard == "section"
+            else None
+        )
+        long_defective = draft(250 if later_guard == "section" else 140, defect=later_guard)
+        final = draft(140) if valid_final else short
+        dialogues = [short, long_defective, final]
+        if not valid_final and later_guard != "section":
+            dialogues.extend([long_defective, final])
+        requests = []
+        caplog.set_level("INFO", logger="podcaster.script_gen")
+
+        def transport(request):
+            body = json.loads(request.data)
+            requests.append(body)
+            response = {
+                "choices": [
+                    {"message": {"content": dialogues[len(requests) - 1]}, "finish_reason": "stop"}
+                ],
+                "raw_unlogged_canary": "PRIVATE_RESPONSE https://secret.example/?token=hidden",
+            }
+            if len(requests) % 2 == 0:
+                response.update(
+                    model="gpt-test-2026-10-31",
+                    model_version="2026-10-31",
+                    usage={
+                        "prompt_tokens": 321,
+                        "completion_tokens": 456,
+                        "total_tokens": 777,
+                        "completion_tokens_details": {"reasoning_tokens": 12},
+                    },
+                )
+            return json.dumps(response).encode()
+
+        def generate():
+            return generate_script(
+                week="2026-W44",
+                article_title="Unlogged article title",
+                article_url="https://example.com/w44",
+                article_content=(
+                    _article_with_repos(6)
+                    + "\n##"
+                    + " " * 1200
+                    + "\n"
+                    + "\n## Source contrasts\nThese projects have different tradeoffs."
+                    + "\n## Evidence limits\nWatch for source-backed maintenance evidence."
+                    + "\n## References\nhttps://github.com/org/tool-1"
+                ),
+                config=_mock_config(),
+                podcast_config=config,
+                script_directions=ScriptDirections(
+                    show_intro="The show." if later_guard == "ownership" else "",
+                    cold_open="An evidence-backed question." if later_guard == "ownership" else "",
+                    episode_style=EpisodeStyle(
+                        format="8-10 minutes, 1001-1700 spoken words",
+                        tone="Concise, not rushed",
+                        segment_order=configured_beats,
+                    ),
+                ),
+                token_provider=_fake_token_provider,
+                transport=transport,
+                previous_script=previous,
+                repair_feedback="Remove unsupported assertions."
+                if later_guard == "section"
+                else None,
+            )
+
+        if valid_final:
+            script = generate()
+            assert (
+                1001
+                <= sum(len(turn.split()) for turn in script_gen.spoken_turns(script, config))
+                <= 1700
+            )
+        else:
+            with pytest.raises(script_gen.ScriptQualityError, match="final canonical.*exhausted 2"):
+                generate()
+        assert len(requests) == len(dialogues)
+
+        allocations = []
+        for index, request in enumerate(requests):
+            assert request["max_tokens"] == 6100
+            assert "~6-minute" not in request["messages"][0]["content"]
+            prompt = request["messages"][-1]["content"]
+            assert "Hard canonical spoken-word range: 1001-1700 inclusive" in prompt
+            block = prompt.split("Ordered grounded section targets;", 1)[1]
+            targets = json.loads(block.split("\n" + FENCE_OPEN, 1)[1].split(FENCE_CLOSE, 1)[0])
+            allocations.append(targets)
+            assert [title for title, _ in targets] == expected_target_titles
+            assert 1001 <= sum(words for _, words in targets) <= 1700
+            assert "Expand ONLY from supplied source contrasts" in prompt
+            assert "Do not pad with repeated claims or invent facts" in prompt
+            if index or later_guard == "section":
+                current = dialogues[index - 1] if index else previous
+                canonical = (
+                    current
+                    if index == 0
+                    else _format_script(
+                        week="2026-W44",
+                        article_url="https://example.com/w44",
+                        article_sha256="",
+                        dialogue=current,
+                        podcast_config=config,
+                        generated_at=datetime.now(timezone.utc),
+                    )
+                )
+                count = sum(
+                    len(turn.split()) for turn in script_gen.spoken_turns(canonical, config)
+                )
+                assert (
+                    f"Current canonical spoken words: {count}; shortfall: {max(0, 1001 - count)}"
+                    in prompt
+                )
+        assert all(targets == allocations[0] for targets in allocations)
+
+        observations = [
+            json.loads(record.message.split("script_generation_observation ", 1)[1])
+            for record in caplog.records
+            if record.message.startswith("script_generation_observation ")
+        ]
+        completions = [row for row in observations if row["stage"].endswith("_after")]
+        assert len(completions) == len(requests)
+        assert len({row["invocation"] for row in observations}) == 1
+        assert [row["calls_used"] for row in completions] == list(range(1, len(requests) + 1))
+        assert all(row["calls_used"] <= row["call_budget"] for row in observations)
+        assert completions[0]["model"] is None
+        assert all(value is None for value in completions[0]["usage"].values())
+        assert completions[0]["model_version"] is None
+        assert completions[1]["model"] == "gpt-test-2026-10-31"
+        assert completions[1]["model_version"] == "2026-10-31"
+        assert completions[1]["usage"] == {
+            "prompt_tokens": 321,
+            "completion_tokens": 456,
+            "total_tokens": 777,
+        }
+        assert completions[1]["reasoning_tokens"] == 12
+        for row, dialogue in zip(completions, dialogues):
+            canonical = _format_script(
+                week="2026-W44",
+                article_url="",
+                article_sha256="",
+                dialogue=dialogue,
+                podcast_config=config,
+                generated_at=datetime.now(timezone.utc),
+            )
+            assert row["spoken_words"] == sum(
+                len(turn.split()) for turn in script_gen.spoken_turns(canonical, config)
+            )
+            sections = parse_script_sections(canonical, config)
+            assert [item["spoken_words"] for item in row["sections"]] == [
+                sum(len(text.split()) for _, text in section.host_turns) for section in sections
+            ]
+            assert len(json.dumps(row)) < 2000
+            assert row["finish_reason"] == "stop"
+            assert row["deployment"] == "chat"
+        logged = json.dumps(observations)
+        assert not re.search(
+            r"PRIVATE_RESPONSE|secret\.example|source source|Source contrasts", logged
+        )

@@ -17,11 +17,12 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from dataclasses import replace as _dataclass_replace
 from datetime import datetime, timezone
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 from urllib.request import Request
+from uuid import uuid4
 
 from podcaster.article_validation import ARTICLE_MIN_CHARS, validate_article_inputs
 from podcaster.config import HistoricalContext, HostConfig, PodcastConfig, ScriptDirections
@@ -56,8 +57,8 @@ from podcaster.script_plan import (
 )
 from podcaster.sections import (
     SectionValidationError,
+    match_section_header,
     parse_script_sections,
-    sections_to_metadata,
     validate_sections,
 )
 from podcaster.storage import ManagedIdentityTokenCredential
@@ -445,6 +446,7 @@ def _enforce_required_repo_coverage(
     transport: Transport,
     podcast_config: PodcastConfig,
     max_tokens: int = SCRIPT_COMPLETION_MAX_TOKENS,
+    generation: _GenerationDiagnostics | None = None,
 ) -> str:
     """Run one bounded LLM repair if visual repo coverage is below the floor."""
 
@@ -473,7 +475,13 @@ def _enforce_required_repo_coverage(
             },
         ]
         repaired = _request_dialogue(
-            conversation, url=url, token=token, transport=transport, max_tokens=max_tokens
+            conversation,
+            url=url,
+            token=token,
+            transport=transport,
+            max_tokens=max_tokens,
+            generation=generation,
+            stage="repository",
         )
         if repaired:
             dialogue = _ensure_repo_feature_header(repaired, checklist)
@@ -691,7 +699,7 @@ def _build_episode_structure(directions: "ScriptDirections", podcast_config: Pod
     )
 
 
-def _build_section_guidance() -> str:
+def _build_section_guidance(directions: ScriptDirections | None = None) -> str:
     """Build the SECTION STRUCTURE guidance block (#417).
 
     Instructs the LLM to divide the episode into a small number of clearly
@@ -699,9 +707,15 @@ def _build_section_guidance() -> str:
     so the video can show title cards at the boundaries and the hosts have
     natural transition points.
     """
+    pacing = (
+        "following the caller's duration/pacing guidance; the explicit spoken-word "
+        "range is authoritative"
+        if directions and directions.episode_style.format
+        else "for a ~6-minute episode"
+    )
     return (
         "\nSECTION STRUCTURE (REQUIRED — for video title cards and host transitions):\n"
-        "- Divide the episode into 3-5 SECTIONS for a ~6-minute episode (never fewer "
+        f"- Divide the episode into 3-5 SECTIONS {pacing} (never fewer "
         "than 2 or more than 6).\n"
         "- Begin each section with a non-spoken header line on its own line: "
         '"## Section: <Title>".\n'
@@ -964,7 +978,7 @@ def _build_system_prompt(
     )
     base += _build_historical_context_block(resolved_historical_context)
 
-    base += _build_section_guidance()
+    base += _build_section_guidance(directions)
     base += _build_humms_guidance()
     base += build_visual_marker_guidance()
 
@@ -1048,6 +1062,205 @@ def _build_user_prompt(
     return prompt
 
 
+def _section_word_targets(
+    directions: ScriptDirections | None, article: str, bounds: tuple[int, int] | None
+) -> tuple[tuple[str, int], ...]:
+    """Budget ordered caller beats, falling back to source headings, without adding facts."""
+    if bounds is None:
+        return ()
+    beats = list(directions.episode_style.segment_order) if directions else []
+    beats = [beat.strip() for beat in beats if beat.strip()]
+    opening = []
+    if directions:
+        if directions.show_intro:
+            opening.append("Show Intro")
+        if directions.cold_open or any(
+            beat.lower() in _COLD_OPEN_SEGMENT_ALIASES for beat in beats
+        ):
+            opening.append("Cold Open")
+        beats = [
+            beat
+            for beat in beats
+            if beat.lower() not in _SHOW_INTRO_SEGMENT_ALIASES
+            and beat.lower() not in _COLD_OPEN_SEGMENT_ALIASES
+        ]
+    if not beats:
+        for line in article.splitlines():
+            marks = 3 if line.startswith("###") else 2
+            if not line.startswith("#" * marks):
+                continue
+            rest = line[marks:]
+            if not rest or not rest[0].isspace():
+                continue
+            title = rest.strip()
+            if title and title.lower() not in ("references", "sources", "links"):
+                beats.append(title)
+    if not beats:
+        beats = ["Source discussion", "Evidence limits and what to watch"]
+    # Adjacent beats remain in source/caller order even when they share a title card.
+    groups = min(5 if opening else 6, len(beats))
+    identities = [
+        " / ".join(beats[index * len(beats) // groups : (index + 1) * len(beats) // groups])
+        for index in range(groups)
+    ]
+    target = bounds[0] + (bounds[1] - bounds[0]) // 3
+    # The strict episode structure owns opening order. Share one modest opening
+    # budget rather than assigning a full discussion section to a short cold open.
+    opening_words = max(1, target // 10) if opening else 0
+    quotient, remainder = divmod(target - opening_words, groups)
+    targets = tuple(
+        (title, quotient + (index < remainder)) for index, title in enumerate(identities)
+    )
+    return ((" / ".join(opening), opening_words), *targets) if opening else targets
+
+
+def _observed_integer(value: Any) -> int | None:
+    return value if type(value) is int and 0 <= value <= 10**9 else None
+
+
+def _observed_identifier(value: Any) -> str | None:
+    if (
+        isinstance(value, str)
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", value)
+        and not value.lower().startswith(("sk-", "ghp_", "github_pat_", "eyj"))
+    ):
+        return value
+    return None
+
+
+@dataclass
+class _GenerationDiagnostics:
+    podcast_config: PodcastConfig
+    canonicalize: Callable[[str], str]
+    word_range: tuple[int, int] | None
+    targets: tuple[tuple[str, int], ...]
+    deployment: str | None
+    api_version: str | None
+    previous_script: str = ""
+    required_sections: tuple[str, ...] = ()
+    invocation: str = field(default_factory=lambda: uuid4().hex)
+    calls_used: int = 0
+    # Upper bound from existing nested helper ceilings, not additional repair admission.
+    call_budget: int = (
+        1
+        + 2 * MAX_OWNERSHIP_REPAIRS
+        + MAX_REPO_COVERAGE_REPAIRS
+        + (MAX_SECTION_REPAIRS + MAX_LENGTH_REPAIRS)
+        * (1 + 2 * MAX_OWNERSHIP_REPAIRS + MAX_REPO_COVERAGE_REPAIRS)
+    )
+
+    def counts(self, dialogue: str, *, canonical: bool = False) -> dict[str, Any]:
+        if not dialogue:
+            return {"spoken_words": None, "host_turns": None, "sections": []}
+        if len(dialogue) > MAX_SCRIPT_CHARS + 4000:
+            return {"spoken_words": None, "host_turns": None, "sections": []}
+        script = dialogue if canonical else self.canonicalize(dialogue)
+        turns = spoken_turns(script, self.podcast_config)
+        # Diagnostic-only copy: the parser's own informational log must not repeat
+        # generated titles. Speech and section boundaries remain untouched.
+        diagnostic_lines = []
+        section_count = 0
+        for line in script.splitlines():
+            if match_section_header(line) is not None:
+                section_count += 1
+                line = "## Section: diagnostic"
+            if section_count <= 6:
+                diagnostic_lines.append(line)
+        diagnostic_script = "\n".join(diagnostic_lines)
+        sections = parse_script_sections(diagnostic_script, self.podcast_config)
+        return {
+            "spoken_words": sum(len(turn.split()) for turn in turns),
+            "host_turns": len(turns),
+            "sections": [
+                {
+                    "index": index + 1,
+                    "spoken_words": sum(len(text.split()) for _, text in section.host_turns),
+                    "host_turns": section.host_turn_count,
+                }
+                for index, section in enumerate(sections[:6])
+            ],
+            "section_count": section_count,
+        }
+
+    def constraint(self, current: str, *, canonical: bool = False) -> str:
+        counts = self.counts(current, canonical=canonical)
+        measured = counts["spoken_words"]
+        minimum, maximum = self.word_range if self.word_range else (None, None)
+        shortfall = (
+            max(0, minimum - measured) if minimum is not None and measured is not None else None
+        )
+        allocation = (
+            f"Hard canonical spoken-word range: {minimum}-{maximum} inclusive.\n"
+            f"Ordered grounded section targets; total={sum(words for _, words in self.targets)}:\n"
+            f"{UNTRUSTED_PROMPT_POLICY}\n{fence_json(self.targets)}\n"
+            "These are spoken budgets, not factual assertions or permission to omit beats. "
+            "Map adjacent beats to the existing section identities when they share a section; "
+            "retain all beats in order. Include opening/disclosure and close "
+            "within these budgets.\n"
+            if self.word_range
+            else ""
+        )
+        return (
+            "\nSHARED WHOLE-DIALOGUE CONTRACT (applies to this replacement too):\n"
+            + allocation
+            + f"Current canonical spoken words: {measured}; "
+            f"shortfall: {shortfall}.\n"
+            f"Current required ordered section identities:\n{UNTRUSTED_PROMPT_POLICY}\n"
+            f"{fence_json(self.required_sections)}\n"
+            "Preserve fixed hosts, ownership voice, repository target/floor and coverage, "
+            "visual markers, disclosure, two-to-six sections and at least four host turns "
+            "per section. Keep clean short sentences, not a short episode: use enough "
+            "substantive turns to reach the total. Expand ONLY from supplied source contrasts, "
+            "caveats, evidence limits, what-to-watch and explicitly framed questions. "
+            "Do not pad with repeated claims or invent facts, incidence, adoption or novelty. "
+            "Preserve grounding and completion; return the complete dialogue, never a patch.\n"
+        )
+
+    def observe(
+        self,
+        stage: str,
+        dialogue: str,
+        *,
+        response: Mapping[str, Any] | None = None,
+        max_tokens: int | None = None,
+        canonical: bool = False,
+    ) -> None:
+        response = response or {}
+        usage = response.get("usage")
+        usage = usage if isinstance(usage, dict) else {}
+        details = usage.get("completion_tokens_details")
+        details = details if isinstance(details, dict) else {}
+        choices = response.get("choices")
+        choice = choices[0] if isinstance(choices, list) and choices else {}
+        choice = choice if isinstance(choice, dict) else {}
+        finish = choice.get("finish_reason")
+        record = {
+            "stage": stage,
+            "invocation": self.invocation,
+            "repair_reason": stage.split("_", 1)[0]
+            if stage.startswith(("ownership_", "repository_", "section_", "length_", "editorial_"))
+            else None,
+            "call": self.calls_used,
+            "call_budget": self.call_budget,
+            "calls_used": self.calls_used,
+            "requested_tokens": max_tokens,
+            "deployment": self.deployment,
+            "api_version": self.api_version,
+            "model": _observed_identifier(response.get("model")),
+            "model_version": _observed_identifier(response.get("model_version")),
+            "finish_reason": finish
+            if finish in ("stop", "length", "content_filter", "tool_calls")
+            else None,
+            "usage": {
+                key: _observed_integer(usage.get(key))
+                for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+            },
+            "reasoning_tokens": _observed_integer(details.get("reasoning_tokens")),
+            **self.counts(dialogue, canonical=canonical),
+        }
+        logger.info("script_generation_observation %s", json.dumps(record, separators=(",", ":")))
+
+
 def _request_dialogue(
     messages: list[dict[str, str]],
     *,
@@ -1055,6 +1268,8 @@ def _request_dialogue(
     token: str,
     transport: Transport,
     max_tokens: int = SCRIPT_COMPLETION_MAX_TOKENS,
+    generation: _GenerationDiagnostics | None = None,
+    stage: str = "draft",
 ) -> str:
     """Post a chat-completion request and return the stripped assistant content.
 
@@ -1062,6 +1277,32 @@ def _request_dialogue(
     string is returned as-is so callers can decide whether that is fatal.
     """
 
+    if generation is not None:
+        current_is_canonical = False
+        current = next(
+            (
+                message["content"]
+                for message in reversed(messages)
+                if message["role"] == "assistant"
+            ),
+            "",
+        )
+        if not current and stage == "editorial":
+            current = generation.previous_script
+            current_is_canonical = True
+        generation.observe(
+            stage + "_before", current, max_tokens=max_tokens, canonical=current_is_canonical
+        )
+        if generation.word_range is not None:
+            messages = [
+                *messages[:-1],
+                {
+                    **messages[-1],
+                    "content": messages[-1]["content"]
+                    + generation.constraint(current, canonical=current_is_canonical),
+                },
+            ]
+        generation.calls_used += 1
     payload = {
         "messages": messages,
         "temperature": 0.8,
@@ -1079,17 +1320,22 @@ def _request_dialogue(
     )
     raw_response = transport(request)
     response = json.loads(raw_response.decode("utf-8"))
+    if generation is not None:
+        choices = response.get("choices", [])
+        content = choices[0].get("message", {}).get("content", "") if choices else ""
+        generation.observe(
+            stage + "_after",
+            content if isinstance(content, str) else "",
+            response=response,
+            max_tokens=max_tokens,
+        )
     choices = response.get("choices", [])
     if not choices:
         raise ValueError("LLM returned no choices for script generation")
     finish_reason = choices[0].get("finish_reason")
     if finish_reason not in (None, "stop"):
         raise ScriptQualityError("incomplete", budget=max_tokens)
-    logger.info(
-        "script completion finish_reason=%s max_tokens=%d",
-        finish_reason or "unspecified",
-        max_tokens,
-    )
+    logger.info("script completion accepted max_tokens=%d", max_tokens)
     return choices[0].get("message", {}).get("content", "").strip()
 
 
@@ -1101,6 +1347,7 @@ def _enforce_ownership_tone(
     token: str,
     transport: Transport,
     max_tokens: int = SCRIPT_COMPLETION_MAX_TOKENS,
+    generation: _GenerationDiagnostics | None = None,
 ) -> str:
     """Validate and, if needed, repair host ownership tone (#418).
 
@@ -1133,7 +1380,13 @@ def _enforce_ownership_tone(
             {"role": "user", "content": build_repair_instruction(violations)},
         ]
         repaired = _request_dialogue(
-            conversation, url=url, token=token, transport=transport, max_tokens=max_tokens
+            conversation,
+            url=url,
+            token=token,
+            transport=transport,
+            max_tokens=max_tokens,
+            generation=generation,
+            stage="ownership",
         )
         if repaired:
             dialogue = repaired
@@ -1278,6 +1531,27 @@ def generate_script(
         required_repo_checklist=required_repo_checklist,
     )
 
+    def _canonicalize_observation(draft: str) -> str:
+        return _format_script(
+            week=safe_week,
+            article_url=article_url,
+            article_sha256=article_sha256 or "computed-on-retrieval",
+            dialogue=draft,
+            podcast_config=podcast_config,
+            generated_at=generated_at,
+        )
+
+    generation = _GenerationDiagnostics(
+        podcast_config=podcast_config,
+        canonicalize=_canonicalize_observation,
+        word_range=word_range,
+        targets=_section_word_targets(script_directions, article_evidence, word_range),
+        deployment=_observed_identifier(config.chat_deployment),
+        api_version=_observed_identifier(config.api_version),
+        previous_script=previous_script or "",
+        required_sections=required_sections,
+    )
+
     token_provider = token_provider or ManagedIdentityTokenCredential().get_token
     transport = transport or _default_transport
 
@@ -1324,16 +1598,20 @@ def generate_script(
         )
 
     logger.info(
-        "generating script deployment=%s article_chars=%s week=%s repo_target=%d repo_floor=%d",
-        config.chat_deployment,
+        "generating script article_chars=%d repo_target=%d repo_floor=%d",
         len(safe_content),
-        safe_week,
         required_repo_checklist.target_count,
         required_repo_checklist.floor_count,
     )
 
     dialogue = _request_dialogue(
-        messages, url=url, token=token, transport=transport, max_tokens=completion_tokens
+        messages,
+        url=url,
+        token=token,
+        transport=transport,
+        max_tokens=completion_tokens,
+        generation=generation,
+        stage="editorial" if previous_script is not None else "draft",
     )
     if not dialogue:
         raise ValueError("LLM returned empty script content")
@@ -1342,6 +1620,7 @@ def generate_script(
         required_sections = tuple(
             section.title for section in parse_script_sections(dialogue, podcast_config)
         )
+        generation.required_sections = required_sections
 
     def _validate_draft_sections(draft_sections):
         remaining = iter(section.title for section in draft_sections)
@@ -1363,6 +1642,7 @@ def generate_script(
         token=token,
         transport=transport,
         max_tokens=completion_tokens,
+        generation=generation,
     )
 
     # Stage-direction scrub (#587): strip any authoring-instruction text that
@@ -1387,6 +1667,7 @@ def generate_script(
     # the character guard so injected markers count toward MAX_SCRIPT_CHARS.
     dialogue = _ensure_repo_feature_header(dialogue, required_repo_checklist)
     dialogue = infer_repo_visual_markers(dialogue, podcast_config)
+    generation.observe("initial_deterministic_guards", dialogue)
 
     # Deterministically validate required repo coverage after marker backfill.
     # If the first draft misses the article-derived floor, use one bounded repair
@@ -1401,6 +1682,7 @@ def generate_script(
         transport=transport,
         podcast_config=podcast_config,
         max_tokens=completion_tokens,
+        generation=generation,
     )
     if dialogue != before_repo_coverage_repair:
         # Repo-coverage repair can add spoken lines, so re-run the same text
@@ -1412,6 +1694,7 @@ def generate_script(
             token=token,
             transport=transport,
             max_tokens=completion_tokens,
+            generation=generation,
         )
         if script_directions is not None:
             dialogue = strip_leaked_directions(
@@ -1435,6 +1718,7 @@ def generate_script(
             token=token,
             transport=transport,
             max_tokens=completion_tokens,
+            generation=generation,
         )
         if script_directions is not None:
             draft = strip_leaked_directions(
@@ -1448,7 +1732,9 @@ def generate_script(
                 ],
             )
         draft = _ensure_repo_feature_header(draft, required_repo_checklist)
-        return infer_repo_visual_markers(draft, podcast_config)
+        draft = infer_repo_visual_markers(draft, podcast_config)
+        generation.observe("scrub_deterministic_guards", draft)
+        return draft
 
     def _apply_dialogue_guards(draft: str) -> str:
         """Re-run the post-processing guards on a repaired draft."""
@@ -1464,6 +1750,7 @@ def generate_script(
             transport=transport,
             podcast_config=podcast_config,
             max_tokens=completion_tokens,
+            generation=generation,
         )
         if draft != before_coverage:
             draft = _scrub(draft)
@@ -1471,6 +1758,7 @@ def generate_script(
         draft = rewrite_spoken_repo_names(draft, names)
         if len(draft) > MAX_SCRIPT_CHARS:
             raise ScriptQualityError("characters", limit=MAX_SCRIPT_CHARS)
+        generation.observe("replacement_deterministic_guards", draft)
         return draft
 
     # Speak natural project names instead of raw ``owner/repo`` slugs (#627).
@@ -1480,6 +1768,7 @@ def generate_script(
     # repos that were not discussed/marked do not trigger README fetches.
     repo_name_map = build_spoken_name_map(_spoken_name_map_source(dialogue), fetch=readme_fetcher)
     dialogue = rewrite_spoken_repo_names(dialogue, repo_name_map)
+    generation.observe("initial_spoken_names", dialogue)
 
     if len(dialogue) > MAX_SCRIPT_CHARS:
         raise ScriptQualityError("characters", limit=MAX_SCRIPT_CHARS)
@@ -1508,9 +1797,7 @@ def generate_script(
         except SectionValidationError as error:
             conversation = messages
             for attempt in range(1, MAX_SECTION_REPAIRS + 1):
-                logger.warning(
-                    "script section validation failed attempt=%d error=%s", attempt, error
-                )
+                logger.warning("script section validation failed attempt=%d", attempt)
                 conversation = conversation + [
                     {"role": "assistant", "content": dialogue},
                     {
@@ -1524,6 +1811,8 @@ def generate_script(
                     token=token,
                     transport=transport,
                     max_tokens=completion_tokens,
+                    generation=generation,
+                    stage="section",
                 )
                 if not repaired:
                     continue
@@ -1553,12 +1842,7 @@ def generate_script(
         # Emit the section metadata (issue #417: JSON ``sections`` array) so the
         # video pipeline / callers can consume title cards and per-section repo
         # slugs without re-parsing the script body.
-        metadata = sections_to_metadata(parse_script_sections(script, podcast_config))
-        logger.info(
-            "script generated with %d section(s); metadata=%s",
-            len(sections),
-            json.dumps(metadata, ensure_ascii=False),
-        )
+        generation.observe("section_validation", dialogue)
 
     # Count the actual canonical output, after all repairs, Markdown normalization
     # and disclosure insertion. Neither visual URLs nor the review footer is speech.
@@ -1567,6 +1851,7 @@ def generate_script(
         conversation = messages
         for attempt in range(MAX_LENGTH_REPAIRS + 1):
             count = sum(len(turn.split()) for turn in spoken_turns(script, podcast_config))
+            generation.observe("final_validation", dialogue)
             logger.info(
                 "script canonical spoken_words=%d requested_range=%s repair_attempt=%d",
                 count,
@@ -1619,6 +1904,8 @@ def generate_script(
                 token=token,
                 transport=transport,
                 max_tokens=completion_tokens,
+                generation=generation,
+                stage="length",
             )
             if repaired:
                 dialogue = _apply_dialogue_guards(repaired)
