@@ -66,6 +66,11 @@ The script is the source material for TTS synthesis. It must meet these constrai
   turns are inserted before existing closing turns, preserving every original
   line. Malformed, non-host, repeated-turn, oversized or non-progressing additions
   are rejected, and the same canonical range, section and grounding gates apply.
+  The response has exactly one `insertions` key; each nonempty insertion has
+  exactly `section_index` and `turns`. Indexes are unique planned JSON integers,
+  not strings or booleans; turns are nonempty configured-host single lines.
+  Section ceilings sum canonical spoken words across inserted turns, excluding
+  labels and unspoken Markdown, with the existing twenty-word tolerance.
   The existing ownership-tone rule also validates actual canonical host speech
   after formatting and dialogue guards, before accepting a candidate. Markdown
   cannot hide banned reporter narration; metadata is excluded from this check.
@@ -77,6 +82,11 @@ The script is the source material for TTS synthesis. It must meet these constrai
   metadata with speech counts null (JSON is not a dialogue);
   `length_expansion_merged` and final validation measure the actual merged script.
   No response text is logged.
+  Rejection boundaries emit fixed allowlisted reason codes and bounded numeric
+  section counts, ceilings and minimum shortfalls through the same observation
+  route, including canonical ownership and original-speech preservation failures.
+  Candidate counts remain null unless an existing validation calculation supplies
+  them. Diagnostics never enter generated prompts or trigger additional calls.
 - Bounded `script_generation_observation` logs report canonical speech and section
   counts around existing generation/repair stages, actual available provider
   finish/model/usage fields, and configured/used call budgets. Missing provider
