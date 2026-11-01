@@ -23,6 +23,7 @@ from podcaster.jobs import (
     replay_identity_sha256,
     run_generation_job,
 )
+from podcaster.provider_filter import FilterSafetyError
 from podcaster.storage import (
     AzureBlobStorageBackend,
     LocalStorageBackend,
@@ -39,6 +40,44 @@ VALID_ARTICLE_CONTENT = (
 )
 
 pytestmark = pytest.mark.usefixtures("offline_script_generation")
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize("stage", ["script", "grounding"])
+def test_filter_failure_never_falls_back_or_repairs(tmp_path, monkeypatch, dry_run, stage):
+    from podcaster import jobs
+
+    payload = {
+        "week": "2026-W44",
+        "article_url": "https://example.invalid/article",
+        "article_title": "Source-grounded review",
+        "article_content": VALID_ARTICLE_CONTENT,
+        "dry_run": dry_run,
+    }
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    generator = (
+        Mock(side_effect=FilterSafetyError("filter failure"))
+        if stage == "script"
+        else Mock(return_value="Title: Test\n---\nTheo: Factual source.\nVera: A response.")
+    )
+    grounding = Mock(side_effect=FilterSafetyError("filter failure"))
+    monkeypatch.setattr(jobs, "generate_script", generator)
+    monkeypatch.setattr(jobs, "extract_claims", grounding)
+    artifacts = Mock(wraps=jobs.generate_artifacts)
+    monkeypatch.setattr(jobs, "generate_artifacts", artifacts)
+    with pytest.raises(ScriptGenerationFailed, match="filtering failed") as caught:
+        run_generation_job(payload, storage=storage)
+    assert caught.value.quality_reason == "filter_safety"
+    assert generator.call_count == 1
+    assert grounding.call_count == (0 if stage == "script" else 1)
+    artifacts.assert_not_called()
+    job_id = build_job_id(payload)
+    assert storage.get_bytes(f"jobs/{job_id}/manifest.json") is None
+    assert storage.get_bytes(f"jobs/{job_id}/script.txt") is None
+    assert json.loads(storage.get_bytes(f"jobs/{job_id}/filter-failure.json"))["status"] == "failed"
+    with pytest.raises(ReplayCollisionError):
+        run_generation_job(payload, storage=storage)
+    assert generator.call_count == 1
 
 
 @pytest.mark.parametrize("repair_succeeds", [True, False])
@@ -1338,8 +1377,8 @@ def test_azure_conditional_update_retry_exhaustion_stops_before_artifacts() -> N
             now=datetime(2026, 6, 30, 19, 7, 49, tzinfo=timezone.utc),
         )
 
-    # One read checks for a legacy manifest before the five atomic reservation attempts.
-    assert storage.get_attempts == 6
+    # Legacy manifest and terminal filter marker reads precede five reservation attempts.
+    assert storage.get_attempts == 7
     assert storage.put_attempts == 5
     assert storage.artifact_puts == []
 

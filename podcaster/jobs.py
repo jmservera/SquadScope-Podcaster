@@ -30,6 +30,7 @@ from podcaster.costs import (
 )
 from podcaster.generation import checksum, generate_artifacts, manifest_bytes
 from podcaster.prior_episodes import fetch_prior_episode_themes
+from podcaster.provider_filter import FilterSafetyError
 from podcaster.publication_state import canonical_identity_requested
 from podcaster.review import (
     PROVIDER_TTS_BLOCKERS,
@@ -85,7 +86,12 @@ class ReplayCollisionError(RuntimeError):
 
 
 def _release_failed_reservation(
-    storage: StorageBackend, job_id: str, monthly_path: str, month: str
+    storage: StorageBackend,
+    job_id: str,
+    monthly_path: str,
+    month: str,
+    *,
+    preserve_replay: bool = False,
 ) -> None:
     """Release replay inputs and the reserved ledger slot of a failed job.
 
@@ -108,8 +114,9 @@ def _release_failed_reservation(
     input_prefix = f"jobs/{job_id}/inputs"
     try:
         storage.update_bytes(monthly_path, "application/json; charset=utf-8", drop_entry)
-        for name in ("article.txt", "summary.txt", "replay.json"):
-            storage.delete_blob(f"{input_prefix}/{name}")
+        if not preserve_replay:
+            for name in ("article.txt", "summary.txt", "replay.json"):
+                storage.delete_blob(f"{input_prefix}/{name}")
     except Exception:
         logging.exception("failed to release reservation for failed job job_id=%s", job_id)
 
@@ -174,6 +181,8 @@ def _reserve_replay_inputs(
     article_path = f"{input_prefix}/article.txt" if article_bytes is not None else None
     summary_path = f"{input_prefix}/summary.txt" if summary_bytes is not None else None
     replay_path = f"{input_prefix}/replay.json"
+    if storage.get_bytes(f"jobs/{job_id}/filter-failure.json") is not None:
+        raise ReplayCollisionError("filtering failure is terminal for this job identity")
     replay_metadata = {
         "schema_version": "squadscope-podcaster-replay-input-v1",
         "identity_sha256": identity_sha256,
@@ -420,6 +429,26 @@ def run_generation_job(
                         + "\n"
                     )
                 logging.info("podcaster job using LLM-generated script job_id=%s", job_id)
+            except FilterSafetyError as error:
+                logging.warning(
+                    "chat completion filtering failed job_id=%s request_id=%s; terminal",
+                    job_id,
+                    error.request_id,
+                )
+                storage.put_bytes(
+                    f"jobs/{job_id}/filter-failure.json",
+                    manifest_bytes(
+                        {"job_id": job_id, "status": "failed", "reason": "filter_safety"}
+                    ),
+                    "application/json; charset=utf-8",
+                )
+                _release_failed_reservation(
+                    storage, job_id, monthly_path, month, preserve_replay=True
+                )
+                raise ScriptGenerationFailed(
+                    "chat completion filtering failed; no artifact accepted",
+                    quality_reason="filter_safety",
+                ) from None
             except Exception as error:
                 if not payload.get("dry_run"):
                     logging.exception(
