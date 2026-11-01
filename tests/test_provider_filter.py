@@ -7,7 +7,7 @@ import pytest
 
 from podcaster.claim_extraction import extract_claims
 from podcaster.hooks import generate_hooks
-from podcaster.provider_filter import FilterSafetyError
+from podcaster.provider_filter import FilterSafetyError, validate_chat_filter_response
 from podcaster.script_gen import ScriptGenConfig, _request_dialogue
 
 
@@ -169,6 +169,119 @@ def test_grounding_allows_clean_response():
         )
         == []
     )
+
+
+@pytest.mark.parametrize(
+    "category",
+    [
+        None,
+        "content_filter_error",
+        [],
+        {"code": "content_filter_error"},
+        {"error_details": {"code": "content_filter_error"}},
+        {"status": "failed"},
+        {"unknown": {"nested": "ambiguous"}},
+        {"filter_error": False},
+        {"filtered": "false"},
+        {"filtered": True},
+        {"detected": True},
+        {"severity": None},
+    ],
+)
+@pytest.mark.parametrize("location", ["prompt", "completion"])
+def test_present_malformed_or_ambiguous_categories_fail_closed(category, location):
+    response = _response()
+    if location == "prompt":
+        response["prompt_filter_results"] = [{"content_filter_results": {"hate": category}}]
+    else:
+        response["choices"][0]["content_filter_results"] = {"hate": category}
+    with pytest.raises(FilterSafetyError):
+        validate_chat_filter_response(response)
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        {"prompt_filter_results": [{"content_filter_results": {"hate": None}}]},
+        {
+            "prompt_filter_results": [
+                {"content_filter_results": {"jailbreak": {"code": "content_filter_error"}}}
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": "unsafe"},
+                    "content_filter_results": {"hate": "error"},
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": "unsafe"},
+                    "content_filter_results": {"hate": {"error_details": {"code": "unknown"}}},
+                }
+            ]
+        },
+        {"prompt_filter_results": [{"content_filter_results": {"hate": {"status": "failed"}}}]},
+    ],
+)
+@pytest.mark.parametrize("invoke", ["script", "grounding", "hooks"])
+def test_consumers_reject_ambiguous_http_200_annotation(annotation, invoke):
+    response = _response()
+    response.update(annotation)
+    with pytest.raises(FilterSafetyError):
+        if invoke == "script":
+            _request_dialogue(
+                [{"role": "user", "content": "test"}],
+                url="https://example.invalid/chat",
+                token="fake",
+                transport=_transport(response),
+            )
+        elif invoke == "grounding":
+            extract_claims(
+                article_content="A complete article about software releases and products.",
+                article_url="https://example.invalid/article",
+                config=_config(),
+                token_provider=lambda scope: "fake",
+                transport=_transport(response),
+            )
+        else:
+            generate_hooks(
+                config=_config(),
+                token_provider=lambda scope: "fake",
+                transport=_transport(response),
+            )
+
+
+def test_clean_nested_categories_and_missing_optional_annotations_remain_valid():
+    for annotation in (
+        None,
+        {
+            "prompt_filter_results": [
+                {
+                    "prompt_index": 0,
+                    "content_filter_results": {
+                        "hate": {"filtered": False, "severity": "safe"},
+                        "jailbreak": {"detected": False, "filtered": False},
+                    },
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": "ok"},
+                    "content_filter_results": {"hate": {"filtered": False}},
+                }
+            ]
+        },
+    ):
+        validate_chat_filter_response(_response(annotation))
 
 
 def test_optional_hooks_do_not_mask_reported_filter_error():

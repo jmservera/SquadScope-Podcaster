@@ -80,6 +80,55 @@ def test_filter_failure_never_falls_back_or_repairs(tmp_path, monkeypatch, dry_r
     assert generator.call_count == 1
 
 
+def test_malformed_provider_annotation_stops_job_without_raw_logging_or_replay(
+    tmp_path, monkeypatch, caplog
+):
+    from podcaster import jobs
+    from podcaster.script_gen import _request_dialogue
+
+    payload = {
+        "week": "2026-W44",
+        "article_url": "https://example.invalid/article",
+        "article_title": "Source-grounded review",
+        "article_content": VALID_ARTICLE_CONTENT,
+        "dry_run": True,
+    }
+    response = {
+        "id": "unsafe\nprovider-secret",
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {"content": "unsafe provider-secret"},
+                "content_filter_results": {"hate": {"error_details": {"code": "unknown"}}},
+            }
+        ],
+    }
+
+    def generate(*args, **kwargs):
+        return _request_dialogue(
+            [{"role": "user", "content": "test"}],
+            url="https://example.invalid/chat",
+            token="fake",
+            transport=lambda request: json.dumps(response).encode(),
+        )
+
+    generator = Mock(side_effect=generate)
+    monkeypatch.setattr(jobs, "generate_script", generator)
+    grounding = Mock()
+    monkeypatch.setattr(jobs, "extract_claims", grounding)
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    with pytest.raises(ScriptGenerationFailed, match="filtering failed"):
+        run_generation_job(payload, storage=storage)
+    marker = storage.get_bytes(f"jobs/{build_job_id(payload)}/filter-failure.json")
+    assert marker is not None
+    assert b"provider-secret" not in marker
+    assert "provider-secret" not in caplog.text
+    grounding.assert_not_called()
+    with pytest.raises(ReplayCollisionError):
+        run_generation_job(payload, storage=storage)
+    assert generator.call_count == 1
+
+
 @pytest.mark.parametrize("repair_succeeds", [True, False])
 def test_grounding_repair_stages_only_exact_corrected_script_or_fails_closed(
     tmp_path, monkeypatch, repair_succeeds

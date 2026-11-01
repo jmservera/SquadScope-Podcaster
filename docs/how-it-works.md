@@ -95,6 +95,9 @@ For configured chat generation, reported prompt/completion filtering errors (inc
 nested or malformed annotations), filtered completions, and provider HTTP 400 rejections
 are terminal safety failures for both script drafting and claim grounding. They do
 not trigger grounding repairs, dry-run placeholder fallback, or artifact staging.
+A present prompt/completion category must have a recognized, unambiguous result
+shape; null, scalar, array, status/code/error-detail fields, and unknown nested
+fields are rejected rather than treated as clean.
 A sanitized `filter-failure.json` marker locks the same job identity against retry;
 the API returns a failed response. Missing optional filter annotations are **not**
 evidence that filtering executed. A clean completion still requires the separate
