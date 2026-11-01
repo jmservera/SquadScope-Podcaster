@@ -314,7 +314,8 @@ def run_generation_job(
                 monthly_path, "application/json; charset=utf-8", reserve_monthly_budget
             )
         except MonthlyBudgetExceeded as exc:
-            storage.delete_prefix(f"jobs/{job_id}")
+            for name in ("article.txt", "summary.txt", "replay.json"):
+                storage.delete_blob(f"jobs/{job_id}/inputs/{name}")
             logging.warning(
                 "podcaster job blocked by monthly budget job_id=%s week=%s "
                 "projected_episode_count=%s projected_monthly_spend_usd=%s",
@@ -442,9 +443,10 @@ def run_generation_job(
                     ),
                     "application/json; charset=utf-8",
                 )
-                _release_failed_reservation(
-                    storage, job_id, monthly_path, month, preserve_replay=True
-                )
+                if not payload.get("dry_run"):
+                    _release_failed_reservation(
+                        storage, job_id, monthly_path, month, preserve_replay=True
+                    )
                 raise ScriptGenerationFailed(
                     "chat completion filtering failed; no artifact accepted",
                     quality_reason="filter_safety",

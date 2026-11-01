@@ -99,7 +99,10 @@ A present prompt/completion category must have a recognized, unambiguous result
 shape; null, scalar, array, status/code/error-detail fields, and unknown nested
 fields are rejected rather than treated as clean.
 A sanitized `filter-failure.json` marker locks the same job identity against retry;
-the API returns a failed response. Missing optional filter annotations are **not**
+the API returns a failed response. Dry-run failures leave the shared budget ledger
+untouched, and a production budget rejection deletes only that job's exact
+reserved input keys so a sibling dry-run failure marker cannot be removed by
+prefix cleanup. Missing optional filter annotations are **not**
 evidence that filtering executed. A clean completion still requires the separate
 exact-script human review gate before synthesis or publication.
 

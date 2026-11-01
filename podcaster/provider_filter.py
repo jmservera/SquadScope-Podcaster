@@ -51,6 +51,8 @@ def validate_chat_filter_response(response: Any) -> None:
                 reject("chat completion reported a filter error")
             if not isinstance(annotation, dict) or not annotation:
                 reject("malformed filter category")
+            if not any(key in annotation for key in ("filtered", "detected")):
+                reject("missing filter decision")
             for key, field in annotation.items():
                 if key == "filtered":
                     if not isinstance(field, bool) or field:
@@ -66,7 +68,7 @@ def validate_chat_filter_response(response: Any) -> None:
 
     for key in response:
         if isinstance(key, str) and (
-            key.lower() in ("error", "status", "code", "error_details")
+            key.lower() in ("error", "innererror", "status", "code", "error_details")
             or key.lower().endswith("_error")
         ):
             reject("chat completion reported an error")
@@ -95,7 +97,7 @@ def validate_chat_filter_response(response: Any) -> None:
             reject("chat completion filtered")
         for key in choice:
             if isinstance(key, str) and (
-                key.lower() in ("error", "status", "code", "error_details")
+                key.lower() in ("error", "innererror", "status", "code", "error_details")
                 or key.lower().endswith("_error")
             ):
                 reject("chat completion reported a filter error")

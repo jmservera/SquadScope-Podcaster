@@ -186,6 +186,7 @@ def test_grounding_allows_clean_response():
         {"filtered": True},
         {"detected": True},
         {"severity": None},
+        {"severity": "high"},
     ],
 )
 @pytest.mark.parametrize("location", ["prompt", "completion"])
@@ -227,6 +228,16 @@ def test_present_malformed_or_ambiguous_categories_fail_closed(category, locatio
             ]
         },
         {"prompt_filter_results": [{"content_filter_results": {"hate": {"status": "failed"}}}]},
+        {"innererror": {"code": "content_filter_error"}},
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": "unsafe"},
+                    "innererror": {"code": "content_filter_error"},
+                }
+            ]
+        },
     ],
 )
 @pytest.mark.parametrize("invoke", ["script", "grounding", "hooks"])
