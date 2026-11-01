@@ -20,9 +20,11 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any
+from urllib.error import HTTPError
 from urllib.request import Request
 
 from podcaster.config import PodcastConfig
+from podcaster.provider_filter import raise_on_blocked_http, validate_chat_filter_response
 from podcaster.sanitization import FIELD_LIMITS, fence_json, neutralize
 from podcaster.script_gen import (
     MAX_ARTICLE_CHARS,
@@ -355,8 +357,13 @@ def extract_claims(
             len(safe_content),
         )
 
-        raw_response = transport(request)
+        try:
+            raw_response = transport(request)
+        except HTTPError as exc:
+            raise_on_blocked_http(exc)
+            raise
         response = json.loads(raw_response.decode("utf-8"))
+        validate_chat_filter_response(response)
 
         choices = response.get("choices", [])
         if not choices:
@@ -366,13 +373,13 @@ def extract_claims(
             return []
 
         content = choices[0].get("message", {}).get("content", "").strip()
+        if choices[0].get("finish_reason") not in (None, "stop"):
+            raise ClaimGroundingError(
+                f"grounding completion incomplete at budget={budget}; "
+                "no partial ledger accepted; split long factual utterances "
+                "and regenerate within the requested spoken-word range"
+            )
         if batch_turns is not None:
-            if choices[0].get("finish_reason") not in (None, "stop"):
-                raise ClaimGroundingError(
-                    f"grounding completion incomplete at budget={budget}; "
-                    "no partial ledger accepted; split long factual utterances "
-                    "and regenerate within the requested spoken-word range"
-                )
             claims.extend(
                 _parse_script_claims(
                     content,

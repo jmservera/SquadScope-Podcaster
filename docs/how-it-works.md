@@ -91,6 +91,21 @@ Optional fields accepted by the contract include:
 
 Normal production requests return **`202 Accepted`** and stage the job for asynchronous synthesis. A dry run returns a staged response without authorizing real synthesis. The API's job is intentionally small: authenticate, validate, stage, enqueue, and return stable artifact URLs quickly.
 
+For configured chat generation, reported prompt/completion filtering errors (including
+nested or malformed annotations), filtered completions, and provider HTTP 400 rejections
+are terminal safety failures for both script drafting and claim grounding. They do
+not trigger grounding repairs, dry-run placeholder fallback, or artifact staging.
+A present prompt/completion category must have a recognized, unambiguous result
+shape; null, scalar, array, status/code/error-detail fields, and unknown nested
+fields are rejected rather than treated as clean.
+A sanitized `filter-failure.json` marker locks the same job identity against retry;
+the API returns a failed response. Dry-run failures leave the shared budget ledger
+untouched, and a production budget rejection deletes only that job's exact
+reserved input keys so a sibling dry-run failure marker cannot be removed by
+prefix cleanup. Missing optional filter annotations are **not**
+evidence that filtering executed. A clean completion still requires the separate
+exact-script human review gate before synthesis or publication.
+
 Notes:
 
 - `cost_override` is an explicit operator escape hatch around budget guardrails.
