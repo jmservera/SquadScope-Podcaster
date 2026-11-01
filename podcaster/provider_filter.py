@@ -48,6 +48,10 @@ def validate_chat_filter_response(response: Any) -> None:
                     raise FilterSafetyError(
                         "chat completion reported a filter error", request_id=request_id
                     )
+                if name == "content_filter_results" and not isinstance(child, dict):
+                    raise FilterSafetyError(
+                        "malformed completion filter results", request_id=request_id
+                    )
                 if name == "filtered":
                     if not isinstance(child, bool) or child:
                         raise FilterSafetyError(
@@ -64,6 +68,8 @@ def validate_chat_filter_response(response: Any) -> None:
         if not isinstance(results, list) or not all(isinstance(item, dict) for item in results):
             raise FilterSafetyError("malformed prompt filter results", request_id=request_id)
         inspect(results)
+    if "content_filter_results" in response:
+        inspect({"content_filter_results": response["content_filter_results"]})
     choices = response.get("choices")
     if not isinstance(choices, list) or not all(isinstance(choice, dict) for choice in choices):
         raise FilterSafetyError("malformed chat completion choices", request_id=request_id)

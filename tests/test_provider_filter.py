@@ -52,6 +52,8 @@ def _transport(response):
             ]
         },
         {"prompt_filter_results": [{"content_filter_results": {"error": None}}]},
+        {"prompt_filter_results": [{"content_filter_results": None}]},
+        {"content_filter_results": {"hate": {"error": {"code": "unknown"}}}},
         {
             "prompt_filter_results": [
                 {
