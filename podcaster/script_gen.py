@@ -1116,6 +1116,25 @@ def _json_failure_class(response: str) -> str:
     return "malformed_json"
 
 
+_SECTION_TITLE_LIMIT = 60
+
+
+def _bound_unique_titles(titles: list[str]) -> list[str]:
+    """Cap titles once for title cards; disambiguate collisions with an index suffix."""
+    bounded: list[str] = []
+    seen: set[str] = set()
+    for index, title in enumerate(titles, 1):
+        candidate = title[:_SECTION_TITLE_LIMIT].rstrip()
+        serial = index
+        while candidate.casefold() in seen:
+            suffix = f" ({serial})"
+            candidate = title[: _SECTION_TITLE_LIMIT - len(suffix)].rstrip() + suffix
+            serial += 1
+        seen.add(candidate.casefold())
+        bounded.append(candidate)
+    return bounded
+
+
 def _section_word_targets(
     directions: ScriptDirections | None, article: str, bounds: tuple[int, int] | None
 ) -> tuple[tuple[str, int], ...]:
@@ -1153,10 +1172,12 @@ def _section_word_targets(
         beats = ["Source discussion", "Evidence limits and what to watch"]
     # Adjacent beats remain in source/caller order even when they share a title card.
     groups = min(5 if opening else 6, len(beats))
-    identities = [
-        " / ".join(beats[index * len(beats) // groups : (index + 1) * len(beats) // groups])
-        for index in range(groups)
-    ]
+    identities = _bound_unique_titles(
+        [
+            " / ".join(beats[index * len(beats) // groups : (index + 1) * len(beats) // groups])
+            for index in range(groups)
+        ]
+    )
     target = _draft_word_target(bounds)
     # The strict episode structure owns opening order. Share one modest opening
     # budget rather than assigning a full discussion section to a short cold open.
