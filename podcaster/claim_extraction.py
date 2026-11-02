@@ -122,32 +122,61 @@ _CHAR_FOLD = {
 }
 
 
+_FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})([^\r\n]*)$")
+_BACKTICK_RUN = re.compile(r"`+")
+
+
 def _code_ranges(text: str) -> tuple[list[bool], list[bool]]:
     """Return (literal, skip): code contents are literal; code fences/backticks are skipped."""
 
     literal = [False] * len(text)
     skip = [False] * len(text)
     offset = 0
-    in_fence = False
+    fence = ""
     for line in text.splitlines(keepends=True):
-        stripped = line.lstrip(" ")
-        if len(line) - len(stripped) <= 3 and stripped.startswith(("```", "~~~")):
-            in_fence = not in_fence
-            for k in range(offset, offset + len(line.rstrip("\r\n"))):
-                skip[k] = True
-        elif in_fence:
-            for k in range(offset, offset + len(line)):
-                literal[k] = True
-        else:
-            spots = [
-                i for i, ch in enumerate(line) if ch == "`" and not (i and line[i - 1] == "\\")
-            ]
-            for opener, closer in zip(spots[::2], spots[1::2]):
-                if closer == opener + 1:
-                    continue
-                skip[offset + opener] = skip[offset + closer] = True
-                for k in range(offset + opener + 1, offset + closer):
+        body = line.rstrip("\r\n")
+        if fence:
+            closing = body.strip(" ")
+            if (
+                len(body) - len(body.lstrip(" ")) <= 3
+                and closing
+                and set(closing) == {fence[0]}
+                and len(closing) >= len(fence)
+            ):
+                fence = ""
+                for k in range(offset, offset + len(body)):
+                    skip[k] = True
+            else:
+                for k in range(offset, offset + len(line)):
                     literal[k] = True
+        elif (opening := _FENCE_OPEN.match(body)) and not (
+            opening.group(1)[0] == "`" and "`" in opening.group(2)
+        ):
+            fence = opening.group(1)
+            for k in range(offset, offset + len(body)):
+                skip[k] = True
+        else:
+            runs = [
+                m
+                for m in _BACKTICK_RUN.finditer(line)
+                if not (m.start() and line[m.start() - 1] == "\\")
+            ]
+            i = 0
+            while i < len(runs):
+                size = runs[i].end() - runs[i].start()
+                partner = next(
+                    (j for j in range(i + 1, len(runs)) if runs[j].end() - runs[j].start() == size),
+                    None,
+                )
+                if partner is None:
+                    i += 1
+                    continue
+                for run in (runs[i], runs[partner]):
+                    for k in range(run.start(), run.end()):
+                        skip[offset + k] = True
+                for k in range(runs[i].end(), runs[partner].start()):
+                    literal[offset + k] = True
+                i = partner + 1
         offset += len(line)
     return literal, skip
 

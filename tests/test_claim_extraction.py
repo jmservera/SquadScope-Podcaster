@@ -922,6 +922,9 @@ class TestNormalizedMatchingKeepsLiteralText:
             ("The expression is 232.", "The expression is `2**3**2`."),
             ("Value: 5 workers", "```\nValue:\n- 5 workers\n```"),
             ("see docs", "`[see](docs)`"),
+            ("The expression is 232.", "The expression is ``2**3**2``."),
+            ("Value: 5 workers", "````\n```\nValue:\n- 5 workers\n```\n````"),
+            ("The feature is supported.", "The feature is ```not``` supported."),
         ],
     )
     def test_literal_markers_are_not_dropped(self, quote, source):
