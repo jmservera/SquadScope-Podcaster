@@ -1786,7 +1786,8 @@ def _draft_by_section(
             )
         else:
             scope = (
-                f"Write ONLY the section for beat {title!r}: begin with one non-spoken "
+                f"Write ONLY the section for part {position + 1} of the ordered episode parts "
+                "listed below: begin with one non-spoken "
                 '"## Section: <Title>" header (a punchy title card under 60 characters) and '
                 "give it at least 4 host turns. Open with a natural transition from the prior "
                 "text; do not repeat facts already spoken."
@@ -1836,7 +1837,11 @@ def _draft_by_section(
                     lines.append(line.rstrip())
                 elif header is None and not opening:
                     header = found
-            turns = [line for line in lines if line.strip().startswith(prefixes)]
+            turns = [
+                line
+                for line in lines
+                if line.strip().startswith(prefixes) and line.partition(":")[2].strip()
+            ]
             if turns:
                 break
             if retries >= MAX_SECTION_DRAFT_RETRIES:
@@ -2019,7 +2024,9 @@ def generate_script(
         required_repo_checklist.floor_count,
     )
 
-    if word_range is not None and previous_script is None and generation.targets:
+    # Two sections are the validated minimum; fewer targets fall back to a one-shot draft.
+    section_targets = len(generation.targets) - int(_has_opening(script_directions))
+    if word_range is not None and previous_script is None and section_targets >= 2:
         dialogue = _draft_by_section(
             messages=messages,
             targets=generation.targets,

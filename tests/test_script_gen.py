@@ -3017,7 +3017,7 @@ class TestSectionBySectionDraft:
         assert 1001 <= self._words(script) <= 1700 or "retry" in script
 
     def test_persistent_malformed_section_raises_quality_error_after_bounded_retries(self):
-        run, requests = self._run(None, replies=["no host lines here"])
+        run, requests = self._run(None, replies=["Theo:\nVera:   ", "no host lines here"])
         with pytest.raises(script_gen.ScriptQualityError, match="section-by-section draft"):
             run()
         assert len(requests) == 1 + script_gen.MAX_SECTION_DRAFT_RETRIES
@@ -3053,3 +3053,29 @@ class TestSectionBySectionDraft:
         run()
         assert '"stage":"draft_section_before"' in caplog.text
         assert f'"article_chars":{len(VALID_ARTICLE_CONTENT)}' in caplog.text
+
+    def test_single_beat_falls_back_to_one_shot_draft(self):
+        from podcaster.config import EpisodeStyle, ScriptDirections
+
+        requests = []
+
+        def transport(request):
+            requests.append(json.loads(request.data))
+            return json.dumps(
+                {"choices": [{"message": {"content": "Theo: hi"}, "finish_reason": "stop"}]}
+            ).encode()
+
+        with pytest.raises(script_gen.ScriptQualityError):
+            generate_script(
+                week="2026-W45",
+                article_title="One",
+                article_url="https://example.com/w45",
+                article_content=VALID_ARTICLE_CONTENT,
+                config=_mock_config(),
+                script_directions=ScriptDirections(
+                    episode_style=EpisodeStyle(format="1001-1700 words", segment_order=["Only"])
+                ),
+                token_provider=_fake_token_provider,
+                transport=transport,
+            )
+        assert "SECTION-BY-SECTION" not in requests[0]["messages"][0]["content"]
