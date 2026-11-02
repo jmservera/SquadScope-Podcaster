@@ -126,7 +126,7 @@ def validate_chat_filter_response(response: Any) -> None:
             if _is_error_key(category):
                 reject("chat completion reported a filter error", where)
             if category not in _KNOWN_CATEGORIES:
-                scan_unknown(annotation, where)
+                scan_unknown({category: annotation}, path)
                 continue
             if category == "custom_blocklists":
                 as_list = isinstance(annotation, list)
@@ -177,7 +177,7 @@ def validate_chat_filter_response(response: Any) -> None:
             if _is_error_key(key):
                 reject("chat completion reported a filter error", where)
             if key not in allowed:
-                scan_unknown(field, where)
+                scan_unknown({key: field}, path)
                 continue
             if key in ("filtered", "detected"):
                 if not isinstance(field, bool) or field:

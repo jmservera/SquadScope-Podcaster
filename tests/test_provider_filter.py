@@ -643,3 +643,29 @@ def test_rejection_reason_has_sanitized_path_and_no_content():
         validate_chat_filter_response(response)
     assert "SECRET" not in caught.value.reason
     assert caught.value.reason.endswith("violence.severity")
+
+
+@pytest.mark.parametrize("bad", [True, None, "false", 1])
+@pytest.mark.parametrize("key", ["filtered", "detected"])
+@pytest.mark.parametrize("location", ["prompt", "completion", "response"])
+def test_direct_decision_keys_at_results_level_fail_closed(location, key, bad):
+    response = _default_v2_gpt4o_response()
+    if location == "response":
+        response["content_filter_results"] = {key: bad}
+    else:
+        response = _at(location, {key: bad})
+    with pytest.raises(FilterSafetyError):
+        validate_chat_filter_response(response)
+
+
+@pytest.mark.parametrize("bad", [True, None])
+def test_blocklist_entry_detected_decision_fails_closed(bad):
+    for entry in (
+        {"filtered": False, "detected": bad},
+        {"filtered": False, "details": [{"detected": bad, "filtered": False}]},
+    ):
+        with pytest.raises(FilterSafetyError):
+            validate_chat_filter_response(_at("completion", {"custom_blocklists": entry}))
+    validate_chat_filter_response(
+        _at("completion", {"custom_blocklists": {"filtered": False, "detected": False}})
+    )
