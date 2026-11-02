@@ -25,6 +25,7 @@ _SEVERITY_CATEGORIES = frozenset({"hate", "sexual", "violence", "self_harm"})
 _CITATION_FIELDS = frozenset({"URL", "License", "license"})
 _ANNOTATION_FIELDS = frozenset({"filtered", "detected", "severity", "citation", "details", "id"})
 _BLOCKLIST_ENTRY_FIELDS = frozenset({"filtered", "id", "details"})
+_OFFSET_FIELDS = frozenset({"check_offset", "start_offset", "end_offset"})
 _DETAIL_FIELDS = frozenset(
     {
         "filtered",
@@ -82,17 +83,35 @@ def validate_chat_filter_response(response: Any) -> None:
                 reject("chat completion reported a filter error")
             if category not in _KNOWN_CATEGORIES:
                 reject("unknown filter category")
-            if category == "custom_blocklists" and isinstance(annotation, list):
-                if not annotation:
+            if category == "custom_blocklists":
+                entries = annotation if isinstance(annotation, list) else [annotation]
+                if not entries:
                     reject("malformed filter category")
-                for entry in annotation:
-                    annotation_fields(entry, _BLOCKLIST_ENTRY_FIELDS, require_decision=True)
+                for entry in entries:
+                    blocklist_entry(entry)
                 continue
             if category in _SEVERITY_CATEGORIES and (
                 not isinstance(annotation, dict) or not isinstance(annotation.get("filtered"), bool)
             ):
                 reject("missing filter decision")
             annotation_fields(annotation, _ANNOTATION_FIELDS, require_decision=True)
+
+    def blocklist_entry(entry: Any) -> None:
+        if not isinstance(entry, dict) or not isinstance(entry.get("filtered"), bool):
+            reject("missing filter decision")
+        annotation_fields(entry, _BLOCKLIST_ENTRY_FIELDS, require_decision=True)
+        details = entry.get("details", [])
+        for detail in details if isinstance(details, list) else [details]:
+            if not isinstance(detail, dict) or not isinstance(detail.get("filtered"), bool):
+                reject("missing filter decision")
+
+    def offsets(value: Any) -> None:
+        if (
+            not isinstance(value, dict)
+            or not value
+            or not all(k in _OFFSET_FIELDS and type(v) is int and v >= 0 for k, v in value.items())
+        ):
+            reject("malformed filter offsets")
 
     def is_error_key(key: Any) -> bool:
         return isinstance(key, str) and (
@@ -143,8 +162,10 @@ def validate_chat_filter_response(response: Any) -> None:
         ):
             reject("chat completion reported an error")
 
-    if "prompt_filter_results" in response:
-        prompts = response["prompt_filter_results"]
+    for prompt_key in ("prompt_filter_results", "prompt_annotations"):
+        if prompt_key not in response:
+            continue
+        prompts = response[prompt_key]
         if not isinstance(prompts, list) or not prompts:
             reject("malformed prompt filter results")
         for prompt in prompts:
@@ -177,3 +198,5 @@ def validate_chat_filter_response(response: Any) -> None:
                 reject("chat completion reported a filter error")
         if "content_filter_results" in choice:
             results(choice["content_filter_results"])
+        if "content_filter_offsets" in choice:
+            offsets(choice["content_filter_offsets"])
