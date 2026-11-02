@@ -454,12 +454,20 @@ def run_generation_job(
                 logging.info("podcaster job using LLM-generated script job_id=%s", job_id)
             except FilterSafetyError as error:
                 logging.warning(
-                    "chat completion filtering failed job_id=%s request_id=%s; terminal",
+                    "chat completion filtering failed job_id=%s request_id=%s "
+                    "rejection=%s; terminal",
                     job_id,
                     error.request_id,
+                    error.reason,
                 )
                 failure_marker = manifest_bytes(
-                    {"job_id": job_id, "status": "failed", "reason": "filter_safety"}
+                    {
+                        "job_id": job_id,
+                        "status": "failed",
+                        "reason": "filter_safety",
+                        "rejection": error.reason,
+                        "request_id": error.request_id,
+                    }
                 )
                 # First writer wins so concurrent failures never overwrite the marker.
                 storage.update_bytes(
