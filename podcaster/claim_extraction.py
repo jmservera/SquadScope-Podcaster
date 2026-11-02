@@ -106,6 +106,81 @@ _QUALIFICATION = re.compile(
 )
 
 
+_MD_LINK_URL = re.compile(r"\]\([^)\s]*\)")
+_MD_LINE_MARKER = re.compile(r"(?m)^[ \t]{0,3}(?:#{1,6}|>|[-*+])[ \t]+")
+_CHAR_FOLD = {
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201c": '"',
+    "\u201d": '"',
+    "\u2013": "-",
+    "\u2014": "-",
+    "\u2011": "-",
+    "\u00a0": " ",
+    "\u2026": "...",
+}
+_MD_DROP = frozenset("*`[]")
+
+
+def _normalize_with_map(text: str) -> tuple[str, list[int]]:
+    """Fold typography/markdown/whitespace; map each folded char to its source index."""
+
+    skip = [False] * len(text)
+    for match in _MD_LINK_URL.finditer(text):
+        for i in range(match.start() + 1, match.end()):
+            skip[i] = True
+    for match in _MD_LINE_MARKER.finditer(text):
+        for i in range(match.start(), match.end()):
+            skip[i] = True
+    out: list[str] = []
+    index: list[int] = []
+    pending_space = False
+    for i, ch in enumerate(text):
+        if skip[i] or ch in _MD_DROP:
+            continue
+        if ch.isspace() or ch == "\u00a0":
+            pending_space = bool(out)
+            continue
+        if pending_space:
+            out.append(" ")
+            index.append(i)
+            pending_space = False
+        for folded in _CHAR_FOLD.get(ch, ch):
+            out.append(folded)
+            index.append(i)
+    return "".join(out), index
+
+
+def _exact_span_for_quote(quote: str, evidence: str) -> str | None:
+    """Return the verbatim source span for ``quote``, or None if not uniquely present.
+
+    Only typography, markdown and whitespace differences are forgiven; the returned
+    value is always a literal substring of ``evidence``.
+    """
+
+    if quote in evidence:
+        return quote
+    needle, _ = _normalize_with_map(quote)
+    needle = needle.strip()
+    if not needle:
+        return None
+    haystack, index = _normalize_with_map(evidence)
+    first = haystack.find(needle)
+    if first < 0 or haystack.find(needle, first + 1) >= 0:
+        return None
+    return evidence[index[first] : index[first + len(needle) - 1] + 1]
+
+
+def _resolve_source_kind(raw: Any, status: Any, has_news: bool) -> str | None:
+    """Provenance is decided by code when the model cannot be authoritative."""
+
+    if not has_news:
+        return "article"
+    if raw in ("article", "breaking_news"):
+        return raw
+    return "article" if status == "nonfactual" and raw in (None, "") else None
+
+
 def _align_rows(content: str, count: int) -> list[Any]:
     """Place rows at their 1-based ``turn`` index; ``None`` marks an unaccounted turn.
 
@@ -159,6 +234,7 @@ def _parse_script_claims(
         )
     claims = []
     issues = []
+    failures: dict[int, str] = {}
     safe_url = neutralize(article_url, limit=FIELD_LIMITS["reference"])
     for index, (row, turn) in enumerate(zip(rows, turns), turn_offset + 1):
         if not isinstance(row, dict) or row.get("script_excerpt") != turn:
@@ -177,30 +253,47 @@ def _parse_script_claims(
                 "split the factual utterance and regenerate without dropping evidence"
             )
             continue
-        source_kind = row.get("source_kind", "article")
-        if source_kind not in ("article", "breaking_news"):
+        source_kind = _resolve_source_kind(
+            row.get("source_kind", "article"), status, bool(breaking_news)
+        )
+        if source_kind is None:
             issues.append(f"turn {index}: unknown source provenance")
+            failures[index] = "provenance"
             continue
         evidence = article_content if source_kind == "article" else (breaking_news or "")
         if not isinstance(status, str) or status not in {"supported", "qualified", "nonfactual"}:
             issues.append(f"turn {index}: unsupported or unknown grounding disposition")
+            failures[index] = "disposition"
             continue
         if status == "nonfactual":
             if quote is not None:
                 issues.append(f"turn {index}: nonfactual speech must not invent source evidence")
+                failures[index] = "nonfactual_quote"
             if _EMPIRICAL_ASSERTION.search(turn):
                 issues.append(
                     f"turn {index}: empirical/novelty/absence assertions require factual evidence"
                 )
-        elif not isinstance(quote, str) or not quote.strip() or quote not in evidence:
-            issues.append(f"turn {index}: source_quote is not an exact provided source excerpt")
+                failures[index] = "empirical"
+        else:
+            span = (
+                _exact_span_for_quote(quote, evidence)
+                if isinstance(quote, str) and quote.strip()
+                else None
+            )
+            if span is None:
+                issues.append(f"turn {index}: source_quote is not an exact provided source excerpt")
+                failures[index] = "quote"
+            else:
+                quote = span
         if status == "qualified" and not _QUALIFICATION.search(turn):
             issues.append(f"turn {index}: qualification must be explicit in actual spoken text")
+            failures[index] = "qualification"
         if _EMPIRICAL_ASSERTION.search(turn):
             issues.append(
                 f"turn {index}: empirical/novelty/absence assertion; "
                 "remove the assertion and retain scoped evidence and its evidence limit"
             )
+            failures[index] = "empirical"
         claims.append(
             Claim(
                 claim_id=f"claim_{index:03d}",
@@ -217,6 +310,12 @@ def _parse_script_claims(
             )
         )
     if issues:
+        logger.warning(
+            "grounding rejected turns=%d failed=%d classes=%s",
+            len(turns),
+            len(failures),
+            json.dumps({str(k): v for k, v in sorted(failures.items())}),
+        )
         raise ClaimGroundingError("; ".join(issues))
     return claims
 
@@ -319,8 +418,10 @@ def extract_claims(
             "CANONICAL SPOKEN TURNS; never merge, skip, reorder or add rows), "
             "script_excerpt equal to the ENTIRE exact turn, grounding (supported, "
             "qualified, nonfactual, unsupported), "
-            "source_kind (article or breaking_news), source_quote (exact contiguous excerpt "
-            "from that identified source, or null for nonfactual), and "
+            "source_kind (exactly the string article or breaking_news; never null; use article "
+            "when breaking news evidence is empty), source_quote (exact contiguous excerpt "
+            "copied character-for-character from that identified source, including markdown "
+            "and link syntax, never paraphrased or joined with ellipses; null for nonfactual), and "
             "editor_notes. Topic overlap or a named project is NOT support for the rest of "
             "a sentence. All factual propositions in a turn must be supported by its quote. "
             "If any are not supported, mark unsupported; never hide factual content under "
@@ -404,6 +505,17 @@ def extract_claims(
         validate_chat_filter_response(response)
 
         choices = response["choices"]
+        usage = response.get("usage") or {}
+        logger.info(
+            "grounding request turns=%s budget=%d prompt_tokens=%s completion_tokens=%s "
+            "total_tokens=%s finish_reason=%s",
+            len(batch_turns) if batch_turns is not None else 0,
+            budget,
+            usage.get("prompt_tokens"),
+            usage.get("completion_tokens"),
+            usage.get("total_tokens"),
+            choices[0].get("finish_reason"),
+        )
 
         content = choices[0].get("message", {}).get("content", "").strip()
         if choices[0].get("finish_reason") not in (None, "stop"):

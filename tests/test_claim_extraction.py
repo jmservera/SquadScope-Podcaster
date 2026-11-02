@@ -468,10 +468,8 @@ class TestCanonicalGrounding:
             self._extract(rows)
 
     @pytest.mark.parametrize("source_kind", ["article", "breaking_news"])
-    @pytest.mark.parametrize("quote", ["supports Linux", "UNDISPLAYED_EVIDENCE"])
-    def test_quote_must_match_displayed_raw_evidence_not_normalized_or_hidden_text(
-        self, source_kind, quote
-    ):
+    @pytest.mark.parametrize("quote", ["UNDISPLAYED_EVIDENCE"])
+    def test_quote_must_match_displayed_raw_evidence_not_hidden_text(self, source_kind, quote):
         from podcaster.script_gen import MAX_ARTICLE_CHARS
 
         limit = MAX_ARTICLE_CHARS if source_kind == "article" else 5000
@@ -785,3 +783,130 @@ class TestIndexedGroundingRows:
         with pytest.raises(claim_extraction.ClaimGroundingError):
             run()
         assert len(calls) <= claim_extraction.MAX_GROUNDING_REQUESTS
+
+
+W45_ARTICLE = (
+    '---\ntitle: "Agent Skills Leave the Coding Sandbox"\n---\n\n'
+    "November 2026 opened with agent skills escaping the coding sandbox. "
+    "[deepseek-ai/dsh-superagent-prototype]"
+    "(https://github.com/deepseek-ai/dsh-superagent-prototype) "
+    "drew the week\u2019s largest new-project audience around greater autonomy, while "
+    "**Mika** put agents directly on Android devices.\n\n"
+    "The unresolved problem carried over unchanged: assurance is trailing action.\n"
+)
+
+
+def _ground(
+    turns: list[str], rows: list[dict], article: str = W45_ARTICLE, news: str | None = None
+):
+    def transport(request: Request) -> bytes:
+        return json.dumps(
+            {
+                "choices": [
+                    {"message": {"content": json.dumps({"claims": rows})}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+        ).encode()
+
+    return extract_claims(
+        article_content=article,
+        article_url="https://example.com/a",
+        config=_mock_config(),
+        script="\n".join(f"Theo: {t}" for t in turns),
+        breaking_news=news,
+        token_provider=_fake_token_provider,
+        transport=transport,
+    )
+
+
+class TestDeterministicGroundingRepairs:
+    def test_null_source_kind_and_normalized_quote_resolve_to_exact_source(self):
+        turns = ["Welcome to the show.", "The top project drew the largest audience."]
+        rows = [
+            {
+                "turn": 1,
+                "script_excerpt": turns[0],
+                "grounding": "nonfactual",
+                "source_kind": None,
+                "source_quote": None,
+            },
+            {
+                "turn": 2,
+                "script_excerpt": turns[1],
+                "grounding": "supported",
+                "source_kind": "none",
+                "source_quote": "deepseek-ai/dsh-superagent-prototype drew the week's "
+                "largest new-project audience",
+            },
+        ]
+        claims = _ground(turns, rows)
+        assert claims[1].source_kind == "article"
+        assert claims[1].source_quote in W45_ARTICLE
+        assert "](https://github.com/" in claims[1].source_quote
+
+    def test_quote_across_lines_is_replaced_with_exact_span(self):
+        turn = "Assurance trails action."
+        rows = [
+            {
+                "turn": 1,
+                "script_excerpt": turn,
+                "grounding": "supported",
+                "source_quote": "Mika put agents directly on Android devices. "
+                "The unresolved problem",
+            }
+        ]
+        claims = _ground([turn], rows)
+        assert claims[0].source_quote in W45_ARTICLE
+
+    @pytest.mark.parametrize(
+        "quote",
+        [
+            "agents now run on every phone",
+            "assurance is trailing action ... Mika put agents",
+            "**",
+        ],
+    )
+    def test_fabricated_or_ambiguous_quote_still_fails_closed(self, quote):
+        turn = "Something factual."
+        rows = [
+            {"turn": 1, "script_excerpt": turn, "grounding": "supported", "source_quote": quote}
+        ]
+        with pytest.raises(claim_extraction.ClaimGroundingError, match="exact provided source"):
+            _ground(
+                [turn],
+                rows,
+                article="the cat. the dog. assurance is trailing action. Mika put agents",
+            )
+
+    def test_unknown_provenance_still_fails_when_breaking_news_supplied(self):
+        turn = "Something factual."
+        rows = [
+            {
+                "turn": 1,
+                "script_excerpt": turn,
+                "grounding": "supported",
+                "source_kind": "none",
+                "source_quote": "assurance is trailing action",
+            }
+        ]
+        with pytest.raises(claim_extraction.ClaimGroundingError, match="unknown source provenance"):
+            _ground([turn], rows, news="Breaking: something.")
+
+    def test_grounding_request_log_is_content_free(self, caplog):
+        caplog.set_level("INFO", logger="podcaster.claim_extraction")
+        turn = "Assurance trails action."
+        _ground(
+            [turn],
+            [
+                {
+                    "turn": 1,
+                    "script_excerpt": turn,
+                    "grounding": "supported",
+                    "source_quote": "assurance is trailing action",
+                }
+            ],
+        )
+        text = caplog.text
+        assert "finish_reason=stop" in text and "total_tokens=2" in text
+        assert "assurance" not in text
