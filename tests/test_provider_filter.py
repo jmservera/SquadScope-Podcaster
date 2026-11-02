@@ -368,3 +368,59 @@ def test_blocked_http_400_is_terminal(invoke):
                 token_provider=lambda scope: "fake",
                 transport=blocked,
             )
+
+
+def test_known_benign_azure_annotation_shapes_are_accepted():
+    response = _response()
+    response["choices"][0]["content_filter_results"] = {
+        "hate": {"filtered": False, "severity": "safe"},
+        "custom_blocklists": {
+            "filtered": False,
+            "details": [{"filtered": False, "id": "list-1"}],
+        },
+        "jailbreak": {"filtered": False, "detected": False},
+        "protected_material_text": {"filtered": False, "detected": False},
+        "protected_material_code": {
+            "filtered": False,
+            "detected": False,
+            "citation": {"URL": "https://example.com", "license": "MIT"},
+        },
+        "ungrounded_material": {"filtered": False, "detected": False, "details": []},
+    }
+    validate_chat_filter_response(response)
+    response["choices"][0]["content_filter_results"] = {
+        "custom_blocklists": [{"id": "list-1", "filtered": False}]
+    }
+    validate_chat_filter_response(response)
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        {"custom_blocklists": {"filtered": False, "details": [{"filtered": True, "id": "x"}]}},
+        {"custom_blocklists": [{"id": "x", "filtered": True}]},
+        {"custom_blocklists": {"filtered": False, "details": [{"error": {"code": "x"}}]}},
+        {"jailbreak": {"detected": False, "surprise": 1}},
+        {"future_category": {"filtered": False}},
+        {"protected_material_code": {"filtered": False, "citation": "bad"}},
+        {"hate": {"filtered": False, "details": "bad"}},
+    ],
+)
+def test_unlisted_or_filtered_nested_shapes_fail_closed(annotation):
+    response = _response()
+    response["choices"][0]["content_filter_results"] = annotation
+    with pytest.raises(FilterSafetyError):
+        validate_chat_filter_response(response)
+
+
+def test_empty_choices_fail_closed_uniformly():
+    with pytest.raises(FilterSafetyError):
+        validate_chat_filter_response({"choices": []})
+    with pytest.raises(FilterSafetyError):
+        extract_claims(
+            article_content="Content here.",
+            article_url="https://example.com",
+            config=_config(),
+            token_provider=lambda scope: "t",
+            transport=_transport({"choices": []}),
+        )

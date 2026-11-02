@@ -365,12 +365,7 @@ def extract_claims(
         response = json.loads(raw_response.decode("utf-8"))
         validate_chat_filter_response(response)
 
-        choices = response.get("choices", [])
-        if not choices:
-            if turns is not None:
-                raise ClaimGroundingError("grounding completion returned no choices")
-            logger.warning("claim extraction returned no choices")
-            return []
+        choices = response["choices"]
 
         content = choices[0].get("message", {}).get("content", "").strip()
         if choices[0].get("finish_reason") not in (None, "stop"):

@@ -1429,15 +1429,6 @@ def _request_dialogue(
             max_tokens=max_tokens,
         )
     choices = response.get("choices", [])
-    if not choices:
-        if generation is not None and stage == "length_expansion":
-            generation.observe(
-                "length_expansion_rejected",
-                current,
-                response=response,
-                rejection_reason="no_choices",
-            )
-        raise ValueError("LLM returned no choices for script generation")
     finish_reason = choices[0].get("finish_reason")
     if finish_reason not in (None, "stop"):
         if generation is not None and stage == "length_expansion":
