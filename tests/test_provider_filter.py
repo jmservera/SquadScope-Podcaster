@@ -457,3 +457,97 @@ def test_severity_category_with_filtered_false_passes():
         "jailbreak": {"detected": False, "filtered": False},
     }
     validate_chat_filter_response(response)
+
+
+def _at(location, results):
+    if location == "prompt":
+        return _response(
+            {"prompt_filter_results": [{"prompt_index": 0, "content_filter_results": results}]}
+        )
+    response = _response()
+    response["choices"][0]["content_filter_results"] = results
+    return response
+
+
+@pytest.mark.parametrize("location", ["prompt", "completion"])
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        {"detected": False},
+        {"id": "x"},
+        {"filtered": "no"},
+        {"filtered": True},
+        {"filtered": False, "detected": False},
+        {"filtered": False, "details": [{"id": "x"}]},
+        {"filtered": False, "details": [{"filtered": True, "id": "x"}]},
+        {},
+        [],
+        [{"detected": False}],
+        [{"filtered": False, "details": [{"id": "x"}]}],
+    ],
+)
+def test_custom_blocklists_require_filtered_decision(location, annotation):
+    with pytest.raises(FilterSafetyError):
+        validate_chat_filter_response(_at(location, {"custom_blocklists": annotation}))
+
+
+@pytest.mark.parametrize("location", ["prompt", "completion"])
+def test_custom_blocklists_dict_and_list_with_decision_pass(location):
+    entry = {"filtered": False, "details": [{"filtered": False, "id": "x"}]}
+    validate_chat_filter_response(_at(location, {"custom_blocklists": entry}))
+    validate_chat_filter_response(_at(location, {"custom_blocklists": [entry]}))
+
+
+@pytest.mark.parametrize("location", ["prompt", "completion"])
+@pytest.mark.parametrize(
+    "category",
+    [
+        "profanity",
+        "jailbreak",
+        "indirect_attack",
+        "protected_material_text",
+        "protected_material_code",
+        "ungrounded_material",
+    ],
+)
+@pytest.mark.parametrize(
+    "annotation", [{}, {"severity": "safe"}, {"id": "x"}, {"detected": "false"}]
+)
+def test_detection_categories_require_boolean_decision(location, category, annotation):
+    with pytest.raises(FilterSafetyError):
+        validate_chat_filter_response(_at(location, {category: annotation}))
+
+
+@pytest.mark.parametrize("key", ["prompt_filter_results", "prompt_annotations"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        [{"prompt_index": 0}],
+        [{"prompt_index": True, "content_filter_results": {"hate": {"filtered": False}}}],
+        [{"content_filter_results": {"hate": {"severity": "safe"}}}],
+        {},
+    ],
+)
+def test_prompt_results_shapes_fail_closed(key, value):
+    with pytest.raises(FilterSafetyError):
+        validate_chat_filter_response(_response({key: value}))
+
+
+@pytest.mark.parametrize(
+    "offsets", [{}, [], {"check_offset": "0"}, {"check_offset": -1}, {"bogus": 1}, {"error": 1}]
+)
+def test_malformed_content_filter_offsets_fail_closed(offsets):
+    response = _response()
+    response["choices"][0]["content_filter_offsets"] = offsets
+    with pytest.raises(FilterSafetyError):
+        validate_chat_filter_response(response)
+
+
+def test_valid_content_filter_offsets_pass():
+    response = _response()
+    response["choices"][0]["content_filter_offsets"] = {
+        "check_offset": 0,
+        "start_offset": 0,
+        "end_offset": 5,
+    }
+    validate_chat_filter_response(response)
