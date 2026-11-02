@@ -1944,7 +1944,7 @@ def _draft_by_section(
         )
         body = "\n".join(lines).strip()
         if not opening:
-            body = f"## Section: {title[:60].strip()}\n{body}"
+            body = f"## Section: {title.strip()}\n{body}"
         blocks.append(body)
     return "\n\n".join(blocks)
 
@@ -2263,13 +2263,13 @@ def generate_script(
             )
         draft = _ensure_repo_feature_header(draft, required_repo_checklist)
         draft = infer_repo_visual_markers(draft, podcast_config)
+        draft = _pin_section_titles(draft, required_sections)
         generation.observe("scrub_deterministic_guards", draft)
         return draft
 
     def _apply_dialogue_guards(draft: str) -> str:
         """Re-run the post-processing guards on a repaired draft."""
 
-        draft = _pin_section_titles(draft, required_sections)
         draft = _scrub(draft)
         before_coverage = draft
         draft = _enforce_required_repo_coverage(
@@ -2287,6 +2287,7 @@ def generate_script(
             draft = _scrub(draft)
         names = build_spoken_name_map(_spoken_name_map_source(draft), fetch=readme_fetcher)
         draft = rewrite_spoken_repo_names(draft, names)
+        draft = _pin_section_titles(draft, required_sections)
         if len(draft) > MAX_SCRIPT_CHARS:
             raise ScriptQualityError("characters", limit=MAX_SCRIPT_CHARS)
         generation.observe("replacement_deterministic_guards", draft)
@@ -2299,6 +2300,7 @@ def generate_script(
     # repos that were not discussed/marked do not trigger README fetches.
     repo_name_map = build_spoken_name_map(_spoken_name_map_source(dialogue), fetch=readme_fetcher)
     dialogue = rewrite_spoken_repo_names(dialogue, repo_name_map)
+    dialogue = _pin_section_titles(dialogue, required_sections)
     generation.observe("initial_spoken_names", dialogue)
 
     if len(dialogue) > MAX_SCRIPT_CHARS:
