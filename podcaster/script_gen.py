@@ -1314,6 +1314,7 @@ class _GenerationDiagnostics:
         section_words: int | None = None,
         section_budget: int | None = None,
         candidate_words: int | None = None,
+        word_fields: Mapping[str, int] | None = None,
     ) -> None:
         response = response or {}
         usage = response.get("usage")
@@ -1350,6 +1351,8 @@ class _GenerationDiagnostics:
         }
         if stage in ("draft_before", "draft_section_before") and self.article_chars is not None:
             record["article_chars"] = self.article_chars
+        if word_fields:
+            record.update({key: _observed_integer(value) for key, value in word_fields.items()})
         if rejection_reason in _EXPANSION_REJECTION_CODES:
             measured = record["spoken_words"]
             record.update(
@@ -1902,7 +1905,19 @@ def _draft_by_section(
             if retries >= MAX_SECTION_DRAFT_RETRIES:
                 raise ScriptQualityError("section_draft", failed=position + 1, attempts=retries + 1)
             retries += 1
-        spoken += sum(len(line.partition(":")[2].split()) for line in turns)
+        actual = sum(len(line.partition(":")[2].split()) for line in turns)
+        spoken += actual
+        generation.observe(
+            "draft_section_measured",
+            "",
+            word_fields={
+                "section_index": position + 1,
+                "requested_words": ask,
+                "target_words": target,
+                "actual_words": actual,
+                "running_total_words": spoken,
+            },
+        )
         body = "\n".join(lines).strip()
         if not opening:
             body = f"## Section: {(header or title)[:60].strip()}\n{body}"
@@ -2342,7 +2357,15 @@ def generate_script(
         conversation = messages
         for attempt in range(MAX_LENGTH_REPAIRS + 1):
             count = sum(len(turn.split()) for turn in spoken_turns(script, podcast_config))
-            generation.observe("final_validation", dialogue)
+            generation.observe(
+                "final_validation",
+                dialogue,
+                word_fields={
+                    "total_spoken_words": count,
+                    "range_min": minimum,
+                    "range_max": maximum,
+                },
+            )
             logger.info(
                 "script canonical spoken_words=%d requested_range=%s repair_attempt=%d",
                 count,
