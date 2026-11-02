@@ -919,10 +919,18 @@ class TestNormalizedMatchingKeepsLiteralText:
             ("The limit is 24 workers.", "The limit is 2*4 workers."),
             ("arr0 holds it", "arr[0] holds it"),
             ("the code is x", "the code is `x"),
+            ("The expression is 232.", "The expression is `2**3**2`."),
+            ("Value: 5 workers", "```\nValue:\n- 5 workers\n```"),
+            ("see docs", "`[see](docs)`"),
         ],
     )
     def test_literal_markers_are_not_dropped(self, quote, source):
         assert claim_extraction._exact_span_for_quote(quote, source) is None
+
+    def test_code_contents_still_match_verbatim(self):
+        source = "The expression is `2**3**2`."
+        span = claim_extraction._exact_span_for_quote("The  expression is `2**3**2`.", source)
+        assert span == source
 
     def test_paired_markdown_and_code_span_contents_resolve(self):
         source = "Use **bold** and `arr[0]` in [docs](https://x.example/a)."

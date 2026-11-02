@@ -122,16 +122,46 @@ _CHAR_FOLD = {
 }
 
 
+def _code_ranges(text: str) -> tuple[list[bool], list[bool]]:
+    """Return (literal, skip): code contents are literal; code fences/backticks are skipped."""
+
+    literal = [False] * len(text)
+    skip = [False] * len(text)
+    offset = 0
+    in_fence = False
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip(" ")
+        if len(line) - len(stripped) <= 3 and stripped.startswith(("```", "~~~")):
+            in_fence = not in_fence
+            for k in range(offset, offset + len(line.rstrip("\r\n"))):
+                skip[k] = True
+        elif in_fence:
+            for k in range(offset, offset + len(line)):
+                literal[k] = True
+        else:
+            spots = [
+                i for i, ch in enumerate(line) if ch == "`" and not (i and line[i - 1] == "\\")
+            ]
+            for opener, closer in zip(spots[::2], spots[1::2]):
+                if closer == opener + 1:
+                    continue
+                skip[offset + opener] = skip[offset + closer] = True
+                for k in range(offset + opener + 1, offset + closer):
+                    literal[k] = True
+        offset += len(line)
+    return literal, skip
+
+
 def _markdown_delimiters(text: str) -> list[bool]:
-    """Mark only verified Markdown syntax: ``[t](url)`` link wrappers and paired
-    ``**``/backtick delimiters on one line. Lone, escaped or unpaired ``*``, ``[``,
-    ``]`` and code-span contents are literal text and stay comparable.
+    """Mark only verified Markdown syntax outside code: ``[t](url)`` link wrappers,
+    paired ``**`` and inline/fenced code delimiters. Lone, escaped or unpaired ``*``,
+    ``[``, ``]`` and all code contents are literal text and stay comparable.
     """
 
-    skip = [False] * len(text)
-    closers = [i for i, ch in enumerate(text) if ch == "]"]
+    literal, skip = _code_ranges(text)
+    closers = [i for i, ch in enumerate(text) if ch == "]" and not literal[i]]
     for i, ch in enumerate(text):
-        if ch != "[" or (i and text[i - 1] == "\\"):
+        if ch != "[" or literal[i] or (i and text[i - 1] == "\\"):
             continue
         at = bisect_right(closers, i)
         if at == len(closers):
@@ -143,26 +173,23 @@ def _markdown_delimiters(text: str) -> list[bool]:
         limit = min(len(text), close + 2 + _MAX_MD_URL_CHARS)
         while url_end < limit and text[url_end] not in ") \t\r\n":
             url_end += 1
-        if url_end < len(text) and text[url_end] == ")":
+        if url_end < len(text) and text[url_end] == ")" and not any(literal[close:url_end]):
             skip[i] = True
             for k in range(close, url_end + 1):
                 skip[k] = True
     offset = 0
     for line in text.splitlines(keepends=True):
-        for marker in ("**", "`"):
-            width = len(marker)
-            spots = []
-            pos = line.find(marker)
-            while pos >= 0:
-                if not (pos and line[pos - 1] == "\\"):
-                    spots.append(pos)
-                pos = line.find(marker, pos + width)
-            for opener, closer in zip(spots[::2], spots[1::2]):
-                inner = line[opener + width : closer]
-                if inner and not inner[0].isspace() and not inner[-1].isspace():
-                    for k in (opener, closer):
-                        for j in range(k, k + width):
-                            skip[offset + j] = True
+        spots = []
+        pos = line.find("**")
+        while pos >= 0:
+            if not (pos and line[pos - 1] == "\\") and not literal[offset + pos]:
+                spots.append(pos)
+            pos = line.find("**", pos + 2)
+        for opener, closer in zip(spots[::2], spots[1::2]):
+            inner = line[opener + 2 : closer]
+            if inner and not inner[0].isspace() and not inner[-1].isspace():
+                for k in (opener, closer):
+                    skip[offset + k] = skip[offset + k + 1] = True
         offset += len(line)
     return skip
 
@@ -171,7 +198,10 @@ def _normalize_with_map(text: str) -> tuple[str, list[int]]:
     """Fold typography/markdown/whitespace; map each folded char to its source index."""
 
     skip = _markdown_delimiters(text)
+    literal, _ = _code_ranges(text)
     for match in _MD_LINE_MARKER.finditer(text):
+        if literal[match.start()]:
+            continue
         for i in range(match.start(), match.end()):
             skip[i] = True
     out: list[str] = []
