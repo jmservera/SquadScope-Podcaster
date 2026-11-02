@@ -110,9 +110,12 @@ def _json_response(
     body: dict[str, Any],
     *,
     no_store: bool = False,
+    retry_after: int | None = None,
 ) -> None:
     payload = json.dumps(body, separators=(",", ":")).encode("utf-8")
     handler.send_response(status)
+    if retry_after is not None:
+        handler.send_header("Retry-After", str(retry_after))
     for name, value in _cors_headers(handler):
         handler.send_header(name, value)
     handler.send_header("Referrer-Policy", "no-referrer")
@@ -564,6 +567,14 @@ class GenerateHandler(BaseHTTPRequestHandler):
             _json_response(self, HTTPStatus.CONFLICT, response)
             return
         except ScriptGenerationFailed as error:
+            if error.retry_after_seconds is not None:
+                _json_response(
+                    self,
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    failed_response(["chat provider temporarily unavailable; retry later"]),
+                    retry_after=error.retry_after_seconds,
+                )
+                return
             report_failure(
                 container="podcaster-api",
                 error_type="ScriptGenerationFailed",
