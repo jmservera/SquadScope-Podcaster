@@ -910,3 +910,42 @@ class TestDeterministicGroundingRepairs:
         text = caplog.text
         assert "finish_reason=stop" in text and "total_tokens=2" in text
         assert "assurance" not in text
+
+
+class TestNormalizedMatchingKeepsLiteralText:
+    @pytest.mark.parametrize(
+        ("quote", "source"),
+        [
+            ("The limit is 24 workers.", "The limit is 2*4 workers."),
+            ("arr0 holds it", "arr[0] holds it"),
+            ("the code is x", "the code is `x"),
+        ],
+    )
+    def test_literal_markers_are_not_dropped(self, quote, source):
+        assert claim_extraction._exact_span_for_quote(quote, source) is None
+
+    def test_paired_markdown_and_code_span_contents_resolve(self):
+        source = "Use **bold** and `arr[0]` in [docs](https://x.example/a)."
+        span = claim_extraction._exact_span_for_quote("Use bold and arr[0] in docs.", source)
+        assert span == source
+
+    def test_adversarial_link_openers_are_linear(self):
+        source = "](" * 8000
+        assert claim_extraction._exact_span_for_quote("nope", source) is None
+
+    def test_oversized_and_mismatched_rows_record_failure_classes(self, caplog):
+        caplog.set_level("WARNING", logger="podcaster.claim_extraction")
+        turns = ["One.", "Two."]
+        rows = [
+            {"turn": 1, "script_excerpt": "other", "grounding": "nonfactual", "source_quote": None},
+            {
+                "turn": 2,
+                "script_excerpt": "Two.",
+                "grounding": "supported",
+                "source_quote": "é" * 600,
+            },
+        ]
+        with pytest.raises(claim_extraction.ClaimGroundingError):
+            _ground(turns, rows)
+        assert '"1": "script_excerpt"' in caplog.text
+        assert '"2": "oversized_fields"' in caplog.text

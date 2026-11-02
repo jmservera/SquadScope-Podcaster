@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from bisect import bisect_right
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError
@@ -106,7 +107,7 @@ _QUALIFICATION = re.compile(
 )
 
 
-_MD_LINK_URL = re.compile(r"\]\([^)\s]*\)")
+_MAX_MD_URL_CHARS = 2048
 _MD_LINE_MARKER = re.compile(r"(?m)^[ \t]{0,3}(?:#{1,6}|>|[-*+])[ \t]+")
 _CHAR_FOLD = {
     "\u2018": "'",
@@ -119,16 +120,57 @@ _CHAR_FOLD = {
     "\u00a0": " ",
     "\u2026": "...",
 }
-_MD_DROP = frozenset("*`[]")
+
+
+def _markdown_delimiters(text: str) -> list[bool]:
+    """Mark only verified Markdown syntax: ``[t](url)`` link wrappers and paired
+    ``**``/backtick delimiters on one line. Lone, escaped or unpaired ``*``, ``[``,
+    ``]`` and code-span contents are literal text and stay comparable.
+    """
+
+    skip = [False] * len(text)
+    closers = [i for i, ch in enumerate(text) if ch == "]"]
+    for i, ch in enumerate(text):
+        if ch != "[" or (i and text[i - 1] == "\\"):
+            continue
+        at = bisect_right(closers, i)
+        if at == len(closers):
+            continue
+        close = closers[at]
+        if "\n" in text[i:close] or text[close + 1 : close + 2] != "(":
+            continue
+        url_end = close + 2
+        limit = min(len(text), close + 2 + _MAX_MD_URL_CHARS)
+        while url_end < limit and text[url_end] not in ") \t\r\n":
+            url_end += 1
+        if url_end < len(text) and text[url_end] == ")":
+            skip[i] = True
+            for k in range(close, url_end + 1):
+                skip[k] = True
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        for marker in ("**", "`"):
+            width = len(marker)
+            spots = []
+            pos = line.find(marker)
+            while pos >= 0:
+                if not (pos and line[pos - 1] == "\\"):
+                    spots.append(pos)
+                pos = line.find(marker, pos + width)
+            for opener, closer in zip(spots[::2], spots[1::2]):
+                inner = line[opener + width : closer]
+                if inner and not inner[0].isspace() and not inner[-1].isspace():
+                    for k in (opener, closer):
+                        for j in range(k, k + width):
+                            skip[offset + j] = True
+        offset += len(line)
+    return skip
 
 
 def _normalize_with_map(text: str) -> tuple[str, list[int]]:
     """Fold typography/markdown/whitespace; map each folded char to its source index."""
 
-    skip = [False] * len(text)
-    for match in _MD_LINK_URL.finditer(text):
-        for i in range(match.start() + 1, match.end()):
-            skip[i] = True
+    skip = _markdown_delimiters(text)
     for match in _MD_LINE_MARKER.finditer(text):
         for i in range(match.start(), match.end()):
             skip[i] = True
@@ -136,7 +178,7 @@ def _normalize_with_map(text: str) -> tuple[str, list[int]]:
     index: list[int] = []
     pending_space = False
     for i, ch in enumerate(text):
-        if skip[i] or ch in _MD_DROP:
+        if skip[i]:
             continue
         if ch.isspace() or ch == "\u00a0":
             pending_space = bool(out)
@@ -239,6 +281,7 @@ def _parse_script_claims(
     for index, (row, turn) in enumerate(zip(rows, turns), turn_offset + 1):
         if not isinstance(row, dict) or row.get("script_excerpt") != turn:
             issues.append(f"turn {index}: script_excerpt must equal the exact final utterance")
+            failures[index] = "script_excerpt"
             continue
         status = row.get("grounding")
         quote = row.get("source_quote")
@@ -252,6 +295,7 @@ def _parse_script_claims(
                 f"turn {index}: grounding quote/notes exceed bounded response fields; "
                 "split the factual utterance and regenerate without dropping evidence"
             )
+            failures[index] = "oversized_fields"
             continue
         source_kind = _resolve_source_kind(
             row.get("source_kind", "article"), status, bool(breaking_news)
