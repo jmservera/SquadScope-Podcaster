@@ -72,12 +72,23 @@ class MonthlyBudgetExceeded(RuntimeError):
         self.budget = budget
 
 
+# Machine-readable marker (first errors[] entry) for deterministic, non-mutating rejections.
+SCRIPT_QUALITY_REJECTED = "script_quality_rejected"
+
+
 class ScriptGenerationFailed(RuntimeError):
     """Raised when a configured LLM script generation fails for a publishable job."""
 
-    def __init__(self, message: str, *, quality_reason: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        quality_reason: str | None = None,
+        quality_rejected: bool = False,
+    ) -> None:
         super().__init__(message)
         self.quality_reason = quality_reason
+        self.quality_rejected = quality_rejected
 
 
 class ReplayCollisionError(RuntimeError):
@@ -435,6 +446,7 @@ def run_generation_job(
                     raise ScriptGenerationFailed(
                         f"LLM script generation failed{detail}",
                         quality_reason=quality_reason,
+                        quality_rejected=quality_reason is not None,
                     ) from None
                 logging.exception(
                     "LLM script generation failed job_id=%s; falling back to placeholder",

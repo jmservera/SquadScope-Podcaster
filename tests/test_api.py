@@ -606,15 +606,20 @@ class TestSuccessfulGeneration:
         mock_run.side_effect = ScriptGenerationFailed(
             "private-provider-token-and-endpoint",
             quality_reason=reason if safe_quality_reason else None,
+            quality_rejected=safe_quality_reason,
         )
         body = json.dumps(
             {"week": "2026-W44", "article_url": "https://example.com/article"}
         ).encode()
         handler = make_handler("POST", "/api/generate", body=body, headers=self._headers(body))
-        assert handler.response_code == HTTPStatus.BAD_GATEWAY
+        expected_code = (
+            HTTPStatus.UNPROCESSABLE_ENTITY if safe_quality_reason else HTTPStatus.BAD_GATEWAY
+        )
+        assert handler.response_code == expected_code
         response = handler.get_response_json()
         assert set(response) == set(RESPONSE_KEYS)
         assert response["status"] == "failed"
+        assert response["errors"][0].startswith("script_quality_rejected; ") is safe_quality_reason
         assert (reason in response["errors"][0]) is safe_quality_reason
         assert "no episode was produced" in response["errors"][0]
         assert "private-provider" not in json.dumps(response)
@@ -676,7 +681,8 @@ class TestSuccessfulGeneration:
         ).encode()
         handler = make_handler("POST", "/api/generate", body=body, headers=self._headers(body))
         response = handler.get_response_json()
-        assert handler.response_code == HTTPStatus.BAD_GATEWAY
+        assert handler.response_code == HTTPStatus.UNPROCESSABLE_ENTITY
+        assert response["errors"][0].startswith("script_quality_rejected; ")
         assert set(response) == set(RESPONSE_KEYS)
         assert "PRIVATE_" not in json.dumps(response)
         assert ("completion incomplete" if failure == "provider" else "section validation") in (

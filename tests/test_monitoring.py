@@ -723,7 +723,7 @@ class TestGenerateEndpoint:
         from podcaster.validation import RESPONSE_KEYS
 
         mock_run_generation_job.side_effect = ScriptGenerationFailed(
-            "secret detail", quality_reason=quality_reason
+            "secret detail", quality_reason=quality_reason, quality_rejected=bool(quality_reason)
         )
 
         resp = client.post(
@@ -731,13 +731,13 @@ class TestGenerateEndpoint:
             json={"week": "2026-W24", "article_url": "https://example.com/article"},
         )
 
-        assert resp.status_code == 502
+        assert resp.status_code == (422 if quality_reason else 502)
         body = resp.json()
         assert set(body) == set(RESPONSE_KEYS)
         assert body["status"] == "failed"
         expected = "script generation failed; no episode was produced"
         if quality_reason:
-            expected += f"; {quality_reason}"
+            expected = f"script_quality_rejected; {expected}; {quality_reason}"
         assert body["errors"] == [expected]
         assert "secret detail" not in resp.text
         assert mock_report_failure.call_args.kwargs["error_type"] == "ScriptGenerationFailed"
@@ -786,7 +786,7 @@ class TestGenerateEndpoint:
                 "script_directions": {"episode_style": {"format": "1200-1700 words"}},
             },
         )
-        assert response.status_code == 502
+        assert response.status_code == 422
         assert set(response.json()) == set(RESPONSE_KEYS)
         assert "completion incomplete; completion budget=" in response.json()["errors"][0]
         assert "PRIVATE_" not in response.text
