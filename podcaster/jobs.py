@@ -184,6 +184,11 @@ def _summary_bytes(payload: dict[str, Any]) -> bytes | None:
     return summary.encode("utf-8")
 
 
+def _assert_no_filter_failure(storage: StorageBackend, job_id: str) -> None:
+    if storage.get_bytes(f"jobs/{job_id}/filter-failure.json") is not None:
+        raise ReplayCollisionError("filtering failure is terminal for this job identity")
+
+
 def _reserve_replay_inputs(
     storage: StorageBackend,
     job_id: str,
@@ -199,8 +204,7 @@ def _reserve_replay_inputs(
     article_path = f"{input_prefix}/article.txt" if article_bytes is not None else None
     summary_path = f"{input_prefix}/summary.txt" if summary_bytes is not None else None
     replay_path = f"{input_prefix}/replay.json"
-    if storage.get_bytes(f"jobs/{job_id}/filter-failure.json") is not None:
-        raise ReplayCollisionError("filtering failure is terminal for this job identity")
+    _assert_no_filter_failure(storage, job_id)
     replay_metadata = {
         "schema_version": "squadscope-podcaster-replay-input-v1",
         "identity_sha256": identity_sha256,
@@ -454,12 +458,14 @@ def run_generation_job(
                     job_id,
                     error.request_id,
                 )
-                storage.put_bytes(
+                failure_marker = manifest_bytes(
+                    {"job_id": job_id, "status": "failed", "reason": "filter_safety"}
+                )
+                # First writer wins so concurrent failures never overwrite the marker.
+                storage.update_bytes(
                     f"jobs/{job_id}/filter-failure.json",
-                    manifest_bytes(
-                        {"job_id": job_id, "status": "failed", "reason": "filter_safety"}
-                    ),
                     "application/json; charset=utf-8",
+                    lambda existing: existing if existing is not None else failure_marker,
                 )
                 if not payload.get("dry_run"):
                     _release_failed_reservation(
@@ -507,6 +513,9 @@ def run_generation_job(
     if llm_script is None:
         warnings.append("audio is a deterministic placeholder pending TTS implementation")
 
+    # A concurrent identical run may have recorded a terminal filter failure while
+    # this one was generating; re-check before staging any artifact.
+    _assert_no_filter_failure(storage, job_id)
     checksums: dict[str, str] = {path: checksum(storage.get_bytes(path) or b"") for path in stored}
     cost_ledger: dict[str, Any] | None = None
     audio_validation = None

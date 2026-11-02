@@ -403,6 +403,13 @@ def test_known_benign_azure_annotation_shapes_are_accepted():
         {"jailbreak": {"detected": False, "surprise": 1}},
         {"future_category": {"filtered": False}},
         {"protected_material_code": {"filtered": False, "citation": "bad"}},
+        {
+            "protected_material_code": {
+                "filtered": False,
+                "citation": {"error": "content_filter_error"},
+            }
+        },
+        {"protected_material_code": {"filtered": False, "citation": {"URL": 1}}},
         {"hate": {"filtered": False, "details": "bad"}},
     ],
 )
@@ -424,3 +431,29 @@ def test_empty_choices_fail_closed_uniformly():
             token_provider=lambda scope: "t",
             transport=_transport({"choices": []}),
         )
+
+
+@pytest.mark.parametrize("category", ["hate", "sexual", "violence", "self_harm"])
+@pytest.mark.parametrize("location", ["prompt", "completion"])
+@pytest.mark.parametrize(
+    "annotation", [{"severity": "high", "detected": False}, {"severity": "safe"}]
+)
+def test_severity_categories_require_filtered_bool(category, location, annotation):
+    results = {category: annotation}
+    if location == "prompt":
+        extra = {"prompt_filter_results": [{"prompt_index": 0, "content_filter_results": results}]}
+        response = _response(extra)
+    else:
+        response = _response()
+        response["choices"][0]["content_filter_results"] = results
+    with pytest.raises(FilterSafetyError):
+        validate_chat_filter_response(response)
+
+
+def test_severity_category_with_filtered_false_passes():
+    response = _response()
+    response["choices"][0]["content_filter_results"] = {
+        "hate": {"filtered": False, "severity": "safe"},
+        "jailbreak": {"detected": False, "filtered": False},
+    }
+    validate_chat_filter_response(response)
