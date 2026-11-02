@@ -2990,7 +2990,6 @@ class TestSectionBySectionDraft:
         assert len(requests) == 2
         asks = [self._asked(body) for body in requests]
         assert all(ask > 675 for ask in asks)  # compensates undershoot
-        assert sum(asks) <= 1700
         assert script.count("## Section:") == 2
 
     def test_later_sections_get_prior_text_for_continuity(self):

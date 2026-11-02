@@ -441,6 +441,13 @@ def run_generation_job(
                         llm_claims_json = claims_to_ledger_json(claims)
                         break
                     except ClaimGroundingError as error:
+                        logging.warning(
+                            "claim grounding failed job_id=%s attempt=%d/%d error=%s",
+                            job_id,
+                            attempt + 1,
+                            MAX_GROUNDING_REPAIRS + 1,
+                            str(error)[:500],
+                        )
                         if attempt == MAX_GROUNDING_REPAIRS:
                             raise ClaimGroundingError(
                                 f"{error}; exhausted {MAX_GROUNDING_REPAIRS} grounding repair"

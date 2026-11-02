@@ -119,8 +119,9 @@ MAX_OWNERSHIP_REPAIRS = 1
 # Bounded LLM repair rounds when section validation (e.g. minimum host turns) fails.
 MAX_SECTION_REPAIRS = 2
 MAX_LENGTH_REPAIRS = 2
-# Section-by-section draft: models undershoot per-call targets, so ask for more.
-SECTION_DRAFT_OVERSHOOT = 1.2
+# Section-by-section draft: gpt-4o-mini lands at ~0.75-0.8 of per-call targets (W45:
+# 1054 words vs 1350 summed target), so ask for more.
+SECTION_DRAFT_OVERSHOOT = 1.35
 # Shared pool of retries (across all sections) for empty/malformed section replies.
 MAX_SECTION_DRAFT_RETRIES = 2
 GENERATION_CALL_BUDGET = 20

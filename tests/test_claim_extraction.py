@@ -666,3 +666,55 @@ class TestClaimsToLedgerJson:
         parsed = json.loads(result)
         assert parsed[0]["source_quote"] is None
         assert "source_paragraph" not in parsed[0]
+
+
+class TestIndexedGroundingRows:
+    """W45 regression: a mini model skipped rows in a 9-turn batch -> hard 422."""
+
+    source = "Bridgeplay brings Windows Steam games into Mac Steam."
+    turns = [f"Bridgeplay brings Windows Steam games into Mac Steam, take {i}." for i in range(41)]
+
+    def _run(self, drop_first_call=(), always_drop=()):
+        calls = []
+
+        def transport(request):
+            body = json.loads(request.data)
+            batch = json.loads(
+                body["messages"][1]["content"].split("CANONICAL SPOKEN TURNS:\n")[1][
+                    len(FENCE_OPEN) : -len(FENCE_CLOSE)
+                ]
+            )
+            calls.append(len(batch))
+            rows = [
+                {
+                    "turn": i,
+                    "script_excerpt": turn,
+                    "grounding": "supported",
+                    "source_quote": self.source,
+                }
+                for i, turn in enumerate(batch, 1)
+                if not ((len(calls) == 1 and i in drop_first_call) or turn in always_drop)
+            ]
+            return json.dumps(
+                {"choices": [{"message": {"content": json.dumps({"claims": rows})}}]}
+            ).encode()
+
+        script = "\n".join(f"Theo: {turn}" for turn in self.turns)
+        claims = extract_claims(
+            article_content=self.source,
+            article_url="https://example.com/a",
+            config=_mock_config(),
+            script=script,
+            token_provider=_fake_token_provider,
+            transport=transport,
+        )
+        return claims, calls
+
+    def test_skipped_turn_is_audited_by_targeted_followup(self):
+        claims, calls = self._run(drop_first_call=(3, 7))
+        assert [c.script_excerpt for c in claims] == self.turns
+        assert calls[1] == 2  # only the two skipped turns are re-requested
+
+    def test_turn_still_missing_after_followup_fails_closed(self):
+        with pytest.raises(claim_extraction.ClaimGroundingError, match="account for all"):
+            self._run(always_drop=(self.turns[1],))
