@@ -1452,7 +1452,7 @@ class TestGroundedLengthExpansion:
                 plan, current = json.loads(blocks[0]), json.loads(blocks[1])
                 assert current == snapshot
                 assert [item["current_words"] for item in plan] == [201, 125, 109, 101, 152]
-                assert [item["add_words"] for item in plan] == [26, 100, 116, 124, 72]
+                assert [item["add_words"] for item in plan] == [48, 124, 139, 147, 96]
                 assert "Current canonical words: 796; minimum shortfall: 205." in prompt
                 policy = body["messages"][0]["content"]
                 example = json.loads(
@@ -1477,7 +1477,7 @@ class TestGroundedLengthExpansion:
                             f"` {word} `" if position < 11 else word
                             for position, word in enumerate(text.split())
                         )
-                        assert len(text.split()) == 48
+                        assert len(text.split()) == 70
                     if scenario == "ownership" and index == 1:
                         text = "According to the **article**, a claim."
                     insertions.append({"section_index": index, "turns": [f"{hosts[0]}: {text}"]})
@@ -1515,7 +1515,7 @@ class TestGroundedLengthExpansion:
         if scenario == "formatted":
             script = generate_script(**arguments)
             assert (
-                sum(len(text.split()) for text in script_gen.spoken_turns(script, config)) == 1234
+                sum(len(text.split()) for text in script_gen.spoken_turns(script, config)) == 1350
             )
             original = _format_script(
                 week=arguments["week"],
@@ -1533,7 +1533,7 @@ class TestGroundedLengthExpansion:
             with pytest.raises(script_gen.ScriptQualityError, match="796 spoken words"):
                 generate_script(**arguments)
 
-        assert len(requests) == 3
+        assert len(requests) == (4 if scenario == "envelope" else 3)
         assert all(request["max_tokens"] == 6100 for request in requests)
         observations = [
             json.loads(record.message.split("script_generation_observation ", 1)[1])
@@ -1561,8 +1561,8 @@ class TestGroundedLengthExpansion:
             assert rejections[0]["candidate_words"] is None
             if scenario == "spoken21":
                 assert rejections[0]["section_index"] == 1
-                assert rejections[0]["section_words"] == 47
-                assert rejections[0]["section_budget"] == 46
+                assert rejections[0]["section_words"] == 69
+                assert rejections[0]["section_budget"] == 68
         diagnostic_text = json.dumps(observations)
         assert all(
             marker not in diagnostic_text
@@ -1686,7 +1686,7 @@ class TestGroundedLengthExpansion:
                     f"Current canonical words: {current}; minimum shortfall: {1001 - current}"
                     in prompt
                 )
-                assert sum(item["add_words"] for item in plan) == 1234 - current
+                assert sum(item["add_words"] for item in plan) == 1350 - current
                 additions = []
                 for item in plan:
                     words = item["add_words"]
@@ -1878,7 +1878,7 @@ class TestGroundedLengthExpansion:
         ):
             script = generate_script(**arguments)
             assert (
-                sum(len(text.split()) for text in script_gen.spoken_turns(script, config)) == 1234
+                sum(len(text.split()) for text in script_gen.spoken_turns(script, config)) == 1350
             )
             body = script.split("---", 2)[-1]
             inserted_lines = set(inserted)
@@ -1916,7 +1916,7 @@ class TestGroundedLengthExpansion:
                 script_gen.ScriptQualityError, match=rf"{expected} spoken words.*exhausted 2"
             ):
                 generate_script(**arguments)
-        assert len(requests) == 3
+        assert len(requests) == (4 if result == "replacement" else 3)
         assert all(request["max_tokens"] == 6100 for request in requests)
         assert "snapshot" not in caplog.text
         expansions = [
@@ -1949,7 +1949,9 @@ class TestGroundedLengthExpansion:
             "canonical_ownership_after_guard": "canonical_ownership",
         }
         if result in expected_codes:
-            assert rejection_codes == [expected_codes[result]]
+            assert rejection_codes == [expected_codes[result]] * (
+                2 if result == "replacement" else 1
+            )
 
 
 class TestScriptQualityContract:
@@ -2246,7 +2248,7 @@ class TestScriptQualityContract:
                 for section in (title, "Second")
             )
 
-        generate, requests, _ = self._generate([draft(10), draft(10, underfilled=True), draft(150)])
+        generate, requests, _ = self._generate([draft(10), draft(50, underfilled=True), draft(150)])
         generate()
         message = requests[2]["messages"][-1]["content"]
         # The policy mentions delimiters too; the data block begins on its own line.
@@ -2317,7 +2319,7 @@ class TestScriptQualityContract:
                 copied = json.loads(block)
                 assert copied == list(titles)
                 if repair_path == "length" and len(requests) == 2:
-                    dialogue = draft(copied[:-1], 10)
+                    dialogue = draft(copied[:-1], 20)
                 elif repair_path == "section" and len(requests) == 2:
                     dialogue = draft(copied, 10)
                 else:
@@ -2552,7 +2554,7 @@ class TestScriptQualityContract:
         dialogues = [short, long_defective, final]
         if not valid_final and later_guard != "section":
             # The final repair now refuses this whole-dialogue response as an insertion.
-            dialogues.append(long_defective)
+            dialogues.extend([long_defective, long_defective])
         requests = []
         caplog.set_level("INFO", logger="podcaster.script_gen")
 
@@ -2637,7 +2639,13 @@ class TestScriptQualityContract:
             assert "Expand ONLY from supplied source contrasts" in prompt
             assert "Do not pad with repeated claims or invent facts" in prompt
             if index or later_guard == "section":
-                current = dialogues[index - 1] if index else previous
+                # The malformed-expansion retry re-sends the same snapshot as request 3.
+                retried = (
+                    index > 1
+                    and "response_format" in request
+                    and "response_format" in requests[index - 1]
+                )
+                current = dialogues[index - 2 if retried else index - 1] if index else previous
                 canonical = (
                     current
                     if index == 0
@@ -2708,3 +2716,133 @@ class TestScriptQualityContract:
         assert not re.search(
             r"PRIVATE_RESPONSE|secret\.example|source source|Source contrasts", logged
         )
+
+
+class TestUndershootLengthRepair:
+    """gpt-4o drafts ~800 words for a 1001-1700 range; repair must not lose or fail on that."""
+
+    TITLES = ("Source contrasts", "Evidence limits", "What to watch")
+
+    @classmethod
+    def _draft(cls, words_per_turn):
+        return "\n".join(
+            f"## Section: {title}\n"
+            + "\n".join(
+                f"{host}: s{index}{turn} " + "word " * (words_per_turn - 1)
+                for turn, host in enumerate(("Theo", "Vera", "Theo", "Vera"))
+            )
+            for index, title in enumerate(cls.TITLES)
+        )
+
+    @staticmethod
+    def _insertions(body):
+        import re
+
+        prompt = body["messages"][-1]["content"]
+        blocks = re.findall("\n" + re.escape(FENCE_OPEN) + "(.*?)" + re.escape(FENCE_CLOSE), prompt)
+        plan = json.loads(blocks[0])
+        return json.dumps(
+            {
+                "insertions": [
+                    {
+                        "section_index": item["section_index"],
+                        "turns": [
+                            f"Theo: added{item['section_index']} "
+                            + "claim " * (item["add_words"] - 1)
+                        ],
+                    }
+                    for item in plan
+                ]
+            }
+        )
+
+    def _run(self, responders):
+        from podcaster.config import EpisodeStyle, ScriptDirections
+
+        requests = []
+
+        def transport(request):
+            body = json.loads(request.data)
+            requests.append(body)
+            content = responders[min(len(requests) - 1, len(responders) - 1)]
+            if callable(content):
+                content = content(body)
+            return json.dumps(
+                {"choices": [{"message": {"content": content}, "finish_reason": "stop"}]}
+            ).encode()
+
+        def run():
+            return generate_script(
+                week="2026-W44",
+                article_title="Undershoot repair",
+                article_url="https://example.com/w44",
+                article_content=VALID_ARTICLE_CONTENT,
+                config=_mock_config(),
+                podcast_config=PodcastConfig(ai_voice_disclosure="Synthetic voices."),
+                script_directions=ScriptDirections(
+                    episode_style=EpisodeStyle(format="1001-1700 words")
+                ),
+                token_provider=_fake_token_provider,
+                transport=transport,
+            )
+
+        return run, requests
+
+    @staticmethod
+    def _words(script):
+        config = PodcastConfig(ai_voice_disclosure="Synthetic voices.")
+        return sum(len(turn.split()) for turn in script_gen.spoken_turns(script, config))
+
+    def test_draft_prompt_targets_range_midpoint_not_minimum(self):
+        run, requests = self._run([self._draft(60), self._draft(60), self._insertions])
+        run()
+        assert "aim for about 1350" in requests[0]["messages"][0]["content"]
+        assert "response_format" not in requests[0]
+
+    def test_undershoot_draft_is_repaired_by_json_expansion(self):
+        run, requests = self._run([self._draft(66), self._draft(66), self._insertions])
+        script = run()
+        assert 1001 <= self._words(script) <= 1700
+        assert len(requests) == 3
+        assert requests[2]["response_format"] == {"type": "json_object"}
+
+    def test_malformed_expansion_is_retried_once_without_using_a_repair(self, caplog):
+        caplog.set_level("WARNING", logger="podcaster.script_gen")
+        run, requests = self._run(
+            [
+                self._draft(66),
+                self._draft(66),
+                lambda body: "Sure! Here you go: " + self._insertions(body),
+                self._insertions,
+            ]
+        )
+        script = run()
+        assert 1001 <= self._words(script) <= 1700
+        assert len(requests) == 4
+        assert "length_expansion parse failure class=prose_prefix" in caplog.text
+        assert "Here you go" not in caplog.text
+
+    def test_still_short_after_budget_fails_closed_without_loosening_range(self):
+        run, requests = self._run([self._draft(66), self._draft(66), "not json"])
+        with pytest.raises(script_gen.ScriptQualityError, match="1001-1700 inclusive"):
+            run()
+        assert len(requests) == 4  # draft, rewrite, expansion + one malformed retry
+
+    def test_shorter_rewrite_is_never_accepted(self):
+        import re
+
+        original = self._draft(66)
+        seen = []
+
+        def expansion(body):
+            blocks = re.findall(
+                "\n" + re.escape(FENCE_OPEN) + "(.*?)" + re.escape(FENCE_CLOSE),
+                body["messages"][-1]["content"],
+            )
+            seen.append(json.loads(blocks[1]))
+            return self._insertions(body)
+
+        run, _ = self._run([original, self._draft(30), expansion])
+        script = run()
+        assert seen == [original.strip()]
+        assert 1001 <= self._words(script) <= 1700
