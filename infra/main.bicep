@@ -92,7 +92,7 @@ param chatRuntimeDeploymentName string = chatDeploymentName
 param chatModelSkuName string = 'GlobalStandard'
 
 @description('Provisioned capacity for the chat model deployment.')
-param chatModelCapacity int = 10
+param chatModelCapacity int = 50
 
 @description('TTS voice for host A of the Claracle conversation.')
 param ttsVoiceHostA string = 'fable'
