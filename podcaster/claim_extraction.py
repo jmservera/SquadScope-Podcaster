@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from bisect import bisect_right
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError
@@ -106,6 +107,181 @@ _QUALIFICATION = re.compile(
 )
 
 
+_MAX_MD_URL_CHARS = 2048
+_MD_LINE_MARKER = re.compile(r"(?m)^[ \t]{0,3}(?:#{1,6}|>|[-*+])[ \t]+")
+_CHAR_FOLD = {
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201c": '"',
+    "\u201d": '"',
+    "\u2013": "-",
+    "\u2014": "-",
+    "\u2011": "-",
+    "\u00a0": " ",
+    "\u2026": "...",
+}
+
+
+_FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})([^\r\n]*)$")
+_BACKTICK_RUN = re.compile(r"`+")
+
+
+def _code_ranges(text: str) -> tuple[list[bool], list[bool]]:
+    """Return (literal, skip): code contents are literal; code fences/backticks are skipped."""
+
+    literal = [False] * len(text)
+    skip = [False] * len(text)
+    offset = 0
+    fence = ""
+    for line in text.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        if fence:
+            closing = body.strip(" ")
+            if (
+                len(body) - len(body.lstrip(" ")) <= 3
+                and closing
+                and set(closing) == {fence[0]}
+                and len(closing) >= len(fence)
+            ):
+                fence = ""
+                for k in range(offset, offset + len(body)):
+                    skip[k] = True
+            else:
+                for k in range(offset, offset + len(line)):
+                    literal[k] = True
+        elif (opening := _FENCE_OPEN.match(body)) and not (
+            opening.group(1)[0] == "`" and "`" in opening.group(2)
+        ):
+            fence = opening.group(1)
+            for k in range(offset, offset + len(body)):
+                skip[k] = True
+        else:
+            runs = [
+                m
+                for m in _BACKTICK_RUN.finditer(line)
+                if not (m.start() and line[m.start() - 1] == "\\")
+            ]
+            i = 0
+            while i < len(runs):
+                size = runs[i].end() - runs[i].start()
+                partner = next(
+                    (j for j in range(i + 1, len(runs)) if runs[j].end() - runs[j].start() == size),
+                    None,
+                )
+                if partner is None:
+                    i += 1
+                    continue
+                for run in (runs[i], runs[partner]):
+                    for k in range(run.start(), run.end()):
+                        skip[offset + k] = True
+                for k in range(runs[i].end(), runs[partner].start()):
+                    literal[offset + k] = True
+                i = partner + 1
+        offset += len(line)
+    return literal, skip
+
+
+def _markdown_delimiters(text: str) -> list[bool]:
+    """Mark only verified Markdown syntax outside code: ``[t](url)`` link wrappers,
+    paired ``**`` and inline/fenced code delimiters. Lone, escaped or unpaired ``*``,
+    ``[``, ``]`` and all code contents are literal text and stay comparable.
+    """
+
+    literal, skip = _code_ranges(text)
+    closers = [i for i, ch in enumerate(text) if ch == "]" and not literal[i]]
+    for i, ch in enumerate(text):
+        if ch != "[" or literal[i] or (i and text[i - 1] == "\\"):
+            continue
+        at = bisect_right(closers, i)
+        if at == len(closers):
+            continue
+        close = closers[at]
+        if "\n" in text[i:close] or text[close + 1 : close + 2] != "(":
+            continue
+        url_end = close + 2
+        limit = min(len(text), close + 2 + _MAX_MD_URL_CHARS)
+        while url_end < limit and text[url_end] not in ") \t\r\n":
+            url_end += 1
+        if url_end < len(text) and text[url_end] == ")" and not any(literal[close:url_end]):
+            skip[i] = True
+            for k in range(close, url_end + 1):
+                skip[k] = True
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        spots = []
+        pos = line.find("**")
+        while pos >= 0:
+            if not (pos and line[pos - 1] == "\\") and not literal[offset + pos]:
+                spots.append(pos)
+            pos = line.find("**", pos + 2)
+        for opener, closer in zip(spots[::2], spots[1::2]):
+            inner = line[opener + 2 : closer]
+            if inner and not inner[0].isspace() and not inner[-1].isspace():
+                for k in (opener, closer):
+                    skip[offset + k] = skip[offset + k + 1] = True
+        offset += len(line)
+    return skip
+
+
+def _normalize_with_map(text: str) -> tuple[str, list[int]]:
+    """Fold typography/markdown/whitespace; map each folded char to its source index."""
+
+    skip = _markdown_delimiters(text)
+    literal, _ = _code_ranges(text)
+    for match in _MD_LINE_MARKER.finditer(text):
+        if literal[match.start()]:
+            continue
+        for i in range(match.start(), match.end()):
+            skip[i] = True
+    out: list[str] = []
+    index: list[int] = []
+    pending_space = False
+    for i, ch in enumerate(text):
+        if skip[i]:
+            continue
+        if ch.isspace() or ch == "\u00a0":
+            pending_space = bool(out)
+            continue
+        if pending_space:
+            out.append(" ")
+            index.append(i)
+            pending_space = False
+        for folded in _CHAR_FOLD.get(ch, ch):
+            out.append(folded)
+            index.append(i)
+    return "".join(out), index
+
+
+def _exact_span_for_quote(quote: str, evidence: str) -> str | None:
+    """Return the verbatim source span for ``quote``, or None if not uniquely present.
+
+    Only typography, markdown and whitespace differences are forgiven; the returned
+    value is always a literal substring of ``evidence``.
+    """
+
+    if quote in evidence:
+        return quote
+    needle, _ = _normalize_with_map(quote)
+    needle = needle.strip()
+    if not needle:
+        return None
+    haystack, index = _normalize_with_map(evidence)
+    first = haystack.find(needle)
+    if first < 0 or haystack.find(needle, first + 1) >= 0:
+        return None
+    return evidence[index[first] : index[first + len(needle) - 1] + 1]
+
+
+def _resolve_source_kind(raw: Any, status: Any, has_news: bool) -> str | None:
+    """Provenance is decided by code when the model cannot be authoritative."""
+
+    if not has_news:
+        return "article"
+    if raw in ("article", "breaking_news"):
+        return raw
+    return "article" if status == "nonfactual" and raw in (None, "") else None
+
+
 def _align_rows(content: str, count: int) -> list[Any]:
     """Place rows at their 1-based ``turn`` index; ``None`` marks an unaccounted turn.
 
@@ -159,10 +335,12 @@ def _parse_script_claims(
         )
     claims = []
     issues = []
+    failures: dict[int, str] = {}
     safe_url = neutralize(article_url, limit=FIELD_LIMITS["reference"])
     for index, (row, turn) in enumerate(zip(rows, turns), turn_offset + 1):
         if not isinstance(row, dict) or row.get("script_excerpt") != turn:
             issues.append(f"turn {index}: script_excerpt must equal the exact final utterance")
+            failures[index] = "script_excerpt"
             continue
         status = row.get("grounding")
         quote = row.get("source_quote")
@@ -176,31 +354,49 @@ def _parse_script_claims(
                 f"turn {index}: grounding quote/notes exceed bounded response fields; "
                 "split the factual utterance and regenerate without dropping evidence"
             )
+            failures[index] = "oversized_fields"
             continue
-        source_kind = row.get("source_kind", "article")
-        if source_kind not in ("article", "breaking_news"):
+        source_kind = _resolve_source_kind(
+            row.get("source_kind", "article"), status, bool(breaking_news)
+        )
+        if source_kind is None:
             issues.append(f"turn {index}: unknown source provenance")
+            failures[index] = "provenance"
             continue
         evidence = article_content if source_kind == "article" else (breaking_news or "")
         if not isinstance(status, str) or status not in {"supported", "qualified", "nonfactual"}:
             issues.append(f"turn {index}: unsupported or unknown grounding disposition")
+            failures[index] = "disposition"
             continue
         if status == "nonfactual":
             if quote is not None:
                 issues.append(f"turn {index}: nonfactual speech must not invent source evidence")
+                failures[index] = "nonfactual_quote"
             if _EMPIRICAL_ASSERTION.search(turn):
                 issues.append(
                     f"turn {index}: empirical/novelty/absence assertions require factual evidence"
                 )
-        elif not isinstance(quote, str) or not quote.strip() or quote not in evidence:
-            issues.append(f"turn {index}: source_quote is not an exact provided source excerpt")
+                failures[index] = "empirical"
+        else:
+            span = (
+                _exact_span_for_quote(quote, evidence)
+                if isinstance(quote, str) and quote.strip()
+                else None
+            )
+            if span is None:
+                issues.append(f"turn {index}: source_quote is not an exact provided source excerpt")
+                failures[index] = "quote"
+            else:
+                quote = span
         if status == "qualified" and not _QUALIFICATION.search(turn):
             issues.append(f"turn {index}: qualification must be explicit in actual spoken text")
+            failures[index] = "qualification"
         if _EMPIRICAL_ASSERTION.search(turn):
             issues.append(
                 f"turn {index}: empirical/novelty/absence assertion; "
                 "remove the assertion and retain scoped evidence and its evidence limit"
             )
+            failures[index] = "empirical"
         claims.append(
             Claim(
                 claim_id=f"claim_{index:03d}",
@@ -217,6 +413,12 @@ def _parse_script_claims(
             )
         )
     if issues:
+        logger.warning(
+            "grounding rejected turns=%d failed=%d classes=%s",
+            len(turns),
+            len(failures),
+            json.dumps({str(k): v for k, v in sorted(failures.items())}),
+        )
         raise ClaimGroundingError("; ".join(issues))
     return claims
 
@@ -319,8 +521,10 @@ def extract_claims(
             "CANONICAL SPOKEN TURNS; never merge, skip, reorder or add rows), "
             "script_excerpt equal to the ENTIRE exact turn, grounding (supported, "
             "qualified, nonfactual, unsupported), "
-            "source_kind (article or breaking_news), source_quote (exact contiguous excerpt "
-            "from that identified source, or null for nonfactual), and "
+            "source_kind (exactly the string article or breaking_news; never null; use article "
+            "when breaking news evidence is empty), source_quote (exact contiguous excerpt "
+            "copied character-for-character from that identified source, including markdown "
+            "and link syntax, never paraphrased or joined with ellipses; null for nonfactual), and "
             "editor_notes. Topic overlap or a named project is NOT support for the rest of "
             "a sentence. All factual propositions in a turn must be supported by its quote. "
             "If any are not supported, mark unsupported; never hide factual content under "
@@ -404,6 +608,17 @@ def extract_claims(
         validate_chat_filter_response(response)
 
         choices = response["choices"]
+        usage = response.get("usage") or {}
+        logger.info(
+            "grounding request turns=%s budget=%d prompt_tokens=%s completion_tokens=%s "
+            "total_tokens=%s finish_reason=%s",
+            len(batch_turns) if batch_turns is not None else 0,
+            budget,
+            usage.get("prompt_tokens"),
+            usage.get("completion_tokens"),
+            usage.get("total_tokens"),
+            choices[0].get("finish_reason"),
+        )
 
         content = choices[0].get("message", {}).get("content", "").strip()
         if choices[0].get("finish_reason") not in (None, "stop"):
