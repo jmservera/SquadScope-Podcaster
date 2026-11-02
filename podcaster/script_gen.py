@@ -33,6 +33,7 @@ from podcaster.ownership_tone import (
     find_soft_flags,
     find_violations,
 )
+from podcaster.provider_filter import raise_on_blocked_http, validate_chat_filter_response
 from podcaster.repo_naming import (
     MAX_REPOS as REPO_NAMING_MAX_REPOS,
 )
@@ -1414,8 +1415,10 @@ def _request_dialogue(
     except HTTPError as exc:
         if generation is not None:
             generation.observe(stage + "_error", "", max_tokens=max_tokens, upstream_error=exc)
+        raise_on_blocked_http(exc)
         raise
     response = json.loads(raw_response.decode("utf-8"))
+    validate_chat_filter_response(response)
     if generation is not None:
         choices = response.get("choices", [])
         content = choices[0].get("message", {}).get("content", "") if choices else ""
@@ -1426,15 +1429,6 @@ def _request_dialogue(
             max_tokens=max_tokens,
         )
     choices = response.get("choices", [])
-    if not choices:
-        if generation is not None and stage == "length_expansion":
-            generation.observe(
-                "length_expansion_rejected",
-                current,
-                response=response,
-                rejection_reason="no_choices",
-            )
-        raise ValueError("LLM returned no choices for script generation")
     finish_reason = choices[0].get("finish_reason")
     if finish_reason not in (None, "stop"):
         if generation is not None and stage == "length_expansion":

@@ -23,6 +23,7 @@ from podcaster.jobs import (
     replay_identity_sha256,
     run_generation_job,
 )
+from podcaster.provider_filter import FilterSafetyError
 from podcaster.storage import (
     AzureBlobStorageBackend,
     LocalStorageBackend,
@@ -39,6 +40,146 @@ VALID_ARTICLE_CONTENT = (
 )
 
 pytestmark = pytest.mark.usefixtures("offline_script_generation")
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize("stage", ["script", "grounding"])
+def test_filter_failure_never_falls_back_or_repairs(tmp_path, monkeypatch, dry_run, stage):
+    from podcaster import jobs
+
+    payload = {
+        "week": "2026-W44",
+        "article_url": "https://example.invalid/article",
+        "article_title": "Source-grounded review",
+        "article_content": VALID_ARTICLE_CONTENT,
+        "dry_run": dry_run,
+    }
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    generator = (
+        Mock(side_effect=FilterSafetyError("filter failure"))
+        if stage == "script"
+        else Mock(return_value="Title: Test\n---\nTheo: Factual source.\nVera: A response.")
+    )
+    grounding = Mock(side_effect=FilterSafetyError("filter failure"))
+    monkeypatch.setattr(jobs, "generate_script", generator)
+    monkeypatch.setattr(jobs, "extract_claims", grounding)
+    artifacts = Mock(wraps=jobs.generate_artifacts)
+    monkeypatch.setattr(jobs, "generate_artifacts", artifacts)
+    with pytest.raises(ScriptGenerationFailed, match="filtering failed") as caught:
+        run_generation_job(payload, storage=storage)
+    assert caught.value.quality_reason == "filter_safety"
+    assert generator.call_count == 1
+    assert grounding.call_count == (0 if stage == "script" else 1)
+    artifacts.assert_not_called()
+    job_id = build_job_id(payload)
+    assert storage.get_bytes(f"jobs/{job_id}/manifest.json") is None
+    assert storage.get_bytes(f"jobs/{job_id}/script.txt") is None
+    assert json.loads(storage.get_bytes(f"jobs/{job_id}/filter-failure.json"))["status"] == "failed"
+    if dry_run:
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
+        assert storage.get_bytes(monthly_ledger_path(month)) is None
+    with pytest.raises(ReplayCollisionError):
+        run_generation_job(payload, storage=storage)
+    assert generator.call_count == 1
+
+
+def test_budget_block_cannot_delete_sibling_dry_run_filter_marker(tmp_path, monkeypatch):
+    from podcaster import jobs
+
+    payload = {
+        "week": "2026-W44",
+        "article_url": "https://example.invalid/article",
+        "article_title": "Source-grounded review",
+        "article_content": VALID_ARTICLE_CONTENT,
+        "dry_run": True,
+    }
+
+    class BlobPrefixStorage(LocalStorageBackend):
+        def delete_prefix(self, prefix):
+            raise AssertionError(f"raw prefix cleanup could delete sibling job: {prefix}")
+
+    storage = BlobPrefixStorage(tmp_path, "https://example.invalid/artifacts")
+    generator = Mock(side_effect=FilterSafetyError("filter failure"))
+    monkeypatch.setattr(jobs, "generate_script", generator)
+    with pytest.raises(ScriptGenerationFailed, match="filtering failed"):
+        run_generation_job(payload, storage=storage)
+    dry_id = build_job_id(payload)
+    marker = storage.get_bytes(f"jobs/{dry_id}/filter-failure.json")
+    replay = storage.get_bytes(f"jobs/{dry_id}/inputs/replay.json")
+    assert marker and replay
+
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+    storage.put_bytes(
+        monthly_ledger_path(month),
+        manifest_bytes(
+            {
+                "schema_version": "squadscope-podcaster-monthly-cost-ledger-v1",
+                "month": month,
+                "episodes": [
+                    {"job_id": f"other-{index}", "week": "2026-W42", "estimated_total_usd": "0.00"}
+                    for index in range(10)
+                ],
+            }
+        ),
+        "application/json; charset=utf-8",
+    )
+    production = {**payload, "dry_run": False}
+    result = run_generation_job(production, storage=storage)
+    assert result.response["status"] == "failed"
+    assert generator.call_count == 1
+    assert storage.get_bytes(f"jobs/{dry_id}/filter-failure.json") == marker
+    assert storage.get_bytes(f"jobs/{dry_id}/inputs/replay.json") == replay
+    with pytest.raises(ReplayCollisionError):
+        run_generation_job(payload, storage=storage)
+
+
+def test_malformed_provider_annotation_stops_job_without_raw_logging_or_replay(
+    tmp_path, monkeypatch, caplog
+):
+    from podcaster import jobs
+    from podcaster.script_gen import _request_dialogue
+
+    payload = {
+        "week": "2026-W44",
+        "article_url": "https://example.invalid/article",
+        "article_title": "Source-grounded review",
+        "article_content": VALID_ARTICLE_CONTENT,
+        "dry_run": True,
+    }
+    response = {
+        "id": "unsafe\nprovider-secret",
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {"content": "unsafe provider-secret"},
+                "content_filter_results": {"hate": {"error_details": {"code": "unknown"}}},
+            }
+        ],
+    }
+
+    def generate(*args, **kwargs):
+        return _request_dialogue(
+            [{"role": "user", "content": "test"}],
+            url="https://example.invalid/chat",
+            token="fake",
+            transport=lambda request: json.dumps(response).encode(),
+        )
+
+    generator = Mock(side_effect=generate)
+    monkeypatch.setattr(jobs, "generate_script", generator)
+    grounding = Mock()
+    monkeypatch.setattr(jobs, "extract_claims", grounding)
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    with pytest.raises(ScriptGenerationFailed, match="filtering failed"):
+        run_generation_job(payload, storage=storage)
+    marker = storage.get_bytes(f"jobs/{build_job_id(payload)}/filter-failure.json")
+    assert marker is not None
+    assert b"provider-secret" not in marker
+    assert "provider-secret" not in caplog.text
+    grounding.assert_not_called()
+    with pytest.raises(ReplayCollisionError):
+        run_generation_job(payload, storage=storage)
+    assert generator.call_count == 1
 
 
 @pytest.mark.parametrize("repair_succeeds", [True, False])
@@ -1012,7 +1153,10 @@ def test_non_dry_run_fails_closed_when_monthly_episode_limit_exceeded() -> None:
         "monthly podcast budget exceeded; explicit operator override required"
     ]
     assert result.manifest["budget"]["status"] == "over_budget"
-    assert not (artifact_root / "jobs" / str(result.manifest["job_id"])).exists()
+    assert not any(
+        path.is_file()
+        for path in (artifact_root / "jobs" / str(result.manifest["job_id"])).rglob("*")
+    )
     shutil.rmtree(artifact_root, ignore_errors=True)
 
 
@@ -1149,7 +1293,11 @@ def test_concurrent_jobs_share_atomic_monthly_budget_reservation() -> None:
         assert len({episode["job_id"] for episode in monthly["episodes"]}) == 10
         assert all(episode.get("state") != "reserved" for episode in monthly["episodes"])
 
-        staged_job_ids = {path.name for path in (artifact_root / "jobs").iterdir() if path.is_dir()}
+        staged_job_ids = {
+            path.name
+            for path in (artifact_root / "jobs").iterdir()
+            if path.is_dir() and (path / "manifest.json").exists()
+        }
         accepted_job_ids = {
             build_job_id(payload)
             for payload, result in zip(payloads, results, strict=True)
@@ -1157,7 +1305,11 @@ def test_concurrent_jobs_share_atomic_monthly_budget_reservation() -> None:
         }
         failed_job_ids = {build_job_id(payload) for payload in payloads} - accepted_job_ids
         assert staged_job_ids == accepted_job_ids
-        assert not any((artifact_root / "jobs" / job_id).exists() for job_id in failed_job_ids)
+        assert not any(
+            path.is_file()
+            for job_id in failed_job_ids
+            for path in (artifact_root / "jobs" / job_id).rglob("*")
+        )
     finally:
         shutil.rmtree(artifact_root, ignore_errors=True)
 
@@ -1338,8 +1490,8 @@ def test_azure_conditional_update_retry_exhaustion_stops_before_artifacts() -> N
             now=datetime(2026, 6, 30, 19, 7, 49, tzinfo=timezone.utc),
         )
 
-    # One read checks for a legacy manifest before the five atomic reservation attempts.
-    assert storage.get_attempts == 6
+    # Legacy manifest and terminal filter marker reads precede five reservation attempts.
+    assert storage.get_attempts == 7
     assert storage.put_attempts == 5
     assert storage.artifact_puts == []
 

@@ -526,20 +526,20 @@ class TestExtractClaims:
                 transport=_make_transport("[]"),
             )
 
-    def test_returns_empty_on_no_choices(self):
+    def test_raises_on_no_choices(self):
         config = _mock_config()
 
         def empty_transport(request: Request) -> bytes:
             return json.dumps({"choices": []}).encode()
 
-        claims = extract_claims(
-            article_content="Content here.",
-            article_url="https://example.com",
-            config=config,
-            token_provider=_fake_token_provider,
-            transport=empty_transport,
-        )
-        assert claims == []
+        with pytest.raises(ValueError, match="choices"):
+            extract_claims(
+                article_content="Content here.",
+                article_url="https://example.com",
+                config=config,
+                token_provider=_fake_token_provider,
+                transport=empty_transport,
+            )
 
     def test_handles_object_wrapper(self):
         """LLM might return {"claims": [...]} instead of bare array."""
