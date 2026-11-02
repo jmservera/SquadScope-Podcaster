@@ -934,7 +934,8 @@ def _build_system_prompt(
             bounds = requested_word_range(directions)
             word_guidance = (
                 f"Count ONLY host speech; the final script MUST contain {bounds[0]}-"
-                f"{bounds[1]} spoken words, inclusive. "
+                f"{bounds[1]} spoken words, inclusive; aim for about {_draft_word_target(bounds)} "
+                "(drafts tend to come in short, so do not stop near the minimum). "
                 if bounds
                 else ""
             )
@@ -1064,6 +1065,25 @@ def _build_user_prompt(
     return prompt
 
 
+def _draft_word_target(bounds: tuple[int, int]) -> int:
+    """Aim at the range midpoint: models undershoot, so the minimum is never the target."""
+    return bounds[0] + (bounds[1] - bounds[0]) // 2
+
+
+def _json_failure_class(response: str) -> str:
+    """Content-free class of a non-JSON expansion reply (never the text itself)."""
+    text = response.strip()
+    if not text:
+        return "empty"
+    if text.startswith("```"):
+        return "code_fence"
+    if text[0] != "{":
+        return "prose_prefix"
+    if text[-1] != "}":
+        return "prose_suffix_or_truncated"
+    return "malformed_json"
+
+
 def _section_word_targets(
     directions: ScriptDirections | None, article: str, bounds: tuple[int, int] | None
 ) -> tuple[tuple[str, int], ...]:
@@ -1105,7 +1125,7 @@ def _section_word_targets(
         " / ".join(beats[index * len(beats) // groups : (index + 1) * len(beats) // groups])
         for index in range(groups)
     ]
-    target = bounds[0] + (bounds[1] - bounds[0]) // 3
+    target = _draft_word_target(bounds)
     # The strict episode structure owns opening order. Share one modest opening
     # budget rather than assigning a full discussion section to a short cold open.
     opening_words = max(1, target // 10) if opening else 0
@@ -1168,6 +1188,7 @@ class _GenerationDiagnostics:
     previous_script: str = ""
     required_sections: tuple[str, ...] = ()
     invocation: str = field(default_factory=lambda: uuid4().hex)
+    last_rejection: str | None = None
     calls_used: int = 0
     # Upper bound from existing nested helper ceilings, not additional repair admission.
     call_budget: int = (
@@ -1358,6 +1379,7 @@ def _request_dialogue(
     max_tokens: int = SCRIPT_COMPLETION_MAX_TOKENS,
     generation: _GenerationDiagnostics | None = None,
     stage: str = "draft",
+    response_format: Mapping[str, str] | None = None,
 ) -> str:
     """Post a chat-completion request and return the stripped assistant content.
 
@@ -1401,6 +1423,8 @@ def _request_dialogue(
         "max_tokens": max_tokens,
         "top_p": 0.95,
     }
+    if response_format is not None:
+        payload["response_format"] = dict(response_format)
     request = Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
@@ -1601,6 +1625,7 @@ def _merge_length_expansion(
     """Accept bounded host-turn insertions only; no existing line is replaceable."""
 
     def reject(reason: str, **numbers: int | None) -> None:
+        generation.last_rejection = reason
         generation.observe(
             "length_expansion_rejected", dialogue, rejection_reason=reason, **numbers
         )
@@ -1610,6 +1635,11 @@ def _merge_length_expansion(
     try:
         data = json.loads(response)
     except (ValueError, TypeError):
+        logger.warning(
+            "length_expansion parse failure class=%s chars=%d",
+            _json_failure_class(response),
+            len(response),
+        )
         return reject("json_decode")
     if not isinstance(data, dict) or set(data) != {"insertions"}:
         return reject("envelope_keys")
@@ -2188,16 +2218,26 @@ def generate_script(
                         ),
                     },
                 ]
-                response = _request_dialogue(
-                    expansion_messages,
-                    url=url,
-                    token=token,
-                    transport=transport,
-                    max_tokens=completion_tokens,
-                    generation=generation,
-                    stage="length_expansion",
-                )
-                expanded = _merge_length_expansion(dialogue, response, plan, generation)
+                expanded = None
+                # One malformed-envelope retry stays inside this repair attempt.
+                for _ in range(2):
+                    generation.last_rejection = None
+                    response = _request_dialogue(
+                        expansion_messages,
+                        url=url,
+                        token=token,
+                        transport=transport,
+                        max_tokens=completion_tokens,
+                        generation=generation,
+                        stage="length_expansion",
+                        response_format={"type": "json_object"},
+                    )
+                    expanded = _merge_length_expansion(dialogue, response, plan, generation)
+                    if expanded is not None or generation.last_rejection not in (
+                        "json_decode",
+                        "envelope_keys",
+                    ):
+                        break
                 if expanded is not None:
                     from podcaster.episode import parse_script_segments
 
@@ -2283,15 +2323,21 @@ def generate_script(
                 stage="length",
             )
             if repaired:
-                dialogue = _apply_dialogue_guards(repaired)
-                script = _format_script(
+                candidate_dialogue = _apply_dialogue_guards(repaired)
+                candidate_script = _format_script(
                     week=safe_week,
                     article_url=article_url,
                     article_sha256=article_sha256 or "computed-on-retrieval",
-                    dialogue=dialogue,
+                    dialogue=candidate_dialogue,
                     podcast_config=podcast_config,
                     generated_at=generated_at,
                 )
+                candidate_count = sum(
+                    len(turn.split()) for turn in spoken_turns(candidate_script, podcast_config)
+                )
+                # A full rewrite must never shrink an under-length script.
+                if not (count < minimum and candidate_count < count):
+                    dialogue, script = candidate_dialogue, candidate_script
     return script
 
 
