@@ -497,10 +497,14 @@ def run_generation_job(
                         job_id,
                         error.retry_after_seconds,
                     )
-                    _release_failed_reservation(storage, job_id, monthly_path, month)
+                    released = _release_failed_reservation(storage, job_id, monthly_path, month)
+                    # Advertise a retry only when the replay reservation is really gone;
+                    # otherwise the identical retry would hit a 409 replay collision.
                     raise ScriptGenerationFailed(
-                        "chat provider temporarily unavailable; retry later",
-                        retry_after_seconds=error.retry_after_seconds,
+                        "chat provider temporarily unavailable; retry later"
+                        if released
+                        else "LLM script generation failed",
+                        retry_after_seconds=error.retry_after_seconds if released else None,
                     ) from None
                 warnings.append("LLM script generation failed; using placeholder script")
                 llm_script = None

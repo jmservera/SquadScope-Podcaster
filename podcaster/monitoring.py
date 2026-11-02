@@ -574,6 +574,12 @@ async def api_generate(request: Request):
         response = failed_response(["replay output already exists"])
         return JSONResponse(status_code=409, content=response)
     except ScriptGenerationFailed as error:
+        if error.retry_after_seconds is not None:
+            return JSONResponse(
+                status_code=503,
+                content=failed_response(["chat provider temporarily unavailable; retry later"]),
+                headers={"Retry-After": str(error.retry_after_seconds)},
+            )
         report_failure(
             container="podcaster-api",
             error_type="ScriptGenerationFailed",

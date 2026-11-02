@@ -743,6 +743,24 @@ class TestGenerateEndpoint:
         assert mock_report_failure.call_args.kwargs["error_type"] == "ScriptGenerationFailed"
 
     @patch("podcaster.monitoring.report_failure")
+    @patch("podcaster.monitoring.run_generation_job")
+    def test_retriable_provider_failure_returns_503_with_retry_after(
+        self, mock_run_generation_job, mock_report_failure, client, storage
+    ):
+        from podcaster.jobs import ScriptGenerationFailed
+
+        mock_run_generation_job.side_effect = ScriptGenerationFailed(
+            "secret detail", retry_after_seconds=30
+        )
+        resp = client.post(
+            "/api/generate",
+            json={"week": "2026-W24", "article_url": "https://example.com/article"},
+        )
+        assert resp.status_code == 503
+        assert resp.headers["Retry-After"] == "30"
+        assert "secret detail" not in resp.text
+
+    @patch("podcaster.monitoring.report_failure")
     def test_real_generation_quality_failure_returns_safe_reason_and_releases_budget(
         self, mock_report, client, tmp_path, monkeypatch, offline_script_generation
     ):

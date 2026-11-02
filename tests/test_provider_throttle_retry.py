@@ -130,8 +130,9 @@ def test_other_http_errors_are_not_retried(sleeps) -> None:
     assert sleeps == [] and len(calls) == 1
 
 
+@pytest.mark.parametrize("cleanup_ok", [True, False])
 def test_exhausted_throttle_releases_reservation_and_maps_to_503(
-    monkeypatch, tmp_path: Path, sleeps
+    monkeypatch, tmp_path: Path, sleeps, cleanup_ok
 ) -> None:
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://test.openai.azure.com/")
     monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o-mini")
@@ -153,8 +154,13 @@ def test_exhausted_throttle_releases_reservation_and_maps_to_503(
     }
     now = datetime(2026, 6, 12, 10, 0, 0, tzinfo=timezone.utc)
     job_id = build_job_id(payload)
+    if not cleanup_ok:
+        monkeypatch.setattr("podcaster.jobs._release_failed_reservation", lambda *a, **k: False)
     with pytest.raises(ScriptGenerationFailed) as caught:
         run_generation_job(payload, storage=storage, now=now)
+    if not cleanup_ok:
+        assert caught.value.retry_after_seconds is None
+        return
     assert caught.value.retry_after_seconds == 20
     assert not caught.value.quality_rejected
     assert storage.get_bytes(f"jobs/{job_id}/inputs/replay.json") is None

@@ -138,7 +138,7 @@ def _production_observation_fixture(mode):
 
     def urlopen(request, timeout):
         calls.append(json.loads(request.data))
-        if len(calls) == 2 and mode in ("429", "503"):
+        if len(calls) >= 2 and mode in ("429", "503"):
             headers = Message()
             headers["apim-request-id"] = (
                 "request-123" if mode == "429" else "PRIVATE_HEADER\nhttps://secret.example"
@@ -193,6 +193,7 @@ def _production_observation_fixture(mode):
     with (
         patch("urllib.request.urlopen", urlopen),
         patch.object(script_gen, "_draft_by_section", _one_shot_draft),
+        patch.object(script_gen, "_retry_sleep", lambda seconds: None),
     ):
         try:
             script = generate_script(
@@ -207,9 +208,9 @@ def _production_observation_fixture(mode):
                 ),
                 token_provider=_fake_token_provider,
             )
-        except HTTPError as exc:
-            assert exc is failure
-            assert exc.fp.read() == b"PRIVATE_PROVIDER_BODY"
+        except script_gen.ProviderRetriableError as exc:
+            assert exc.__cause__ is None
+            assert failure.fp.read() == b"PRIVATE_PROVIDER_BODY"
             failed_closed = True
     print(
         json.dumps(
@@ -2456,7 +2457,9 @@ class TestScriptQualityContract:
             if "script_generation_observation " in line
         ]
         assert summary["root_level"] == 30
-        assert summary["calls"] == 2
+        # Throttled provider: first call succeeds, then 1 failure + bounded retries
+        # (429: 3 x 17s retries; 503: oversized Retry-After falls back to the 10s default).
+        assert summary["calls"] == {"429": 5, "503": 5}.get(mode, 2)
         assert len({row["invocation"] for row in observations}) == 1
         assert all(row["calls_used"] <= row["call_budget"] == 20 for row in observations)
         assert all(
