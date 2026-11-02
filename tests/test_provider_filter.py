@@ -400,8 +400,10 @@ def test_known_benign_azure_annotation_shapes_are_accepted():
         {"custom_blocklists": {"filtered": False, "details": [{"filtered": True, "id": "x"}]}},
         {"custom_blocklists": [{"id": "x", "filtered": True}]},
         {"custom_blocklists": {"filtered": False, "details": [{"error": {"code": "x"}}]}},
-        {"jailbreak": {"detected": False, "surprise": 1}},
-        {"future_category": {"filtered": False}},
+        {"jailbreak": {"detected": False, "surprise": {"filtered": True}}},
+        {"future_category": {"filtered": True}},
+        {"future_category": {"detected": "maybe"}},
+        {"future_category": {"details": [{"error": {"code": "x"}}]}},
         {"protected_material_code": {"filtered": False, "citation": "bad"}},
         {
             "protected_material_code": {
@@ -477,7 +479,6 @@ def _at(location, results):
         {"id": "x"},
         {"filtered": "no"},
         {"filtered": True},
-        {"filtered": False, "detected": False},
         {"filtered": False, "details": [{"id": "x"}]},
         {"filtered": False, "details": [{"filtered": True, "id": "x"}]},
         {},
@@ -534,7 +535,7 @@ def test_prompt_results_shapes_fail_closed(key, value):
 
 
 @pytest.mark.parametrize(
-    "offsets", [{}, [], {"check_offset": "0"}, {"check_offset": -1}, {"bogus": 1}, {"error": 1}]
+    "offsets", [{}, [], {"check_offset": "0"}, {"check_offset": -1}, {"error": 1}]
 )
 def test_malformed_content_filter_offsets_fail_closed(offsets):
     response = _response()
@@ -551,3 +552,129 @@ def test_valid_content_filter_offsets_pass():
         "end_offset": 5,
     }
     validate_chat_filter_response(response)
+
+
+def _default_v2_gpt4o_response():
+    # Shape modelled on Azure OpenAI gpt-4o 2024-11-20 / DefaultV2 (content scrubbed).
+    clean = {"filtered": False, "severity": "safe"}
+    flags = {"filtered": False, "detected": False}
+    return {
+        "id": "chatcmpl-SCRUBBED",
+        "object": "chat.completion",
+        "model": "gpt-4o-2024-11-20",
+        "system_fingerprint": "fp_scrubbed",
+        "prompt_filter_results": [
+            {
+                "prompt_index": 0,
+                "content_filter_results": {
+                    "hate": clean,
+                    "jailbreak": flags,
+                    "self_harm": clean,
+                    "sexual": clean,
+                    "violence": clean,
+                    "custom_topics": {"filtered": False, "detected": False, "details": []},
+                    "pii": {**flags, "redacted": False},
+                },
+            }
+        ],
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "logprobs": None,
+                "message": {"role": "assistant", "content": "scrubbed", "refusal": None},
+                "content_filter_results": {
+                    "hate": clean,
+                    "protected_material_code": flags,
+                    "protected_material_text": flags,
+                    "self_harm": clean,
+                    "sexual": clean,
+                    "violence": clean,
+                    "task_adherence": {**flags, "reasoning": "scrubbed"},
+                },
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+
+
+def test_default_v2_unknown_non_decision_fields_and_empty_results_pass():
+    response = _default_v2_gpt4o_response()
+    validate_chat_filter_response(response)
+    response["choices"][0]["content_filter_results"] = {}
+    response["prompt_filter_results"][0]["content_filter_results"] = {}
+    validate_chat_filter_response(response)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"filtered": True},
+        {"detected": True},
+        {"detected": None},
+        {"error": {"code": "x"}},
+        {"details": [{"filtered": True}]},
+    ],
+)
+def test_unknown_category_carrying_a_decision_or_error_fails_closed(extra):
+    response = _default_v2_gpt4o_response()
+    response["choices"][0]["content_filter_results"]["future_category"] = {
+        "filtered": False,
+        **extra,
+    }
+    with pytest.raises(FilterSafetyError):
+        validate_chat_filter_response(response)
+
+
+def test_rejection_reason_has_sanitized_path_and_no_content():
+    response = _default_v2_gpt4o_response()
+    response["choices"][0]["content_filter_results"]["hate sexual!"] = {"filtered": True}
+    with pytest.raises(FilterSafetyError) as caught:
+        validate_chat_filter_response(response)
+    assert caught.value.reason == (
+        "chat completion reported filtering at choices.0.content_filter_results.?.filtered"
+    )
+    response = _default_v2_gpt4o_response()
+    response["choices"][0]["content_filter_results"]["violence"] = {
+        "filtered": False,
+        "severity": "SECRET TEXT",
+    }
+    with pytest.raises(FilterSafetyError) as caught:
+        validate_chat_filter_response(response)
+    assert "SECRET" not in caught.value.reason
+    assert caught.value.reason.endswith("violence.severity")
+
+
+@pytest.mark.parametrize("bad", [True, None, "false", 1])
+@pytest.mark.parametrize("key", ["filtered", "detected"])
+@pytest.mark.parametrize("location", ["prompt", "completion", "response"])
+def test_direct_decision_keys_at_results_level_fail_closed(location, key, bad):
+    response = _default_v2_gpt4o_response()
+    if location == "response":
+        response["content_filter_results"] = {key: bad}
+    else:
+        response = _at(location, {key: bad})
+    with pytest.raises(FilterSafetyError):
+        validate_chat_filter_response(response)
+
+
+@pytest.mark.parametrize("bad", [True, None])
+def test_blocklist_entry_detected_decision_fails_closed(bad):
+    for entry in (
+        {"filtered": False, "detected": bad},
+        {"filtered": False, "details": [{"detected": bad, "filtered": False}]},
+    ):
+        with pytest.raises(FilterSafetyError):
+            validate_chat_filter_response(_at("completion", {"custom_blocklists": entry}))
+    validate_chat_filter_response(
+        _at("completion", {"custom_blocklists": {"filtered": False, "detected": False}})
+    )
+
+
+def test_unknown_provider_key_names_are_redacted_from_rejection_path():
+    response = _default_v2_gpt4o_response()
+    response["choices"][0]["content_filter_results"]["PRIVATE_TITLE_CANARY"] = {"filtered": True}
+    with pytest.raises(FilterSafetyError) as caught:
+        validate_chat_filter_response(response)
+    assert "CANARY" not in caught.value.reason
+    assert caught.value.reason.endswith("content_filter_results.?.filtered")
