@@ -85,6 +85,9 @@ param chatModelVersion string = '2024-07-18'
 @description('Deployment (alias) name for the chat model.')
 param chatDeploymentName string = 'chat'
 
+@description('Existing chat deployment the API and synthesis job call at runtime. Defaults to chatDeploymentName; this template never creates or changes it, so it must already exist on the account. Video job keeps chatDeploymentName.')
+param chatRuntimeDeploymentName string = chatDeploymentName
+
 @description('SKU tier for the chat model deployment.')
 param chatModelSkuName string = 'GlobalStandard'
 
@@ -504,7 +507,7 @@ module aca 'modules/aca.bicep' = {
     containerRegistryServer: acrLoginServer
     openAiEndpoint: openAiEndpoint
     ttsDeploymentName: ttsDeploymentName
-    chatDeploymentName: chatDeploymentName
+    chatDeploymentName: chatRuntimeDeploymentName
     ttsVoiceHostA: ttsVoiceHostA
     ttsVoiceHostB: ttsVoiceHostB
     ttsRuntimeEnvironment: ttsRuntimeEnvironment
@@ -721,7 +724,7 @@ module api 'modules/api.bicep' = if (deployApiApp) {
     ttsVoiceHostA: ttsVoiceHostA
     ttsVoiceHostB: ttsVoiceHostB
     ttsRuntimeEnvironment: ttsRuntimeEnvironment
-    chatDeploymentName: chatDeploymentName
+    chatDeploymentName: chatRuntimeDeploymentName
     spotifyPublishEnabled: spotifyPublishEnabled
     spotifyShowId: spotifyShowId
     spotifyClientId: spotifyClientId
