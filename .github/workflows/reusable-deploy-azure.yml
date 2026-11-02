@@ -163,6 +163,7 @@ jobs:
 
       - name: Resolve deployment names and API key
         env:
+          CHAT_RUNTIME_DEPLOYMENT_NAME_VAR: ${{ vars.CHAT_RUNTIME_DEPLOYMENT_NAME }}
           PODCASTER_API_KEY_SECRET: ${{ secrets.PODCASTER_API_KEY }}
           SPOTIFY_PUBLISH_ENABLED_VAR: ${{ vars.SPOTIFY_PUBLISH_ENABLED }}
           SPOTIFY_SHOW_ID_SECRET: ${{ secrets.SPOTIFY_SHOW_ID }}
@@ -233,6 +234,7 @@ jobs:
             echo "SP_KEY=${SP_KEY_SECRET:-}"
             echo "PODCAST_AUTO_PUBLISH=${PODCAST_AUTO_PUBLISH_VAR:-false}"
             echo "SPOTIFY_ALLOW_LIVE_PUBLISH=${SPOTIFY_ALLOW_LIVE_PUBLISH_VAR:-false}"
+            echo "CHAT_RUNTIME_DEPLOYMENT_NAME=${CHAT_RUNTIME_DEPLOYMENT_NAME_VAR:-chat-gpt4o-w44-20261101}"
             echo "SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH=${SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH_VAR:-false}"
             echo "SPOTIFY_VIDEO_PUBLISH_MODE=${SPOTIFY_VIDEO_PUBLISH_MODE_VAR:-draft}"
             echo "VIDEO_YOUTUBE_ENABLED=${VIDEO_YOUTUBE_ENABLED_VAR:-false}"
@@ -397,6 +399,7 @@ jobs:
             --parameters spotifySessionCookieKey="${SP_KEY:-}" \
             --parameters podcastAutoPublish="${PODCAST_AUTO_PUBLISH:-false}" \
             --parameters spotifyAllowLivePublish="${SPOTIFY_ALLOW_LIVE_PUBLISH:-false}" \
+            --parameters chatRuntimeDeploymentName="${CHAT_RUNTIME_DEPLOYMENT_NAME}" \
             --parameters spotifyVideoAllowLivePublish="${SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH:-false}" \
             --parameters spotifyVideoPublishMode="${SPOTIFY_VIDEO_PUBLISH_MODE:-draft}" \
             --parameters videoYoutubeEnabled="${VIDEO_YOUTUBE_ENABLED:-false}" \

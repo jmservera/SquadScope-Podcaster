@@ -63,6 +63,7 @@ def test_deployed_api_and_worker_have_identical_effective_review_provider_finger
     main = BICEP.read_text(encoding="utf-8")
     root_values = dict(re.findall(r"(?m)^param (\w+) string = '([^'\n]*)'$", main))
     root_values["openAiEndpoint"] = "https://offline-review.openai.azure.com/"
+    root_values["chatRuntimeDeploymentName"] = root_values["chatDeploymentName"]
     runtime = re.search(r"param ttsRuntimePolicy object = \{(.*?)\n\}", main, re.S)
     assert runtime, "API and synthesis need a shared fingerprinted TTS pool policy"
     policy = yaml.safe_load(runtime[1])
@@ -970,3 +971,16 @@ def test_existing_aca_secrets_preserved() -> None:
     for name in ("spotify-sp-dc", "spotify-sp-key", "podcaster-api-key"):
         assert f"name: '{name}'" in aca, f"aca.bicep lost secret {name}"
         assert f"secretRef: '{name}'" in aca, f"aca.bicep no longer references {name}"
+
+
+def test_chat_runtime_deployment_binds_only_api_and_synthesis():
+    source = BICEP.read_text()
+    assert "param chatRuntimeDeploymentName string = chatDeploymentName" in source
+    modules = re.split(r"(?m)^module ", source)[1:]
+    users = {m.split()[0]: "chatDeploymentName: chatRuntimeDeploymentName" in m for m in modules}
+    assert {k for k, v in users.items() if v} == {"aca", "api"}
+    openai = next(m for m in modules if m.startswith("openAi "))
+    assert "chatDeploymentName: chatDeploymentName" in openai
+    workflow = REUSABLE_WORKFLOW.read_text()
+    assert 'chatRuntimeDeploymentName="${CHAT_RUNTIME_DEPLOYMENT_NAME}"' in workflow
+    assert "CHAT_RUNTIME_DEPLOYMENT_NAME_VAR:-chat-gpt4o-w44-20261101" in workflow
