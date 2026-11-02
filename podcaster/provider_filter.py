@@ -21,6 +21,7 @@ _KNOWN_CATEGORIES = frozenset(
         "ungrounded_material",
     }
 )
+_SEVERITY_CATEGORIES = frozenset({"hate", "sexual", "violence", "self_harm"})
 _CITATION_FIELDS = frozenset({"URL", "License", "license"})
 _ANNOTATION_FIELDS = frozenset({"filtered", "detected", "severity", "citation", "details", "id"})
 _BLOCKLIST_ENTRY_FIELDS = frozenset({"filtered", "id", "details"})
@@ -87,6 +88,10 @@ def validate_chat_filter_response(response: Any) -> None:
                 for entry in annotation:
                     annotation_fields(entry, _BLOCKLIST_ENTRY_FIELDS, require_decision=True)
                 continue
+            if category in _SEVERITY_CATEGORIES and (
+                not isinstance(annotation, dict) or not isinstance(annotation.get("filtered"), bool)
+            ):
+                reject("missing filter decision")
             annotation_fields(annotation, _ANNOTATION_FIELDS, require_decision=True)
 
     def is_error_key(key: Any) -> bool:
