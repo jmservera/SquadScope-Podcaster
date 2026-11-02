@@ -1766,3 +1766,32 @@ def test_regeneration_gets_distinct_job_id_and_is_recorded(tmp_path: Path) -> No
 
     assert second.response["job_id"] != first.response["job_id"]
     assert second.manifest["request"]["regeneration"] == regen["regeneration"]
+
+
+def test_dry_run_rechecks_filter_marker_after_generation(tmp_path, monkeypatch):
+    from podcaster import jobs
+
+    payload = {
+        "week": "2026-W44",
+        "article_url": "https://example.invalid/article",
+        "article_title": "Source-grounded review",
+        "article_content": VALID_ARTICLE_CONTENT,
+        "dry_run": True,
+    }
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    job_id = build_job_id(payload)
+
+    def generate_then_sibling_fails(**_kwargs):
+        # A concurrent identical dry run records the terminal failure mid-generation.
+        storage.put_bytes(f"jobs/{job_id}/filter-failure.json", b"{}", "application/json")
+        return "Title: Test\n---\nTheo: Factual source.\nVera: A response."
+
+    monkeypatch.setattr(jobs, "generate_script", generate_then_sibling_fails)
+    monkeypatch.setattr(jobs, "extract_claims", Mock(return_value=[Mock()]))
+    monkeypatch.setattr(jobs, "claims_to_ledger_json", Mock(return_value="{}"))
+    artifacts = Mock(wraps=jobs.generate_artifacts)
+    monkeypatch.setattr(jobs, "generate_artifacts", artifacts)
+    with pytest.raises(ReplayCollisionError):
+        run_generation_job(payload, storage=storage)
+    artifacts.assert_not_called()
+    assert storage.get_bytes(f"jobs/{job_id}/manifest.json") is None

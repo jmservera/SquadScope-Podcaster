@@ -403,6 +403,13 @@ def test_known_benign_azure_annotation_shapes_are_accepted():
         {"jailbreak": {"detected": False, "surprise": 1}},
         {"future_category": {"filtered": False}},
         {"protected_material_code": {"filtered": False, "citation": "bad"}},
+        {
+            "protected_material_code": {
+                "filtered": False,
+                "citation": {"error": "content_filter_error"},
+            }
+        },
+        {"protected_material_code": {"filtered": False, "citation": {"URL": 1}}},
         {"hate": {"filtered": False, "details": "bad"}},
     ],
 )

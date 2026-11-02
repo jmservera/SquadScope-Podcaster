@@ -21,6 +21,7 @@ _KNOWN_CATEGORIES = frozenset(
         "ungrounded_material",
     }
 )
+_CITATION_FIELDS = frozenset({"URL", "License", "license"})
 _ANNOTATION_FIELDS = frozenset({"filtered", "detected", "severity", "citation", "details", "id"})
 _BLOCKLIST_ENTRY_FIELDS = frozenset({"filtered", "id", "details"})
 _DETAIL_FIELDS = frozenset(
@@ -115,7 +116,7 @@ def validate_chat_filter_response(response: Any) -> None:
                     reject("malformed filter detail")
             elif key == "citation":
                 if not isinstance(field, dict) or not all(
-                    isinstance(k, str) and isinstance(v, str) for k, v in field.items()
+                    k in _CITATION_FIELDS and isinstance(v, str) for k, v in field.items()
                 ):
                     reject("malformed filter detail")
             elif key == "details":
