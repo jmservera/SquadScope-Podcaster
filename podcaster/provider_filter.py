@@ -63,10 +63,35 @@ def _safe_id(value: Any) -> str | None:
     return None
 
 
+_PATH_NAMES = (
+    _KNOWN_CATEGORIES
+    | _ANNOTATION_FIELDS
+    | _BLOCKLIST_ENTRY_FIELDS
+    | _OFFSET_FIELDS
+    | _DETAIL_FIELDS
+    | _CITATION_FIELDS
+    | {
+        "choices",
+        "finish_reason",
+        "content_filter_results",
+        "content_filter_offsets",
+        "prompt_filter_results",
+        "prompt_annotations",
+        "prompt_index",
+        "error",
+        "innererror",
+        "status",
+        "code",
+        "error_details",
+    }
+)
+
+
 def _safe_segment(segment: Any) -> str:
     if isinstance(segment, int) and not isinstance(segment, bool):
         return str(segment)
-    if isinstance(segment, str) and re.fullmatch(r"[A-Za-z0-9_]{1,40}", segment):
+    # Only schema names are echoed; provider-chosen keys could carry content.
+    if isinstance(segment, str) and segment in _PATH_NAMES:
         return segment
     return "?"
 

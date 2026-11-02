@@ -669,3 +669,12 @@ def test_blocklist_entry_detected_decision_fails_closed(bad):
     validate_chat_filter_response(
         _at("completion", {"custom_blocklists": {"filtered": False, "detected": False}})
     )
+
+
+def test_unknown_provider_key_names_are_redacted_from_rejection_path():
+    response = _default_v2_gpt4o_response()
+    response["choices"][0]["content_filter_results"]["PRIVATE_TITLE_CANARY"] = {"filtered": True}
+    with pytest.raises(FilterSafetyError) as caught:
+        validate_chat_filter_response(response)
+    assert "CANARY" not in caught.value.reason
+    assert caught.value.reason.endswith("content_filter_results.?.filtered")
