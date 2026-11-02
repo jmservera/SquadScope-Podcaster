@@ -3057,6 +3057,29 @@ class TestSectionBySectionDraft:
         assert '"stage":"draft_section_before"' in caplog.text
         assert f'"article_chars":{len(VALID_ARTICLE_CONTENT)}' in caplog.text
 
+    def test_section_and_final_observations_report_word_fields_without_content(self, caplog):
+        caplog.set_level("WARNING", logger="podcaster.script_gen")
+        run, _ = self._run(0.75)
+        script = run()
+        records = [
+            json.loads(message.split(" ", 1)[1])
+            for message in caplog.messages
+            if message.startswith("script_generation_observation ")
+        ]
+        sections = [r for r in records if r["stage"] == "draft_section_measured"]
+        assert sections
+        running = 0
+        for index, record in enumerate(sections, start=1):
+            running += record["actual_words"]
+            assert record["section_index"] == index
+            assert record["requested_words"] >= 1
+            assert record["target_words"] >= 1
+            assert record["running_total_words"] == running
+        final = [r for r in records if r["stage"] == "final_validation"][-1]
+        assert (final["range_min"], final["range_max"]) == (1001, 1700)
+        assert final["total_spoken_words"] == self._words(script)
+        assert "Theo:" not in caplog.text
+
     def test_single_beat_falls_back_to_one_shot_draft(self):
         from podcaster.config import EpisodeStyle, ScriptDirections
 
