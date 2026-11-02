@@ -120,6 +120,8 @@ def _align_rows(content: str, count: int) -> list[Any]:
     rows = parsed.get("claims") if isinstance(parsed, dict) else None
     if not isinstance(rows, list):
         raise ClaimGroundingError(f"grounding must account for all {count} canonical spoken turns")
+    if not rows:
+        return [None] * count
     if not any(isinstance(row, dict) and "turn" in row for row in rows):
         if len(rows) != count:
             raise ClaimGroundingError(
@@ -360,7 +362,10 @@ def extract_claims(
         f"?api-version={config.api_version}"
     )
 
+    requests_used = [0]
+
     def complete(batch_turns: list[str] | None, budget: int) -> str:
+        requests_used[0] += 1
         batch_prompt = user_prompt
         if batch_turns is not None:
             batch_prompt += f"CANONICAL SPOKEN TURNS:\n{fence_json(batch_turns)}"
@@ -410,10 +415,13 @@ def extract_claims(
         return content
 
     claims = []
-    for batch_turns, budget in batches:
+    for position, (batch_turns, budget) in enumerate(batches):
         content = complete(batch_turns, budget)
         if batch_turns is not None:
-            content = _complete_missing_turns(content, batch_turns, complete)
+            # Initial batches (including those still to come) and targeted
+            # follow-ups share the MAX_GROUNDING_REQUESTS audit budget.
+            allowed = requests_used[0] + (len(batches) - position - 1) < MAX_GROUNDING_REQUESTS
+            content = _complete_missing_turns(content, batch_turns, complete, allowed)
             claims.extend(
                 _parse_script_claims(
                     content,
@@ -433,7 +441,9 @@ def extract_claims(
     return claims
 
 
-def _complete_missing_turns(content: str, batch_turns: list[str], complete: Any) -> str:
+def _complete_missing_turns(
+    content: str, batch_turns: list[str], complete: Any, allowed: bool = True
+) -> str:
     """Audit turns the model skipped with one targeted request; never accept gaps.
 
     Returns a ``{"claims": [...]}`` document with a row for every turn when the
@@ -447,6 +457,8 @@ def _complete_missing_turns(content: str, batch_turns: list[str], complete: Any)
         return content
     missing = [i for i, row in enumerate(aligned) if row is None]
     if not missing:
+        return content
+    if not allowed or not all(row is None or isinstance(row, dict) for row in aligned):
         return content
     logger.warning(
         "grounding omitted %d of %d turns (indices=%s); requesting them once",

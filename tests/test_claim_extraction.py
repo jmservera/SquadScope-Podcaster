@@ -718,3 +718,70 @@ class TestIndexedGroundingRows:
     def test_turn_still_missing_after_followup_fails_closed(self):
         with pytest.raises(claim_extraction.ClaimGroundingError, match="account for all"):
             self._run(always_drop=(self.turns[1],))
+
+    def _client(self, turns, replies):
+        calls = []
+
+        def transport(request):
+            body = json.loads(request.data)
+            batch = json.loads(
+                body["messages"][1]["content"].split("CANONICAL SPOKEN TURNS:\n")[1][
+                    len(FENCE_OPEN) : -len(FENCE_CLOSE)
+                ]
+            )
+            calls.append(batch)
+            rows = replies(len(calls), batch)
+            return json.dumps(
+                {"choices": [{"message": {"content": json.dumps({"claims": rows})}}]}
+            ).encode()
+
+        script = "\n".join(f"Theo: {turn}" for turn in turns)
+        run = lambda: extract_claims(  # noqa: E731
+            article_content=self.source,
+            article_url="https://example.com/a",
+            config=_mock_config(),
+            script=script,
+            token_provider=_fake_token_provider,
+            transport=transport,
+        )
+        return run, calls
+
+    @staticmethod
+    def _row(i, turn, source):
+        return {"turn": i, "script_excerpt": turn, "grounding": "supported", "source_quote": source}
+
+    def test_empty_rows_for_single_turn_batch_get_followup(self):
+        turns = [self.turns[0]]
+        run, calls = self._client(
+            turns,
+            lambda n, batch: [] if n == 1 else [self._row(1, batch[0], self.source)],
+        )
+        assert [c.script_excerpt for c in run()] == turns
+        assert len(calls) == 2
+
+    def test_non_dict_retained_row_fails_closed_not_type_error(self):
+        turns = self.turns[:2]
+        run, _ = self._client(
+            turns,
+            lambda n, batch: [None, "bad row"] if n == 1 else [self._row(1, batch[0], self.source)],
+        )
+        with pytest.raises(claim_extraction.ClaimGroundingError):
+            run()
+
+    def test_followups_share_the_eight_request_budget(self):
+        turns = [
+            f"Bridgeplay brings Windows Steam games into Mac Steam. {'x' * 7000}{i}"
+            for i in range(7)
+        ]
+        seen = set()
+
+        def replies(n, batch):
+            if batch[0] not in seen:
+                seen.add(batch[0])
+                return []
+            return [self._row(1, batch[0], self.source)]
+
+        run, calls = self._client(turns, replies)
+        with pytest.raises(claim_extraction.ClaimGroundingError):
+            run()
+        assert len(calls) <= claim_extraction.MAX_GROUNDING_REQUESTS
