@@ -977,9 +977,7 @@ def test_chat_runtime_deployment_binds_only_api_and_synthesis():
     source = BICEP.read_text()
     assert "param chatRuntimeDeploymentName string = chatDeploymentName" in source
     modules = re.split(r"(?m)^module ", source)[1:]
-    users = {
-        m.split()[0]: "chatDeploymentName: chatRuntimeDeploymentName" in m for m in modules
-    }
+    users = {m.split()[0]: "chatDeploymentName: chatRuntimeDeploymentName" in m for m in modules}
     assert {k for k, v in users.items() if v} == {"aca", "api"}
     openai = next(m for m in modules if m.startswith("openAi "))
     assert "chatDeploymentName: chatDeploymentName" in openai
