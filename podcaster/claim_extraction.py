@@ -106,6 +106,44 @@ _QUALIFICATION = re.compile(
 )
 
 
+def _align_rows(content: str, count: int) -> list[Any]:
+    """Place rows at their 1-based ``turn`` index; ``None`` marks an unaccounted turn.
+
+    Rows without ``turn`` keep legacy positional meaning, but only when the count is
+    exact. Duplicate or out-of-range indices are never repaired.
+    """
+
+    try:
+        parsed = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        raise ClaimGroundingError("grounding response is not valid JSON") from None
+    rows = parsed.get("claims") if isinstance(parsed, dict) else None
+    if not isinstance(rows, list):
+        raise ClaimGroundingError(f"grounding must account for all {count} canonical spoken turns")
+    if not rows:
+        return [None] * count
+    if not any(isinstance(row, dict) and "turn" in row for row in rows):
+        if len(rows) != count:
+            raise ClaimGroundingError(
+                f"grounding must account for all {count} canonical spoken turns"
+            )
+        return rows
+    aligned: list[Any] = [None] * count
+    for row in rows:
+        turn = row.get("turn") if isinstance(row, dict) else None
+        if (
+            not isinstance(turn, int)
+            or isinstance(turn, bool)
+            or not 1 <= turn <= count
+            or aligned[turn - 1] is not None
+        ):
+            raise ClaimGroundingError(
+                f"grounding rows must use each turn index 1..{count} at most once"
+            )
+        aligned[turn - 1] = row
+    return aligned
+
+
 def _parse_script_claims(
     content: str,
     article_url: str,
@@ -114,12 +152,8 @@ def _parse_script_claims(
     breaking_news: str | None = None,
     turn_offset: int = 0,
 ) -> list[Claim]:
-    try:
-        parsed = json.loads(content)
-    except (json.JSONDecodeError, TypeError):
-        raise ClaimGroundingError("grounding response is not valid JSON") from None
-    rows = parsed.get("claims") if isinstance(parsed, dict) else None
-    if not isinstance(rows, list) or len(rows) != len(turns):
+    rows = _align_rows(content, len(turns))
+    if any(row is None for row in rows):
         raise ClaimGroundingError(
             f"grounding must account for all {len(turns)} canonical spoken turns"
         )
@@ -281,8 +315,10 @@ def extract_claims(
             UNTRUSTED_PROMPT_POLICY
             + "\nYou perform conservative source-alignment triage, NOT factual verification "
             "or human approval. Audit EVERY canonical spoken turn in order. Return ONLY a "
-            'JSON object {"claims": [...]}, one row per turn, with script_excerpt equal to '
-            "the ENTIRE exact turn, grounding (supported, qualified, nonfactual, unsupported), "
+            'JSON object {"claims": [...]}, one row per turn, with turn (the 1-based position in '
+            "CANONICAL SPOKEN TURNS; never merge, skip, reorder or add rows), "
+            "script_excerpt equal to the ENTIRE exact turn, grounding (supported, "
+            "qualified, nonfactual, unsupported), "
             "source_kind (article or breaking_news), source_quote (exact contiguous excerpt "
             "from that identified source, or null for nonfactual), and "
             "editor_notes. Topic overlap or a named project is NOT support for the rest of "
@@ -326,8 +362,10 @@ def extract_claims(
         f"?api-version={config.api_version}"
     )
 
-    claims = []
-    for batch_turns, budget in batches:
+    requests_used = [0]
+
+    def complete(batch_turns: list[str] | None, budget: int) -> str:
+        requests_used[0] += 1
         batch_prompt = user_prompt
         if batch_turns is not None:
             batch_prompt += f"CANONICAL SPOKEN TURNS:\n{fence_json(batch_turns)}"
@@ -374,7 +412,16 @@ def extract_claims(
                 "no partial ledger accepted; split long factual utterances "
                 "and regenerate within the requested spoken-word range"
             )
+        return content
+
+    claims = []
+    for position, (batch_turns, budget) in enumerate(batches):
+        content = complete(batch_turns, budget)
         if batch_turns is not None:
+            # Initial batches (including those still to come) and targeted
+            # follow-ups share the MAX_GROUNDING_REQUESTS audit budget.
+            allowed = requests_used[0] + (len(batches) - position - 1) < MAX_GROUNDING_REQUESTS
+            content = _complete_missing_turns(content, batch_turns, complete, allowed)
             claims.extend(
                 _parse_script_claims(
                     content,
@@ -392,6 +439,46 @@ def extract_claims(
             return _parse_claims(content, article_url)
 
     return claims
+
+
+def _complete_missing_turns(
+    content: str, batch_turns: list[str], complete: Any, allowed: bool = True
+) -> str:
+    """Audit turns the model skipped with one targeted request; never accept gaps.
+
+    Returns a ``{"claims": [...]}`` document with a row for every turn when the
+    follow-up accounts for the rest; otherwise the original content is returned so
+    the strict parser fails closed.
+    """
+
+    try:
+        aligned = _align_rows(content, len(batch_turns))
+    except ClaimGroundingError:
+        return content
+    missing = [i for i, row in enumerate(aligned) if row is None]
+    if not missing:
+        return content
+    if not allowed or not all(row is None or isinstance(row, dict) for row in aligned):
+        return content
+    logger.warning(
+        "grounding omitted %d of %d turns (indices=%s); requesting them once",
+        len(missing),
+        len(batch_turns),
+        [i + 1 for i in missing],
+    )
+    subset = [batch_turns[i] for i in missing]
+    budget = _grounding_batches(subset)[0][1]
+    try:
+        extra = _align_rows(complete(subset, budget), len(subset))
+    except ClaimGroundingError:
+        return content
+    if not all(isinstance(row, dict) for row in extra):
+        return content
+    for index, row in zip(missing, extra):
+        aligned[index] = row
+    return json.dumps(
+        {"claims": [{**row, "turn": i} for i, row in enumerate(aligned, 1)]}, ensure_ascii=False
+    )
 
 
 def _parse_claims(raw_json: str, article_url: str) -> list[Claim]:
