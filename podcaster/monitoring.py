@@ -57,6 +57,7 @@ from podcaster.credentials import CredentialStore
 from podcaster.failure_reporting import report_failure
 from podcaster.job_logs import LogLevel, read_logs
 from podcaster.jobs import (
+    SCRIPT_QUALITY_REJECTED,
     ReplayCollisionError,
     ScriptGenerationFailed,
     failed_response,
@@ -581,8 +582,10 @@ async def api_generate(request: Request):
         reason = "script generation failed; no episode was produced"
         if error.quality_reason:
             reason += f"; {error.quality_reason}"
+        if error.quality_rejected:
+            reason = f"{SCRIPT_QUALITY_REJECTED}; {reason}"
         response = failed_response([reason])
-        return JSONResponse(status_code=502, content=response)
+        return JSONResponse(status_code=422 if error.quality_rejected else 502, content=response)
     except Exception:
         logger.exception("unhandled error in generation job")
         report_failure(

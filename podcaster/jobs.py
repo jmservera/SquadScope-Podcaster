@@ -38,7 +38,7 @@ from podcaster.review import (
     provider_settings_sha256,
 )
 from podcaster.script_gen import ScriptGenConfig, ScriptQualityError, generate_script
-from podcaster.sections import parse_script_sections, sections_to_metadata
+from podcaster.sections import SectionValidationError, parse_script_sections, sections_to_metadata
 from podcaster.storage import StorageBackend, StoredArtifact, create_storage_backend
 from podcaster.tts import load_tts_config
 from podcaster.validation import RESPONSE_KEYS
@@ -73,12 +73,25 @@ class MonthlyBudgetExceeded(RuntimeError):
         self.budget = budget
 
 
+# Machine-readable marker (first errors[] entry) for deterministic, non-mutating rejections.
+SCRIPT_QUALITY_REJECTED = "script_quality_rejected"
+# Fixed text: SectionValidationError messages can embed generated section titles.
+SECTION_VALIDATION_DIAGNOSTIC = "generated script failed section validation"
+
+
 class ScriptGenerationFailed(RuntimeError):
     """Raised when a configured LLM script generation fails for a publishable job."""
 
-    def __init__(self, message: str, *, quality_reason: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        quality_reason: str | None = None,
+        quality_rejected: bool = False,
+    ) -> None:
         super().__init__(message)
         self.quality_reason = quality_reason
+        self.quality_rejected = quality_rejected
 
 
 class ReplayCollisionError(RuntimeError):
@@ -92,8 +105,11 @@ def _release_failed_reservation(
     month: str,
     *,
     preserve_replay: bool = False,
-) -> None:
+) -> bool:
     """Release replay inputs and the reserved ledger slot of a failed job.
+
+    Returns True only when cleanup was confirmed; storage errors are logged and
+    reported as False so callers never claim a clean deterministic rejection.
 
     Without this the create-only replay reservation would return 409 for every
     identical re-run of a job that never produced an episode.
@@ -119,6 +135,8 @@ def _release_failed_reservation(
                 storage.delete_blob(f"{input_prefix}/{name}")
     except Exception:
         logging.exception("failed to release reservation for failed job job_id=%s", job_id)
+        return False
+    return True
 
 
 def _canonical_replay_inputs(payload: dict[str, Any]) -> dict[str, Any]:
@@ -462,16 +480,18 @@ def run_generation_job(
                     logging.exception(
                         "LLM script generation failed job_id=%s; failing closed", job_id
                     )
-                    _release_failed_reservation(storage, job_id, monthly_path, month)
-                    quality_reason = (
-                        str(error)
-                        if isinstance(error, (ScriptQualityError, ClaimGroundingError))
-                        else None
-                    )
+                    released = _release_failed_reservation(storage, job_id, monthly_path, month)
+                    quality_reason = None
+                    if released:
+                        if isinstance(error, SectionValidationError):
+                            quality_reason = SECTION_VALIDATION_DIAGNOSTIC
+                        elif isinstance(error, (ScriptQualityError, ClaimGroundingError)):
+                            quality_reason = str(error)
                     detail = f": {quality_reason}" if quality_reason else ""
                     raise ScriptGenerationFailed(
                         f"LLM script generation failed{detail}",
                         quality_reason=quality_reason,
+                        quality_rejected=quality_reason is not None,
                     ) from None
                 logging.exception(
                     "LLM script generation failed job_id=%s; falling back to placeholder",

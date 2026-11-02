@@ -1768,6 +1768,76 @@ def test_regeneration_gets_distinct_job_id_and_is_recorded(tmp_path: Path) -> No
     assert second.manifest["request"]["regeneration"] == regen["regeneration"]
 
 
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_section_validation_is_quality_rejection_only_after_confirmed_cleanup(
+    monkeypatch, tmp_path: Path, cleanup_fails: bool
+) -> None:
+    from podcaster import jobs
+    from podcaster.sections import SectionValidationError
+
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    _configure_failing_llm(monkeypatch)
+
+    def reject(**kwargs):
+        raise SectionValidationError("PRIVATE_TITLE_CANARY missing")
+
+    monkeypatch.setattr(jobs, "generate_script", reject)
+    if cleanup_fails:
+        real_update = storage.update_bytes
+        ledger_calls = []
+
+        def broken(path, *args, **kwargs):
+            if path.startswith("ledgers/"):
+                ledger_calls.append(path)
+                if len(ledger_calls) > 1:  # first call is the reservation itself
+                    raise OSError("storage down")
+            return real_update(path, *args, **kwargs)
+
+        monkeypatch.setattr(storage, "update_bytes", broken)
+    payload = {
+        "week": "2026-W24",
+        "article_url": "https://example.com/ai-article",
+        "article_title": "AI Revolution",
+        "article_content": VALID_ARTICLE_CONTENT,
+    }
+    with pytest.raises(ScriptGenerationFailed) as caught:
+        run_generation_job(
+            payload, storage=storage, now=datetime(2026, 6, 12, 10, 0, 0, tzinfo=timezone.utc)
+        )
+    error = caught.value
+    assert "PRIVATE_TITLE_CANARY" not in str(error) + str(error.quality_reason)
+    if cleanup_fails:
+        assert error.quality_rejected is False
+        assert error.quality_reason is None
+    else:
+        assert error.quality_rejected is True
+        assert error.quality_reason == jobs.SECTION_VALIDATION_DIAGNOSTIC
+
+
+def test_filter_safety_is_not_a_quality_rejection(monkeypatch, tmp_path: Path) -> None:
+    from podcaster import jobs
+
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    _configure_failing_llm(monkeypatch)
+
+    def filtered(**kwargs):
+        raise FilterSafetyError("filtered")
+
+    monkeypatch.setattr(jobs, "generate_script", filtered)
+    payload = {
+        "week": "2026-W24",
+        "article_url": "https://example.com/ai-article",
+        "article_title": "AI Revolution",
+        "article_content": VALID_ARTICLE_CONTENT,
+    }
+    with pytest.raises(ScriptGenerationFailed) as caught:
+        run_generation_job(
+            payload, storage=storage, now=datetime(2026, 6, 12, 10, 0, 0, tzinfo=timezone.utc)
+        )
+    assert caught.value.quality_rejected is False
+    assert caught.value.quality_reason == "filter_safety"
+
+
 def test_dry_run_rechecks_filter_marker_after_generation(tmp_path, monkeypatch):
     from podcaster import jobs
 

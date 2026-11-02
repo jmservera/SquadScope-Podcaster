@@ -35,6 +35,7 @@ from podcaster.credentials import CredentialStore
 from podcaster.dispatch_receipts import DispatchReceiptError, DispatchReceiptRepository
 from podcaster.failure_reporting import report_failure
 from podcaster.jobs import (
+    SCRIPT_QUALITY_REJECTED,
     ReplayCollisionError,
     ScriptGenerationFailed,
     failed_response,
@@ -571,8 +572,16 @@ class GenerateHandler(BaseHTTPRequestHandler):
             reason = "script generation failed; no episode was produced"
             if error.quality_reason:
                 reason += f"; {error.quality_reason}"
+            if error.quality_rejected:
+                reason = f"{SCRIPT_QUALITY_REJECTED}; {reason}"
             response = failed_response([reason])
-            _json_response(self, HTTPStatus.BAD_GATEWAY, response)
+            _json_response(
+                self,
+                HTTPStatus.UNPROCESSABLE_ENTITY
+                if error.quality_rejected
+                else HTTPStatus.BAD_GATEWAY,
+                response,
+            )
             return
         except Exception:
             logger.exception("unhandled error in generation job")
