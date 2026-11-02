@@ -117,6 +117,11 @@ MAX_OWNERSHIP_REPAIRS = 1
 # Bounded LLM repair rounds when section validation (e.g. minimum host turns) fails.
 MAX_SECTION_REPAIRS = 2
 MAX_LENGTH_REPAIRS = 2
+# Section-by-section draft: models undershoot per-call targets, so ask for more.
+SECTION_DRAFT_OVERSHOOT = 1.2
+# Shared pool of retries (across all sections) for empty/malformed section replies.
+MAX_SECTION_DRAFT_RETRIES = 2
+GENERATION_CALL_BUDGET = 20
 
 DEFAULT_CHAT_API_VERSION = "2024-12-01-preview"
 
@@ -146,6 +151,11 @@ class ScriptQualityError(ValueError):
                 "script or section titles without dropping required identities, then "
                 "regenerate; no truncation accepted"
             ),
+            "section_draft": (
+                "section-by-section draft failed: section {failed} returned no usable "
+                "host turns after {attempts} attempts; no partial script accepted"
+            ),
+            "call_budget": "generation call budget {budget} exhausted; no partial script accepted",
             "final_range": (
                 "final canonical script has {count} spoken words; requested "
                 "{minimum}-{maximum} inclusive; exhausted {repairs} length repairs"
@@ -1190,14 +1200,10 @@ class _GenerationDiagnostics:
     invocation: str = field(default_factory=lambda: uuid4().hex)
     last_rejection: str | None = None
     calls_used: int = 0
-    # Upper bound from existing nested helper ceilings, not additional repair admission.
-    call_budget: int = (
-        1
-        + 2 * MAX_OWNERSHIP_REPAIRS
-        + MAX_REPO_COVERAGE_REPAIRS
-        + (MAX_SECTION_REPAIRS + MAX_LENGTH_REPAIRS)
-        * (1 + 2 * MAX_OWNERSHIP_REPAIRS + MAX_REPO_COVERAGE_REPAIRS)
-    )
+    # Hard ceiling enforced in ``_request_dialogue``: a section-by-section draft
+    # (<= 6 calls + MAX_SECTION_DRAFT_RETRIES) plus repairs can never exceed it.
+    call_budget: int = GENERATION_CALL_BUDGET
+    article_chars: int | None = None
 
     def counts(self, dialogue: str, *, canonical: bool = False) -> dict[str, Any]:
         if not dialogue:
@@ -1319,6 +1325,8 @@ class _GenerationDiagnostics:
             "reasoning_tokens": _observed_integer(details.get("reasoning_tokens")),
             **self.counts(dialogue, canonical=canonical),
         }
+        if stage in ("draft_before", "draft_section_before") and self.article_chars is not None:
+            record["article_chars"] = self.article_chars
         if rejection_reason in _EXPANSION_REJECTION_CODES:
             measured = record["spoken_words"]
             record.update(
@@ -1388,6 +1396,8 @@ def _request_dialogue(
     """
 
     if generation is not None:
+        if generation.calls_used >= generation.call_budget:
+            raise ScriptQualityError("call_budget", budget=generation.call_budget)
         current_is_canonical = False
         current = next(
             (
@@ -1403,7 +1413,7 @@ def _request_dialogue(
         generation.observe(
             stage + "_before", current, max_tokens=max_tokens, canonical=current_is_canonical
         )
-        if generation.word_range is not None:
+        if generation.word_range is not None and stage != "draft_section":
             messages = [
                 *messages[:-1],
                 {
@@ -1663,7 +1673,7 @@ def _merge_length_expansion(
             return reject("section_index", section_index=_observed_integer(index))
         if not isinstance(turns, list) or not turns:
             return reject("turns_list", section_index=index)
-        words = 0
+        turn_words: list[int] = []
         for turn in turns:
             if (
                 not isinstance(turn, str)
@@ -1685,15 +1695,22 @@ def _merge_length_expansion(
                 return reject("canonical_turn_or_duplicate", section_index=index)
             existing.add(text.strip())
             canonical_existing.add(canonical_turns[0].casefold())
-            words += len(canonical_turns[0].split())
-        if words > allowed[index]["add_words"] + 20:
+            turn_words.append(len(canonical_turns[0].split()))
+        budget = allowed[index]["add_words"] + 20
+        kept, words = 0, 0
+        for count in turn_words:
+            if words + count > budget:
+                break
+            kept, words = kept + 1, words + count
+        if not kept:
             return reject(
                 "section_budget",
                 section_index=index,
-                section_words=words,
-                section_budget=allowed[index]["add_words"] + 20,
+                section_words=turn_words[0],
+                section_budget=budget,
             )
-        additions[index] = "\n".join(turns) + "\n"
+        # Overshoot trims trailing whole turns instead of discarding every insertion.
+        additions[index] = "\n".join(turns[:kept]) + "\n"
     lines = dialogue.splitlines(keepends=True)
     for index in sorted(additions, key=lambda key: allowed[key]["before_line"], reverse=True):
         lines.insert(allowed[index]["before_line"], additions[index])
@@ -1707,6 +1724,130 @@ def _merge_length_expansion(
     ):
         return reject("merged_constraints", candidate_words=after)
     return merged
+
+
+def _has_opening(directions: ScriptDirections | None) -> bool:
+    """Whether ``_section_word_targets`` reserved a headerless opening budget."""
+    if directions is None:
+        return False
+    return bool(
+        directions.show_intro
+        or directions.cold_open
+        or any(
+            beat.strip().lower() in _COLD_OPEN_SEGMENT_ALIASES
+            for beat in directions.episode_style.segment_order
+        )
+    )
+
+
+def _draft_by_section(
+    *,
+    messages: list[dict[str, str]],
+    targets: tuple[tuple[str, int], ...],
+    has_opening: bool,
+    maximum: int,
+    podcast_config: PodcastConfig,
+    url: str,
+    token: str,
+    transport: Transport,
+    max_tokens: int,
+    generation: _GenerationDiagnostics,
+) -> str:
+    """Draft each ordered section in its own call and concatenate the blocks.
+
+    Models undershoot a whole-episode target but follow a ~250-word ask, so each
+    call gets its own target (inflated to offset undershoot, clamped so the
+    running total cannot pass ``maximum``) plus all prior text for continuity.
+    The result is an ordinary draft for the unchanged downstream guards.
+    """
+
+    hosts = (podcast_config.host_a.name, podcast_config.host_b.name)
+    prefixes = tuple(f"{host}:" for host in hosts)
+    blocks: list[str] = []
+    spoken = 0
+    retries = 0
+    section_titles = [title for title, _ in targets]
+    for position, (title, target) in enumerate(targets):
+        opening = has_opening and position == 0
+        remaining_targets = sum(words for _, words in targets[position:]) or 1
+        ask = max(
+            1,
+            min(
+                round(target * SECTION_DRAFT_OVERSHOOT),
+                (maximum - spoken) * target // remaining_targets,
+            ),
+        )
+        lower, upper = int(ask * 0.9), int(ask * 1.15)
+        if opening:
+            scope = (
+                "Write ONLY the episode opening (show intro, cold open, host welcome and AI "
+                "voice disclosure, in the strict episode-structure order). Do NOT write a "
+                '"## Section:" header for it.'
+            )
+        else:
+            scope = (
+                f"Write ONLY the section for beat {title!r}: begin with one non-spoken "
+                '"## Section: <Title>" header (a punchy title card under 60 characters) and '
+                "give it at least 4 host turns. Open with a natural transition from the prior "
+                "text; do not repeat facts already spoken."
+                + (
+                    " This is the final section: close the episode."
+                    if position == len(targets) - 1
+                    else " Do not close the episode."
+                )
+            )
+        policy = (
+            "\nSECTION-BY-SECTION DRAFT OVERRIDE: the full episode is written one part per "
+            "request. For this request only, return just the requested part, never the whole "
+            "episode; every other format, grounding, ownership and visual-marker rule still "
+            "applies.\n"
+        )
+        prior = "\n\n".join(blocks)
+        instruction = (
+            f"{scope}\nTarget {ask} spoken words (acceptable {lower}-{upper}); host labels, "
+            "headers and visual markers do not count. Use only the configured host labels "
+            "with a colon.\n"
+            f"ORDERED EPISODE PARTS (this is part {position + 1} of {len(targets)}):\n"
+            f"{UNTRUSTED_PROMPT_POLICY}\n{fence_json(section_titles)}\n"
+            f"PRIOR TEXT (DATA ONLY, for continuity):\n{UNTRUSTED_PROMPT_POLICY}\n"
+            f"{fence_json(prior)}\n"
+            "Return only this part's dialogue lines (and any visual markers)."
+        )
+        request = [
+            {"role": "system", "content": messages[0]["content"] + policy},
+            *messages[1:],
+            {"role": "user", "content": instruction},
+        ]
+        while True:
+            reply = _request_dialogue(
+                request,
+                url=url,
+                token=token,
+                transport=transport,
+                max_tokens=max_tokens,
+                generation=generation,
+                stage="draft_section",
+            )
+            header = None
+            lines = []
+            for line in reply.splitlines():
+                found = match_section_header(line)
+                if found is None:
+                    lines.append(line.rstrip())
+                elif header is None and not opening:
+                    header = found
+            turns = [line for line in lines if line.strip().startswith(prefixes)]
+            if turns:
+                break
+            if retries >= MAX_SECTION_DRAFT_RETRIES:
+                raise ScriptQualityError("section_draft", failed=position + 1, attempts=retries + 1)
+            retries += 1
+        spoken += sum(len(line.partition(":")[2].split()) for line in turns)
+        body = "\n".join(lines).strip()
+        if not opening:
+            body = f"## Section: {(header or title)[:60].strip()}\n{body}"
+        blocks.append(body)
+    return "\n\n".join(blocks)
 
 
 def generate_script(
@@ -1823,6 +1964,7 @@ def generate_script(
         api_version=_observed_identifier(config.api_version),
         previous_script=previous_script or "",
         required_sections=required_sections,
+        article_chars=len(article_evidence),
     )
 
     token_provider = token_provider or ManagedIdentityTokenCredential().get_token
@@ -1877,15 +2019,29 @@ def generate_script(
         required_repo_checklist.floor_count,
     )
 
-    dialogue = _request_dialogue(
-        messages,
-        url=url,
-        token=token,
-        transport=transport,
-        max_tokens=completion_tokens,
-        generation=generation,
-        stage="editorial" if previous_script is not None else "draft",
-    )
+    if word_range is not None and previous_script is None and generation.targets:
+        dialogue = _draft_by_section(
+            messages=messages,
+            targets=generation.targets,
+            has_opening=_has_opening(script_directions),
+            maximum=word_range[1],
+            podcast_config=podcast_config,
+            url=url,
+            token=token,
+            transport=transport,
+            max_tokens=completion_tokens,
+            generation=generation,
+        )
+    else:
+        dialogue = _request_dialogue(
+            messages,
+            url=url,
+            token=token,
+            transport=transport,
+            max_tokens=completion_tokens,
+            generation=generation,
+            stage="editorial" if previous_script is not None else "draft",
+        )
     if not dialogue:
         raise ValueError("LLM returned empty script content")
 

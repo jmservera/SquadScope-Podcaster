@@ -64,6 +64,30 @@ def _fake_token_provider(scope: str) -> str:
     return "fake-token-for-testing"
 
 
+def _one_shot_draft(*, messages, url, token, transport, max_tokens, generation, **_):
+    return script_gen._request_dialogue(
+        messages,
+        url=url,
+        token=token,
+        transport=transport,
+        max_tokens=max_tokens,
+        generation=generation,
+        stage="draft",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _legacy_one_shot_draft(monkeypatch):
+    """Most tests exercise guards/repairs on a scripted whole-dialogue first reply.
+
+    The production range-bound draft is section-by-section; these tests keep the
+    one-shot draft so their scripted replies stay in call order. The real path is
+    covered by ``TestSectionBySectionDraft``, which overrides this fixture.
+    """
+
+    monkeypatch.setattr(script_gen, "_draft_by_section", _one_shot_draft)
+
+
 def _make_transport(dialogue: str):
     """Build a mock transport that returns a fake chat completion response."""
 
@@ -166,7 +190,10 @@ def _production_observation_fixture(mode):
 
     failed_closed = False
     script = None
-    with patch("urllib.request.urlopen", urlopen):
+    with (
+        patch("urllib.request.urlopen", urlopen),
+        patch.object(script_gen, "_draft_by_section", _one_shot_draft),
+    ):
         try:
             script = generate_script(
                 week="2026-W44",
@@ -2846,3 +2873,183 @@ class TestUndershootLengthRepair:
         script = run()
         assert seen == [original.strip()]
         assert 1001 <= self._words(script) <= 1700
+
+    def test_overshooting_expansion_keeps_whole_turns_up_to_budget(self):
+        def overshoot(body):
+            import re
+
+            blocks = re.findall(
+                "\n" + re.escape(FENCE_OPEN) + "(.*?)" + re.escape(FENCE_CLOSE),
+                body["messages"][-1]["content"],
+            )
+            plan = json.loads(blocks[0])
+            return json.dumps(
+                {
+                    "insertions": [
+                        {
+                            "section_index": item["section_index"],
+                            "turns": [
+                                f"Theo: fit{item['section_index']} "
+                                + "claim " * (item["add_words"] - 1),
+                                f"Vera: spill{item['section_index']} " + "extra " * 60,
+                            ],
+                        }
+                        for item in plan
+                    ]
+                }
+            )
+
+        run, requests = self._run([self._draft(66), self._draft(66), overshoot])
+        script = run()
+        assert 1001 <= self._words(script) <= 1700
+        assert "spill" not in script
+        assert len(requests) == 3
+
+    def test_draft_observation_reports_article_chars_without_content(self, caplog):
+        caplog.set_level("WARNING", logger="podcaster.script_gen")
+        run, _ = self._run([self._draft(66), self._draft(66), self._insertions])
+        run()
+        record = next(
+            json.loads(line.split("script_generation_observation ", 1)[1])
+            for line in caplog.text.splitlines()
+            if '"stage":"draft_before"' in line
+        )
+        assert record["article_chars"] == len(VALID_ARTICLE_CONTENT)
+        assert VALID_ARTICLE_CONTENT not in caplog.text
+
+
+class TestSectionBySectionDraft:
+    """Range-bound drafts are generated one section per call and concatenated."""
+
+    @pytest.fixture(autouse=True)
+    def _legacy_one_shot_draft(self):
+        """Use the real section-by-section draft."""
+
+    @staticmethod
+    def _asked(body):
+        import re
+
+        return int(re.search(r"Target (\d+) spoken words", body["messages"][-1]["content"])[1])
+
+    @staticmethod
+    def _section_text(words, label):
+        per_turn = max(1, words // 6)
+        return f"## Section: {label}\n" + "\n".join(
+            f"{('Theo', 'Vera')[turn % 2]}: {label}{turn} " + "word " * (per_turn - 1)
+            for turn in range(6)
+        )
+
+    def _run(self, factor, *, minimum=1001, maximum=1700, replies=None):
+        from podcaster.config import EpisodeStyle, ScriptDirections
+
+        requests = []
+
+        def transport(request):
+            body = json.loads(request.data)
+            requests.append(body)
+            index = len(requests) - 1
+            if replies is not None:
+                content = replies[min(index, len(replies) - 1)]
+            elif "SECTION-BY-SECTION DRAFT OVERRIDE" in body["messages"][0]["content"]:
+                content = self._section_text(int(self._asked(body) * factor), f"part{index}x")
+            else:
+                content = "Theo: unusable"
+            return json.dumps(
+                {"choices": [{"message": {"content": content}, "finish_reason": "stop"}]}
+            ).encode()
+
+        def run():
+            return generate_script(
+                week="2026-W45",
+                article_title="Sections",
+                article_url="https://example.com/w45",
+                article_content=VALID_ARTICLE_CONTENT,
+                config=_mock_config(),
+                podcast_config=PodcastConfig(ai_voice_disclosure="Synthetic voices."),
+                script_directions=ScriptDirections(
+                    episode_style=EpisodeStyle(format=f"{minimum}-{maximum} words")
+                ),
+                token_provider=_fake_token_provider,
+                transport=transport,
+            )
+
+        return run, requests
+
+    @staticmethod
+    def _words(script):
+        config = PodcastConfig(ai_voice_disclosure="Synthetic voices.")
+        return sum(len(turn.split()) for turn in script_gen.spoken_turns(script, config))
+
+    def test_undershooting_model_still_reaches_range_in_one_call_per_section(self):
+        run, requests = self._run(0.75)
+        script = run()
+        assert 1001 <= self._words(script) <= 1700
+        assert len(requests) == 2
+        asks = [self._asked(body) for body in requests]
+        assert all(ask > 675 for ask in asks)  # compensates undershoot
+        assert sum(asks) <= 1700
+        assert script.count("## Section:") == 2
+
+    def test_later_sections_get_prior_text_for_continuity(self):
+        run, requests = self._run(0.75)
+        run()
+        first_reply = self._section_text(int(self._asked(requests[0]) * 0.75), "part0x")
+        assert "part0x0" in requests[1]["messages"][-1]["content"]
+        assert "part0x0" not in requests[0]["messages"][-1]["content"]
+        assert first_reply.splitlines()[1].split()[1] in requests[1]["messages"][-1]["content"]
+        assert FENCE_OPEN in requests[1]["messages"][-1]["content"]
+
+    def test_overshooting_sections_are_clamped_to_the_maximum(self):
+        run, requests = self._run(2.0, minimum=1001, maximum=1200)
+        try:
+            run()
+        except script_gen.ScriptQualityError:
+            pass
+        asks = [self._asked(body) for body in requests[:2]]
+        assert asks[0] + asks[1] <= 1200
+        assert asks[1] < asks[0] or asks[0] <= 600
+
+    def test_empty_section_reply_is_retried_then_succeeds(self):
+        good = self._section_text(600, "retry")
+        run, requests = self._run(None, replies=["", good, good.replace("retry", "second")])
+        script = run()
+        assert len(requests) >= 3
+        assert 1001 <= self._words(script) <= 1700 or "retry" in script
+
+    def test_persistent_malformed_section_raises_quality_error_after_bounded_retries(self):
+        run, requests = self._run(None, replies=["no host lines here"])
+        with pytest.raises(script_gen.ScriptQualityError, match="section-by-section draft"):
+            run()
+        assert len(requests) == 1 + script_gen.MAX_SECTION_DRAFT_RETRIES
+
+    def test_final_range_gate_still_fails_closed_and_total_calls_stay_bounded(self):
+        run, requests = self._run(0.2)
+        with pytest.raises(script_gen.ScriptQualityError, match="1001-1700 inclusive"):
+            run()
+        assert len(requests) <= script_gen.GENERATION_CALL_BUDGET == 20
+
+    def test_call_budget_is_a_hard_ceiling(self):
+        generation = script_gen._GenerationDiagnostics(
+            podcast_config=PodcastConfig(),
+            canonicalize=lambda text: text,
+            word_range=None,
+            targets=(),
+            deployment=None,
+            api_version=None,
+            calls_used=20,
+        )
+        with pytest.raises(script_gen.ScriptQualityError, match="call budget 20"):
+            script_gen._request_dialogue(
+                [{"role": "user", "content": "x"}],
+                url="https://example.invalid",
+                token="t",
+                transport=lambda request: b"{}",
+                generation=generation,
+            )
+
+    def test_section_observation_reports_article_chars(self, caplog):
+        caplog.set_level("WARNING", logger="podcaster.script_gen")
+        run, _ = self._run(0.75)
+        run()
+        assert '"stage":"draft_section_before"' in caplog.text
+        assert f'"article_chars":{len(VALID_ARTICLE_CONTENT)}' in caplog.text
