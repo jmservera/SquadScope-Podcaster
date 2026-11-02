@@ -6,7 +6,6 @@ import re
 from typing import Any
 from urllib.error import HTTPError
 
-
 _KNOWN_CATEGORIES = frozenset(
     {
         "hate",
