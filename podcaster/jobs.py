@@ -37,7 +37,12 @@ from podcaster.review import (
     content_snapshot_sha256,
     provider_settings_sha256,
 )
-from podcaster.script_gen import ScriptGenConfig, ScriptQualityError, generate_script
+from podcaster.script_gen import (
+    ProviderRetriableError,
+    ScriptGenConfig,
+    ScriptQualityError,
+    generate_script,
+)
 from podcaster.sections import SectionValidationError, parse_script_sections, sections_to_metadata
 from podcaster.storage import StorageBackend, StoredArtifact, create_storage_backend
 from podcaster.tts import load_tts_config
@@ -88,8 +93,10 @@ class ScriptGenerationFailed(RuntimeError):
         *,
         quality_reason: str | None = None,
         quality_rejected: bool = False,
+        retry_after_seconds: int | None = None,
     ) -> None:
         super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
         self.quality_reason = quality_reason
         self.quality_rejected = quality_rejected
 
@@ -483,6 +490,24 @@ def run_generation_job(
                     "chat completion filtering failed; no artifact accepted",
                     quality_reason="filter_safety",
                 ) from None
+            except ProviderRetriableError as error:
+                if not payload.get("dry_run"):
+                    logging.warning(
+                        "chat provider throttled job_id=%s retry_after=%d; retriable",
+                        job_id,
+                        error.retry_after_seconds,
+                    )
+                    released = _release_failed_reservation(storage, job_id, monthly_path, month)
+                    # Advertise a retry only when the replay reservation is really gone;
+                    # otherwise the identical retry would hit a 409 replay collision.
+                    raise ScriptGenerationFailed(
+                        "chat provider temporarily unavailable; retry later"
+                        if released
+                        else "LLM script generation failed",
+                        retry_after_seconds=error.retry_after_seconds if released else None,
+                    ) from None
+                warnings.append("LLM script generation failed; using placeholder script")
+                llm_script = None
             except Exception as error:
                 if not payload.get("dry_run"):
                     logging.exception(

@@ -590,6 +590,20 @@ class TestSuccessfulGeneration:
         assert handler.get_response_json()["errors"] == ["internal server error"]
         mock_report.assert_called_once()
 
+    @patch("podcaster.api.report_failure")
+    @patch("podcaster.api.run_generation_job")
+    def test_retriable_provider_failure_maps_to_503_with_retry_after(self, mock_run, mock_report):
+        from podcaster.jobs import ScriptGenerationFailed
+
+        mock_run.side_effect = ScriptGenerationFailed("private", retry_after_seconds=30)
+        body = json.dumps(
+            {"week": "2026-W44", "article_url": "https://example.com/article"}
+        ).encode()
+        handler = make_handler("POST", "/api/generate", body=body, headers=self._headers(body))
+        assert handler.response_code == HTTPStatus.SERVICE_UNAVAILABLE
+        assert handler.response_headers["Retry-After"] == "30"
+        assert "private" not in json.dumps(handler.get_response_json())
+
     @pytest.mark.parametrize("safe_quality_reason", [True, False])
     @patch("podcaster.api.report_failure")
     @patch("podcaster.api.run_generation_job")
