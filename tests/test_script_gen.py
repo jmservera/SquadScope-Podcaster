@@ -3031,6 +3031,90 @@ class TestSectionBySectionDraft:
             run()
         assert len(requests) <= script_gen.GENERATION_CALL_BUDGET == 20
 
+    @pytest.mark.parametrize(
+        "header",
+        ["## Section: Totally Renamed", "", "## Section: A\n## Section: B", "### section - X"],
+    )
+    def test_model_headers_never_change_canonical_section_identity(self, header):
+        targets = (("Opening", 50), ("Alpha", 100), ("Beta", 100), ("Beta", 100))
+        replies = iter(
+            f"{header}\nTheo: hello there\nVera: reply {i}\n## Section: stray" for i in range(4)
+        )
+        generation = script_gen._GenerationDiagnostics(
+            podcast_config=PodcastConfig(),
+            canonicalize=lambda text: text,
+            word_range=(1, 1000),
+            targets=targets,
+            deployment=None,
+            api_version=None,
+        )
+
+        def transport(request):
+            content = next(replies)
+            return json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+
+        draft = script_gen._draft_by_section(
+            messages=[{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+            targets=targets,
+            has_opening=True,
+            maximum=1000,
+            podcast_config=PodcastConfig(),
+            url="https://example.invalid",
+            token="t",
+            transport=transport,
+            max_tokens=100,
+            generation=generation,
+        )
+        headers = [line for line in draft.splitlines() if line.startswith("##")]
+        assert headers == ["## Section: Alpha", "## Section: Beta", "## Section: Beta"]
+        assert not draft.startswith("##")
+        assert generation.calls_used == len(targets)
+
+    @staticmethod
+    def _long_heading_targets(*headings):
+        article = "\n".join(f"## {h}\nbody" for h in headings)
+        return script_gen._section_word_targets(None, article, (1001, 1700))
+
+    def test_long_source_headings_are_bounded_once(self):
+        targets = self._long_heading_targets("A" * 300, "Short")
+        assert all(len(title) <= script_gen._SECTION_TITLE_LIMIT for title, _ in targets)
+        assert sum(len(title) for title, _ in targets) < script_gen.MAX_SCRIPT_CHARS
+
+    def test_long_titles_differing_after_cap_stay_distinct(self):
+        head = "X" * 80
+        targets = self._long_heading_targets(head + " one", head + " two")
+        titles = [title for title, _ in targets]
+        assert len(titles) == len({t.casefold() for t in titles}) == 2
+        assert all(len(t) <= script_gen._SECTION_TITLE_LIMIT for t in titles)
+
+    def test_identity_validation_passes_with_bounded_titles(self):
+        head = "Y" * 90
+        titles = tuple(title for title, _ in self._long_heading_targets(head + " a", head + " b"))
+        dialogue = "\n".join(f"## Section: {t}\nTheo: hi\nVera: yo" for t in titles)
+        sections = script_gen.parse_script_sections(dialogue, PodcastConfig())
+        assert tuple(s.title for s in sections) == titles
+        assert script_gen._pin_section_titles(dialogue, titles) == dialogue
+
+    def test_pin_restores_titles_but_leaves_count_changes_to_the_validator(self):
+        required = ("Alpha", "Beta")
+        renamed = "## Section: Alpha\nTheo: a\n## Section: The Beta\nVera: b"
+        assert script_gen._pin_section_titles(renamed, required).splitlines()[2] == (
+            "## Section: Beta"
+        )
+        extra = renamed + "\n## Section: Gamma\nTheo: c"
+        assert script_gen._pin_section_titles(extra, required) == extra
+
+    def test_pin_corrects_renamed_final_section(self):
+        required = ("Intro", "Week Ahead Insights")
+        repaired = "## Section: Intro\nTheo: a\n## Section: The Week Ahead Insights\nVera: b"
+        assert script_gen._pin_section_titles(repaired, required).endswith(
+            "## Section: Week Ahead Insights\nVera: b"
+        )
+
+    def test_pin_never_moves_known_titles(self):
+        swapped = "## Section: Beta\nTheo: a\n## Section: Alpha\nVera: b"
+        assert script_gen._pin_section_titles(swapped, ("Alpha", "Beta")) == swapped
+
     def test_call_budget_is_a_hard_ceiling(self):
         generation = script_gen._GenerationDiagnostics(
             podcast_config=PodcastConfig(),

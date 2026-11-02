@@ -59,6 +59,7 @@ from podcaster.script_plan import (
     match_visual_marker,
 )
 from podcaster.sections import (
+    SECTION_HEADER_PREFIX,
     SectionValidationError,
     match_section_header,
     parse_script_sections,
@@ -1115,6 +1116,25 @@ def _json_failure_class(response: str) -> str:
     return "malformed_json"
 
 
+_SECTION_TITLE_LIMIT = 60
+
+
+def _bound_unique_titles(titles: list[str]) -> list[str]:
+    """Cap titles once for title cards; disambiguate collisions with an index suffix."""
+    bounded: list[str] = []
+    seen: set[str] = set()
+    for index, title in enumerate(titles, 1):
+        candidate = title[:_SECTION_TITLE_LIMIT].rstrip()
+        serial = index
+        while candidate.casefold() in seen:
+            suffix = f" ({serial})"
+            candidate = title[: _SECTION_TITLE_LIMIT - len(suffix)].rstrip() + suffix
+            serial += 1
+        seen.add(candidate.casefold())
+        bounded.append(candidate)
+    return bounded
+
+
 def _section_word_targets(
     directions: ScriptDirections | None, article: str, bounds: tuple[int, int] | None
 ) -> tuple[tuple[str, int], ...]:
@@ -1152,10 +1172,12 @@ def _section_word_targets(
         beats = ["Source discussion", "Evidence limits and what to watch"]
     # Adjacent beats remain in source/caller order even when they share a title card.
     groups = min(5 if opening else 6, len(beats))
-    identities = [
-        " / ".join(beats[index * len(beats) // groups : (index + 1) * len(beats) // groups])
-        for index in range(groups)
-    ]
+    identities = _bound_unique_titles(
+        [
+            " / ".join(beats[index * len(beats) // groups : (index + 1) * len(beats) // groups])
+            for index in range(groups)
+        ]
+    )
     target = _draft_word_target(bounds)
     # The strict episode structure owns opening order. Share one modest opening
     # budget rather than assigning a full discussion section to a short cold open.
@@ -1600,6 +1622,33 @@ def _enforce_ownership_tone(
     return dialogue
 
 
+def _pin_section_titles(dialogue: str, required_sections: tuple[str, ...]) -> str:
+    """Restore canonical titles for positions a repair renamed to an unknown title.
+
+    Only same-count drafts are touched, and known titles are never moved, so
+    dropped, reordered or added sections still fail the identity validator.
+    """
+
+    lines = dialogue.splitlines()
+    positions = [i for i, line in enumerate(lines) if match_section_header(line) is not None]
+    if not required_sections or len(positions) != len(required_sections):
+        return dialogue
+    for index, title in zip(positions, required_sections):
+        if match_section_header(lines[index]) not in required_sections:
+            lines[index] = f"{SECTION_HEADER_PREFIX} {title}"
+    return "\n".join(lines)
+
+
+def _section_failure_class(
+    error: SectionValidationError, draft_count: int, required_count: int
+) -> str:
+    """Content-free class of a section validation failure."""
+
+    if str(error).startswith("repair changed required section identities"):
+        return "identity_order" if draft_count != required_count else "identity_titles"
+    return "section_rules"
+
+
 def _build_section_repair_instruction(
     error: SectionValidationError | None, required_sections: tuple[str, ...]
 ) -> str:
@@ -1887,14 +1936,10 @@ def _draft_by_section(
                 generation=generation,
                 stage="draft_section",
             )
-            header = None
-            lines = []
-            for line in reply.splitlines():
-                found = match_section_header(line)
-                if found is None:
-                    lines.append(line.rstrip())
-                elif header is None and not opening:
-                    header = found
+            # Headers are trusted structure: model-emitted ones are discarded.
+            lines = [
+                line.rstrip() for line in reply.splitlines() if match_section_header(line) is None
+            ]
             turns = [
                 line
                 for line in lines
@@ -1920,7 +1965,7 @@ def _draft_by_section(
         )
         body = "\n".join(lines).strip()
         if not opening:
-            body = f"## Section: {(header or title)[:60].strip()}\n{body}"
+            body = f"## Section: {title.strip()}\n{body}"
         blocks.append(body)
     return "\n\n".join(blocks)
 
@@ -2239,6 +2284,7 @@ def generate_script(
             )
         draft = _ensure_repo_feature_header(draft, required_repo_checklist)
         draft = infer_repo_visual_markers(draft, podcast_config)
+        draft = _pin_section_titles(draft, required_sections)
         generation.observe("scrub_deterministic_guards", draft)
         return draft
 
@@ -2262,6 +2308,7 @@ def generate_script(
             draft = _scrub(draft)
         names = build_spoken_name_map(_spoken_name_map_source(draft), fetch=readme_fetcher)
         draft = rewrite_spoken_repo_names(draft, names)
+        draft = _pin_section_titles(draft, required_sections)
         if len(draft) > MAX_SCRIPT_CHARS:
             raise ScriptQualityError("characters", limit=MAX_SCRIPT_CHARS)
         generation.observe("replacement_deterministic_guards", draft)
@@ -2274,6 +2321,7 @@ def generate_script(
     # repos that were not discussed/marked do not trigger README fetches.
     repo_name_map = build_spoken_name_map(_spoken_name_map_source(dialogue), fetch=readme_fetcher)
     dialogue = rewrite_spoken_repo_names(dialogue, repo_name_map)
+    dialogue = _pin_section_titles(dialogue, required_sections)
     generation.observe("initial_spoken_names", dialogue)
 
     if len(dialogue) > MAX_SCRIPT_CHARS:
@@ -2303,7 +2351,14 @@ def generate_script(
         except SectionValidationError as error:
             conversation = messages
             for attempt in range(1, MAX_SECTION_REPAIRS + 1):
-                logger.warning("script section validation failed attempt=%d", attempt)
+                logger.warning(
+                    "script section validation failed attempt=%d class=%s "
+                    "draft_sections=%d required_sections=%d",
+                    attempt,
+                    _section_failure_class(error, len(sections), len(required_sections)),
+                    len(sections),
+                    len(required_sections),
+                )
                 conversation = conversation + [
                     {"role": "assistant", "content": dialogue},
                     {
