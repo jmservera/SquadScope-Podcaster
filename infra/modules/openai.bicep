@@ -46,7 +46,7 @@ param chatDeploymentName string
 param chatModelSkuName string = 'GlobalStandard'
 
 @description('Provisioned capacity for the chat model deployment.')
-param chatModelCapacity int = 10
+param chatModelCapacity int = 50
 
 @description('Synthesis job managed-identity principal that receives Cognitive Services OpenAI User.')
 param synthesisJobPrincipalId string
