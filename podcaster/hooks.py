@@ -10,9 +10,15 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from urllib.error import HTTPError
 from urllib.request import Request
 
 from podcaster.config import PodcastConfig
+from podcaster.provider_filter import (
+    FilterSafetyError,
+    raise_on_blocked_http,
+    validate_chat_filter_response,
+)
 from podcaster.script_gen import ScriptGenConfig
 from podcaster.storage import ManagedIdentityTokenCredential
 from podcaster.tts import OPENAI_SCOPE, TokenProvider, Transport
@@ -67,6 +73,8 @@ def generate_hooks(
             token_provider=token_provider,
             transport=transport,
         )
+    except FilterSafetyError:
+        raise
     except Exception as exc:
         logger.warning("hooks: LLM call failed (%s), using generic fallback", exc)
         return _fallback_hooks()
@@ -134,8 +142,13 @@ def _call_llm_for_hooks(
     )
 
     logger.info("generating conversational hooks deployment=%s", config.chat_deployment)
-    raw_response = transport(request)
+    try:
+        raw_response = transport(request)
+    except HTTPError as exc:
+        raise_on_blocked_http(exc)
+        raise
     response = json.loads(raw_response.decode("utf-8"))
+    validate_chat_filter_response(response)
 
     choices = response.get("choices", [])
     if not choices:

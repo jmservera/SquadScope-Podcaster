@@ -30,6 +30,7 @@ from podcaster.costs import (
 )
 from podcaster.generation import checksum, generate_artifacts, manifest_bytes
 from podcaster.prior_episodes import fetch_prior_episode_themes
+from podcaster.provider_filter import FilterSafetyError
 from podcaster.publication_state import canonical_identity_requested
 from podcaster.review import (
     PROVIDER_TTS_BLOCKERS,
@@ -85,7 +86,12 @@ class ReplayCollisionError(RuntimeError):
 
 
 def _release_failed_reservation(
-    storage: StorageBackend, job_id: str, monthly_path: str, month: str
+    storage: StorageBackend,
+    job_id: str,
+    monthly_path: str,
+    month: str,
+    *,
+    preserve_replay: bool = False,
 ) -> None:
     """Release replay inputs and the reserved ledger slot of a failed job.
 
@@ -108,8 +114,9 @@ def _release_failed_reservation(
     input_prefix = f"jobs/{job_id}/inputs"
     try:
         storage.update_bytes(monthly_path, "application/json; charset=utf-8", drop_entry)
-        for name in ("article.txt", "summary.txt", "replay.json"):
-            storage.delete_blob(f"{input_prefix}/{name}")
+        if not preserve_replay:
+            for name in ("article.txt", "summary.txt", "replay.json"):
+                storage.delete_blob(f"{input_prefix}/{name}")
     except Exception:
         logging.exception("failed to release reservation for failed job job_id=%s", job_id)
 
@@ -159,6 +166,11 @@ def _summary_bytes(payload: dict[str, Any]) -> bytes | None:
     return summary.encode("utf-8")
 
 
+def _assert_no_filter_failure(storage: StorageBackend, job_id: str) -> None:
+    if storage.get_bytes(f"jobs/{job_id}/filter-failure.json") is not None:
+        raise ReplayCollisionError("filtering failure is terminal for this job identity")
+
+
 def _reserve_replay_inputs(
     storage: StorageBackend,
     job_id: str,
@@ -174,6 +186,7 @@ def _reserve_replay_inputs(
     article_path = f"{input_prefix}/article.txt" if article_bytes is not None else None
     summary_path = f"{input_prefix}/summary.txt" if summary_bytes is not None else None
     replay_path = f"{input_prefix}/replay.json"
+    _assert_no_filter_failure(storage, job_id)
     replay_metadata = {
         "schema_version": "squadscope-podcaster-replay-input-v1",
         "identity_sha256": identity_sha256,
@@ -305,7 +318,8 @@ def run_generation_job(
                 monthly_path, "application/json; charset=utf-8", reserve_monthly_budget
             )
         except MonthlyBudgetExceeded as exc:
-            storage.delete_prefix(f"jobs/{job_id}")
+            for name in ("article.txt", "summary.txt", "replay.json"):
+                storage.delete_blob(f"jobs/{job_id}/inputs/{name}")
             logging.warning(
                 "podcaster job blocked by monthly budget job_id=%s week=%s "
                 "projected_episode_count=%s projected_monthly_spend_usd=%s",
@@ -420,6 +434,29 @@ def run_generation_job(
                         + "\n"
                     )
                 logging.info("podcaster job using LLM-generated script job_id=%s", job_id)
+            except FilterSafetyError as error:
+                logging.warning(
+                    "chat completion filtering failed job_id=%s request_id=%s; terminal",
+                    job_id,
+                    error.request_id,
+                )
+                failure_marker = manifest_bytes(
+                    {"job_id": job_id, "status": "failed", "reason": "filter_safety"}
+                )
+                # First writer wins so concurrent failures never overwrite the marker.
+                storage.update_bytes(
+                    f"jobs/{job_id}/filter-failure.json",
+                    "application/json; charset=utf-8",
+                    lambda existing: existing if existing is not None else failure_marker,
+                )
+                if not payload.get("dry_run"):
+                    _release_failed_reservation(
+                        storage, job_id, monthly_path, month, preserve_replay=True
+                    )
+                raise ScriptGenerationFailed(
+                    "chat completion filtering failed; no artifact accepted",
+                    quality_reason="filter_safety",
+                ) from None
             except Exception as error:
                 if not payload.get("dry_run"):
                     logging.exception(
@@ -456,6 +493,9 @@ def run_generation_job(
     if llm_script is None:
         warnings.append("audio is a deterministic placeholder pending TTS implementation")
 
+    # A concurrent identical run may have recorded a terminal filter failure while
+    # this one was generating; re-check before staging any artifact.
+    _assert_no_filter_failure(storage, job_id)
     checksums: dict[str, str] = {path: checksum(storage.get_bytes(path) or b"") for path in stored}
     cost_ledger: dict[str, Any] | None = None
     audio_validation = None
