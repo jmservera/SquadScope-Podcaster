@@ -1075,6 +1075,41 @@ class TestSpanResolution:
             claim_extraction._resolve_span_for_turn(None, "Acme shipped Atlas.", evidence) is None
         )
 
+    def test_negation_parity_required(self):
+        evidence = "The feature is not supported."
+        resolve = claim_extraction._resolve_span_for_turn
+        assert resolve("The feature is supported.", "The feature is supported.", evidence) is None
+        assert resolve(None, "The feature isn't supported.", evidence) == evidence
+        assert resolve(None, "The feature is not supported.", "The feature is supported.") is None
+
+    def test_number_sign_preserved(self):
+        resolve = claim_extraction._resolve_span_for_turn
+        assert resolve(None, "Revenue changed 5% in 2026.", "Revenue changed -5% in 2026.") is None
+        assert resolve(None, "Costs hit $5 million.", "Costs hit 5 million.") is None
+        ok = "Revenue changed 5-10% in 2026."
+        assert resolve(None, "Revenue changed 5-10% in 2026.", ok) == ok
+
+    def test_sentence_initial_entity_mandatory(self):
+        resolve = claim_extraction._resolve_span_for_turn
+        assert resolve(None, "Initech cut latency by half.", "Acme cut latency by half.") is None
+        ok = "Acme cut latency by half."
+        assert resolve(None, "However Acme cut latency by half.", ok) == ok
+
+    def test_partial_overlap_and_adjacent_ties_fail_closed(self):
+        resolve = claim_extraction._resolve_span_for_turn
+        assert (
+            resolve(None, "Acme shipped Atlas.", "Acme shipped Atlas. Acme shipped Atlas.") is None
+        )
+        evidence = "Acme shipped Atlas. Later Acme shipped Atlas. Acme shipped Atlas."
+        assert resolve(None, "Acme shipped Atlas.", evidence) is None
+
+    def test_nested_tie_picks_minimal_span(self):
+        evidence = "Acme shipped Atlas in March. Weather was mild."
+        assert (
+            claim_extraction._resolve_span_for_turn(None, "Acme shipped Atlas in March.", evidence)
+            == "Acme shipped Atlas in March."
+        )
+
     def test_multi_source_uses_declared_evidence(self):
         turn = "Zenith Systems confirmed a Dublin data center outage affecting 4,000 users."
         claims = _parse(

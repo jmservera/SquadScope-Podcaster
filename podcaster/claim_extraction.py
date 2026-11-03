@@ -299,14 +299,27 @@ _STOPWORDS = frozenset(
     "were what when which while who will with would you your said says say new according article "
     "reports reported report".split()
 )
-_TOKEN = re.compile(r"[A-Za-z0-9]+(?:[.,][0-9]+)*%?")
+# Signs (not range hyphens) and currency symbols stay attached to numbers: -5% != 5%, $5 != 5.
+_TOKEN = re.compile(
+    r"(?:(?<![A-Za-z0-9])[-\u2212](?=[$\u20ac\u00a3]?\d))?[$\u20ac\u00a3]?[A-Za-z0-9]+(?:[.,][0-9]+)*%?"
+)
+_NEGATION = re.compile(
+    r"\b(?:not|no|never|without|cannot|none|neither|nor|nobody|nothing|nowhere)\b|n['\u2019]t\b",
+    re.IGNORECASE,
+)
+# Capitalised only because they open a sentence; not treated as named entities.
+_SENTENCE_OPENERS = frozenset(
+    "however meanwhile today yesterday tomorrow recently later earlier now still first second "
+    "third finally additionally moreover overall furthermore instead also yet once "
+    "although because since both each many most several another other such".split()
+)
 _SENTENCE_END = re.compile(r"(?<=[.!?])[\"')\]]*\s+|\n+")
 SPAN_MIN_SCORE = 0.6
 SPAN_AMBIGUITY_MARGIN = 0.05
 
 
 def _stem(token: str) -> str:
-    token = token.lower().replace(",", "")
+    token = token.lower().replace(",", "").replace("\u2212", "-")
     return token[:-1] if len(token) > 3 and token.endswith("s") and token[-2] != "s" else token
 
 
@@ -319,7 +332,10 @@ def _content_tokens(text: str) -> dict[str, float]:
         stem = _stem(raw)
         prior = text[: match.start()].rstrip()
         sentence_start = not prior or prior[-1] in ".!?\n:\"'("
-        if any(ch.isdigit() for ch in raw) or (raw[0].isupper() and not sentence_start):
+        entity = raw[0].isupper() and (
+            not sentence_start or stem not in _STOPWORDS | _SENTENCE_OPENERS
+        )
+        if any(ch.isdigit() for ch in raw) or entity:
             weight = 2.0
         elif stem in _STOPWORDS or len(stem) < 3:
             continue
@@ -349,6 +365,12 @@ def _resolve_span_for_turn(quote: str | None, turn: str, evidence: str) -> str |
     """
 
     turn_tokens = _content_tokens(turn)
+    negations = {bool(_NEGATION.search(turn))}
+    if quote:
+        negations.add(bool(_NEGATION.search(quote)))
+    if len(negations) > 1:
+        return None
+    negated = negations.pop()
     query = dict(turn_tokens)
     if quote:
         for tok, weight in _content_tokens(quote).items():
@@ -358,6 +380,8 @@ def _resolve_span_for_turn(quote: str | None, turn: str, evidence: str) -> str |
         return None
     scored = []
     for start, end in _candidate_spans(evidence):
+        if bool(_NEGATION.search(evidence[start:end])) != negated:
+            continue
         span_tokens = _content_tokens(evidence[start:end])
         covered = sum(w for tok, w in query.items() if tok in span_tokens)
         scored.append((covered / total, end - start, start, end))
@@ -367,11 +391,12 @@ def _resolve_span_for_turn(quote: str | None, turn: str, evidence: str) -> str |
     best_score, _, start, end = scored[0]
     if best_score < SPAN_MIN_SCORE:
         return None
-    for score, _, other_start, other_end in scored[1:]:
-        if score < best_score - SPAN_AMBIGUITY_MARGIN:
-            break
-        if other_end <= start or other_start >= end:
-            return None
+    # Near-ties fail closed unless every tied span contains the shortest one (a nested chain);
+    # then the minimal covering span wins. Disjoint or partially overlapping ties are ambiguous.
+    tied = [item for item in scored if item[0] >= best_score - SPAN_AMBIGUITY_MARGIN]
+    _, _, start, end = min(tied, key=lambda item: (item[1], item[2]))
+    if any(item[2] > start or item[3] < end for item in tied):
+        return None
     span = evidence[start:end].strip()
     span_tokens = _content_tokens(span)
     turn_total = sum(turn_tokens.values())
