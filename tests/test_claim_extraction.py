@@ -1103,6 +1103,62 @@ class TestSpanResolution:
         evidence = "Acme shipped Atlas. Later Acme shipped Atlas. Acme shipped Atlas."
         assert resolve(None, "Acme shipped Atlas.", evidence) is None
 
+    def test_decimal_separators_not_stripped(self):
+        resolve = claim_extraction._resolve_span_for_turn
+        assert resolve(None, "Growth was 1,5% in 2026.", "Growth was 15% in 2026.") is None
+        assert resolve(None, "Growth was 1.5% in 2026.", "Growth was 15% in 2026.") is None
+        ok = "Growth was 1,5% in 2026."
+        assert resolve(None, "Growth was 1.5% in 2026.", ok) == ok
+        ok = "Acme had 1.500 users in 2026."
+        assert resolve(None, "Acme had 1,500 users in 2026.", ok) == ok
+        assert resolve(None, "Acme had 1,500 users in 2026.", "Acme had 15 users in 2026.") is None
+
+    def test_number_words_mandatory(self):
+        resolve = claim_extraction._resolve_span_for_turn
+        assert (
+            resolve(None, "Acme cut fifty percent of jobs.", "Acme cut twenty percent of jobs.")
+            is None
+        )
+        ok = "Acme cut fifty percent of jobs."
+        assert resolve(None, "Acme cut fifty percent of jobs.", ok) == ok
+        assert resolve(None, "Acme cut 50 percent of jobs.", ok) == ok
+
+    def test_sentence_initial_determiner_not_entity(self):
+        ok = "Acme shipped the product in March."
+        assert (
+            claim_extraction._resolve_span_for_turn(None, "This product shipped in March.", ok)
+            == ok
+        )
+
+    def test_min_score_applies_to_chosen_shortest_span(self):
+        evidence = (
+            "Acme shipped Atlas in March 2026 with partners. "
+            "Acme shipped Atlas in March 2026 with partners and many others."
+        )
+        turn = "Acme shipped Atlas in March 2026 with partners and many others."
+        assert claim_extraction._resolve_span_for_turn(None, turn, evidence) is not None
+        # Chosen span must itself clear the threshold, not just the best-scoring one.
+        evidence = (
+            "Acme shipped Atlas. Acme shipped Atlas in March 2026 with partners and many others."
+        )
+        assert claim_extraction._resolve_span_for_turn(None, turn, evidence) is not None
+
+    def test_antonym_polarity_required(self):
+        resolve = claim_extraction._resolve_span_for_turn
+        assert (
+            resolve(None, "Acme revenue increased in 2026.", "Acme revenue decreased in 2026.")
+            is None
+        )
+        assert resolve(None, "Acme prices rose in 2026.", "Acme prices fell in 2026.") is None
+        ok = "Acme revenue increased in 2026."
+        assert resolve(None, "Acme revenue increased in 2026.", ok) == ok
+
+    def test_entity_order_required(self):
+        resolve = claim_extraction._resolve_span_for_turn
+        assert resolve(None, "Beta acquired Acme.", "Acme acquired Beta.") is None
+        ok = "Acme acquired Beta."
+        assert resolve(None, "Acme acquired Beta.", ok) == ok
+
     def test_nested_tie_picks_minimal_span(self):
         evidence = "Acme shipped Atlas in March. Weather was mild."
         assert (

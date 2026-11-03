@@ -318,31 +318,168 @@ SPAN_MIN_SCORE = 0.6
 SPAN_AMBIGUITY_MARGIN = 0.05
 
 
+_UNITS = (
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen "
+    "sixteen seventeen eighteen nineteen twenty"
+).split()
+_NUMBER_WORDS: dict[str, str] = {word: str(i) for i, word in enumerate(_UNITS)}
+_NUMBER_WORDS.update(
+    zip(
+        "thirty forty fifty sixty seventy eighty ninety".split(),
+        (str(n) for n in range(30, 100, 10)),
+    )
+)
+_NUMBER_WORDS.update(
+    {
+        "hundred": "100",
+        "thousand": "1000",
+        "million": "1000000",
+        "billion": "1000000000",
+        "half": "0.5",
+        "halves": "0.5",
+        "quarter": "0.25",
+        "double": "x2",
+        "triple": "x3",
+        "twice": "x2",
+        "thrice": "x3",
+        "dozen": "12",
+        "first": "ord1",
+        "second": "ord2",
+        "third": "ord3",
+        "fourth": "ord4",
+        "fifth": "ord5",
+        "sixth": "ord6",
+        "seventh": "ord7",
+        "eighth": "ord8",
+        "ninth": "ord9",
+        "tenth": "ord10",
+    }
+)
+# Fixed opposite-polarity word pairs; a turn and its span must not disagree on polarity.
+_ANTONYMS = (
+    (
+        "increase rise rose risen up more higher grew grow gain",
+        "decrease fall fell down less lower shrank shrink loss lose lost",
+    ),
+    ("before", "after"),
+    ("first", "last"),
+)
+_ANTONYM_WORDS = {
+    word: (i, polarity)
+    for i, pair in enumerate(_ANTONYMS)
+    for polarity, words in enumerate(pair)
+    for word in words.split()
+}
+
+
+def _antonym_polarities(text: str) -> dict[int, set[int]]:
+    found: dict[int, set[int]] = {}
+    for word in re.findall(r"[a-z]+", text.lower()):
+        forms = (
+            word,
+            word.removesuffix("s"),
+            word.removesuffix("d"),
+            word.removesuffix("ed"),
+            word.removesuffix("ing"),
+            word.removesuffix("es"),
+        )
+        for form in forms:
+            if form in _ANTONYM_WORDS:
+                pair, polarity = _ANTONYM_WORDS[form]
+                found.setdefault(pair, set()).add(polarity)
+                break
+    return found
+
+
+def _antonym_conflict(left: str, right: str) -> bool:
+    a, b = _antonym_polarities(left), _antonym_polarities(right)
+    return any(not (a[pair] & b[pair]) for pair in a.keys() & b.keys())
+
+
+_NUMERIC = re.compile(r"([-\u2212]?)([$\u20ac\u00a3]?)(\d+(?:[.,]\d+)*)(%?)")
+
+
+def _normalize_number(raw: str) -> str:
+    """Canonical numeric key so 1,5 != 15 and 1,500 == 1.500; ambiguous shapes stay literal."""
+
+    match = _NUMERIC.fullmatch(raw)
+    if not match:
+        return raw.lower()
+    sign, prefix, body, suffix = match.groups()
+    sign = "-" if sign else ""
+    parts = re.split(r"[.,]", body)
+    seps = re.findall(r"[.,]", body)
+    digits, frac = body, ""
+    if seps:
+        grouped = all(len(p) == 3 for p in parts[1:])
+        if len(set(seps)) == 1 and len(seps) > 1:
+            if not grouped:
+                return raw.lower()
+            digits = "".join(parts)
+        elif len(set(seps)) == 1:
+            if len(parts[1]) == 3 and 1 <= len(parts[0]) <= 3 and parts[0] != "0":
+                digits = "".join(parts)
+            else:
+                digits, frac = parts
+        else:
+            last = body.rfind(seps[-1])
+            whole = re.split(r"[.,]", body[:last])
+            if seps[-1] in body[:last] or not all(len(p) == 3 for p in whole[1:]):
+                return raw.lower()
+            digits, frac = "".join(whole), body[last + 1 :]
+    frac = frac.rstrip("0")
+    return f"{sign}{prefix}{digits}{'.' + frac if frac else ''}{suffix}"
+
+
 def _stem(token: str) -> str:
-    token = token.lower().replace(",", "").replace("\u2212", "-")
+    if _NUMERIC.fullmatch(token):
+        return _normalize_number(token)
+    token = token.lower().replace("\u2212", "-")
+    if token in _NUMBER_WORDS:
+        return _NUMBER_WORDS[token]
     return token[:-1] if len(token) > 3 and token.endswith("s") and token[-2] != "s" else token
 
 
-def _content_tokens(text: str) -> dict[str, float]:
-    """Content tokens (stopwords removed) with numbers and proper nouns weighted higher."""
+def _scan_tokens(text: str) -> list[tuple[str, float, bool]]:
+    """(key, weight, is_entity) per content token in order; stopwords removed."""
 
-    weights: dict[str, float] = {}
+    found: list[tuple[str, float, bool]] = []
     for match in _TOKEN.finditer(text):
         raw = match.group(0)
         stem = _stem(raw)
+        lower = raw.lower()
         prior = text[: match.start()].rstrip()
         sentence_start = not prior or prior[-1] in ".!?\n:\"'("
         entity = raw[0].isupper() and (
-            not sentence_start or stem not in _STOPWORDS | _SENTENCE_OPENERS
+            not sentence_start or (lower not in _STOPWORDS and lower not in _SENTENCE_OPENERS)
         )
-        if any(ch.isdigit() for ch in raw) or entity:
-            weight = 2.0
-        elif stem in _STOPWORDS or len(stem) < 3:
+        number_word = lower in _NUMBER_WORDS and not (sentence_start and lower in _SENTENCE_OPENERS)
+        if number_word:
+            found.append((stem, 2.0, False))
+        elif any(ch.isdigit() for ch in raw) or entity:
+            found.append((stem, 2.0, entity))
+        elif lower in _STOPWORDS or len(stem) < 3:
             continue
         else:
-            weight = 1.0
+            found.append((stem, 1.0, False))
+    return found
+
+
+def _content_tokens(text: str) -> dict[str, float]:
+    """Content tokens (stopwords removed); numbers, number words and proper nouns weigh more."""
+
+    weights: dict[str, float] = {}
+    for stem, weight, _ in _scan_tokens(text):
         weights[stem] = max(weights.get(stem, 0.0), weight)
     return weights
+
+
+def _entity_order(text: str) -> list[str]:
+    order: list[str] = []
+    for stem, _, entity in _scan_tokens(text):
+        if entity and stem not in order:
+            order.append(stem)
+    return order
 
 
 def _candidate_spans(evidence: str) -> list[tuple[int, int]]:
@@ -382,6 +519,10 @@ def _resolve_span_for_turn(quote: str | None, turn: str, evidence: str) -> str |
     for start, end in _candidate_spans(evidence):
         if bool(_NEGATION.search(evidence[start:end])) != negated:
             continue
+        if _antonym_conflict(turn, evidence[start:end]) or (
+            quote and _antonym_conflict(quote, evidence[start:end])
+        ):
+            continue
         span_tokens = _content_tokens(evidence[start:end])
         covered = sum(w for tok, w in query.items() if tok in span_tokens)
         scored.append((covered / total, end - start, start, end))
@@ -394,8 +535,8 @@ def _resolve_span_for_turn(quote: str | None, turn: str, evidence: str) -> str |
     # Near-ties fail closed unless every tied span contains the shortest one (a nested chain);
     # then the minimal covering span wins. Disjoint or partially overlapping ties are ambiguous.
     tied = [item for item in scored if item[0] >= best_score - SPAN_AMBIGUITY_MARGIN]
-    _, _, start, end = min(tied, key=lambda item: (item[1], item[2]))
-    if any(item[2] > start or item[3] < end for item in tied):
+    chosen_score, _, start, end = min(tied, key=lambda item: (item[1], item[2]))
+    if chosen_score < SPAN_MIN_SCORE or any(item[2] > start or item[3] < end for item in tied):
         return None
     span = evidence[start:end].strip()
     span_tokens = _content_tokens(span)
@@ -407,6 +548,15 @@ def _resolve_span_for_turn(quote: str | None, turn: str, evidence: str) -> str |
     span_stems = {_stem(m.group(0)) for m in _TOKEN.finditer(span)}
     required = {tok for tok, weight in turn_tokens.items() if weight > 1.0}
     if not required <= span_stems:
+        return None
+    span_order = _entity_order(span)
+
+    def order_matches(text: str) -> bool:
+        shared = [e for e in _entity_order(text) if e in span_order]
+        return shared == [e for e in span_order if e in shared]
+
+    # A quote that preserves the source's entity order vouches for a reordered spoken turn.
+    if not order_matches(turn) and not (quote and order_matches(quote)):
         return None
     return span
 
