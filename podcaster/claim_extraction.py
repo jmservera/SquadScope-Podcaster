@@ -292,6 +292,100 @@ def _exact_span_for_quote(quote: str, evidence: str) -> str | None:
     return evidence[index[first] : index[first + len(needle) - 1] + 1]
 
 
+_STOPWORDS = frozenset(
+    "a about after all also an and any are as at be been being but by can could did do does for "
+    "from had has have he her his how i if in into is it its just more most not of on one or our "
+    "out over she so some than that the their them then there these they this those to up was we "
+    "were what when which while who will with would you your said says say new according article "
+    "reports reported report".split()
+)
+_TOKEN = re.compile(r"[A-Za-z0-9]+(?:[.,][0-9]+)*%?")
+_SENTENCE_END = re.compile(r"(?<=[.!?])[\"')\]]*\s+|\n+")
+SPAN_MIN_SCORE = 0.6
+SPAN_AMBIGUITY_MARGIN = 0.05
+
+
+def _stem(token: str) -> str:
+    token = token.lower().replace(",", "")
+    return token[:-1] if len(token) > 3 and token.endswith("s") and token[-2] != "s" else token
+
+
+def _content_tokens(text: str) -> dict[str, float]:
+    """Content tokens (stopwords removed) with numbers and proper nouns weighted higher."""
+
+    weights: dict[str, float] = {}
+    for match in _TOKEN.finditer(text):
+        raw = match.group(0)
+        stem = _stem(raw)
+        prior = text[: match.start()].rstrip()
+        sentence_start = not prior or prior[-1] in ".!?\n:\"'("
+        if any(ch.isdigit() for ch in raw) or (raw[0].isupper() and not sentence_start):
+            weight = 2.0
+        elif stem in _STOPWORDS or len(stem) < 3:
+            continue
+        else:
+            weight = 1.0
+        weights[stem] = max(weights.get(stem, 0.0), weight)
+    return weights
+
+
+def _candidate_spans(evidence: str) -> list[tuple[int, int]]:
+    sentences: list[tuple[int, int]] = []
+    start = 0
+    for match in _SENTENCE_END.finditer(evidence):
+        if evidence[start : match.start()].strip():
+            sentences.append((start, match.start()))
+        start = match.end()
+    if evidence[start:].strip():
+        sentences.append((start, len(evidence.rstrip())))
+    return sentences + [(a[0], b[1]) for a, b in zip(sentences, sentences[1:])]
+
+
+def _resolve_span_for_turn(quote: str | None, turn: str, evidence: str) -> str | None:
+    """Deterministically pick the literal evidence span a (paraphrased) quote/turn refers to.
+
+    Fails closed (None) when no span clears the threshold, the best span is ambiguous, or a
+    number/date/proper noun spoken in the turn is absent from the chosen span.
+    """
+
+    turn_tokens = _content_tokens(turn)
+    query = dict(turn_tokens)
+    if quote:
+        for tok, weight in _content_tokens(quote).items():
+            query[tok] = max(query.get(tok, 0.0), weight)
+    total = sum(query.values())
+    if not total:
+        return None
+    scored = []
+    for start, end in _candidate_spans(evidence):
+        span_tokens = _content_tokens(evidence[start:end])
+        covered = sum(w for tok, w in query.items() if tok in span_tokens)
+        scored.append((covered / total, end - start, start, end))
+    if not scored:
+        return None
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    best_score, _, start, end = scored[0]
+    if best_score < SPAN_MIN_SCORE:
+        return None
+    for score, _, other_start, other_end in scored[1:]:
+        if score < best_score - SPAN_AMBIGUITY_MARGIN:
+            break
+        if other_end <= start or other_start >= end:
+            return None
+    span = evidence[start:end].strip()
+    span_tokens = _content_tokens(span)
+    turn_total = sum(turn_tokens.values())
+    if not turn_total or (
+        sum(w for tok, w in turn_tokens.items() if tok in span_tokens) / turn_total < SPAN_MIN_SCORE
+    ):
+        return None
+    span_stems = {_stem(m.group(0)) for m in _TOKEN.finditer(span)}
+    required = {tok for tok, weight in turn_tokens.items() if weight > 1.0}
+    if not required <= span_stems:
+        return None
+    return span
+
+
 def _resolve_source_kind(raw: Any, status: Any, has_news: bool) -> str | None:
     """Provenance is decided by code when the model cannot be authoritative."""
 
@@ -399,11 +493,10 @@ def _parse_script_claims(
                 )
                 failures[index] = "empirical"
         else:
-            span = (
-                _exact_span_for_quote(quote, evidence)
-                if isinstance(quote, str) and quote.strip()
-                else None
-            )
+            has_quote = isinstance(quote, str) and bool(quote.strip())
+            span = _exact_span_for_quote(quote, evidence) if has_quote else None
+            if span is None:
+                span = _resolve_span_for_turn(quote if has_quote else None, turn, evidence)
             if span is None:
                 issues.append(f"turn {index}: source_quote is not an exact provided source excerpt")
                 failures[index] = "quote"
