@@ -2172,6 +2172,30 @@ class TestScriptQualityContract:
             assert len(requests) == 3
         assert all(request["max_tokens"] == 6100 for request in requests)
 
+    @pytest.mark.parametrize("repaired_words", [600, 1800, 1200])
+    def test_two_grounding_repairs_stay_in_call_budget_and_revalidate_word_range(
+        self, repaired_words
+    ):
+        previous = self._dialogue(1200)
+        total_requests = 0
+        for _ in range(2):  # MAX_GROUNDING_REPAIRS consecutive repairs
+            generate, requests, config = self._generate(
+                [self._dialogue(repaired_words)],
+                format_text="1001-1700 words",
+                previous_script=previous,
+            )
+            if 1001 <= repaired_words <= 1700:
+                script = generate()
+                words = sum(len(t.split()) for _, t in parse_script_segments(script, config))
+                assert 1001 <= words <= 1700
+                previous = script
+            else:
+                with pytest.raises(ValueError, match="1001-1700 inclusive"):
+                    generate()
+            assert len(requests) <= script_gen.GENERATION_CALL_BUDGET
+            total_requests += len(requests)
+        assert total_requests <= 2 * script_gen.GENERATION_CALL_BUDGET
+
     @pytest.mark.parametrize("section_failure", ["removed", "underfilled"])
     def test_length_repair_cannot_drop_section_constraints(self, section_failure):
         initial = "\n".join(

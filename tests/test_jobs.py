@@ -184,7 +184,7 @@ def test_malformed_provider_annotation_stops_job_without_raw_logging_or_replay(
 
 @pytest.mark.parametrize("repair_succeeds", [True, False])
 def test_grounding_repair_stages_only_exact_corrected_script_or_fails_closed(
-    tmp_path, monkeypatch, repair_succeeds
+    tmp_path, monkeypatch, caplog, repair_succeeds
 ):
     from podcaster import claim_extraction, jobs
     from podcaster.episode import parse_script_segments
@@ -254,6 +254,8 @@ def test_grounding_repair_stages_only_exact_corrected_script_or_fails_closed(
         with pytest.raises(ScriptGenerationFailed, match="evidence limit.*exhausted 2") as caught:
             run_generation_job(payload, storage=storage, now=now)
         assert "turn 1" in caught.value.quality_reason
+        assert "witnessed a surge" not in caught.value.quality_reason
+        assert "witnessed a surge" not in caplog.text
         artifacts.assert_not_called()
         assert storage.get_bytes(f"jobs/{job_id}/manifest.json") is None
         assert storage.get_bytes(f"jobs/{job_id}/script.txt") is None

@@ -245,7 +245,6 @@ class TestCanonicalGrounding:
         [
             "The article says the PHP sample lists exploit repositories.",
             "Per the article, the sample lists a scanner.",
-            "Reportedly, the sample includes a scanner.",
             "As the article puts it, the sample includes a scanner.",
             "The authors say the sample includes a scanner.",
         ],
@@ -262,6 +261,10 @@ class TestCanonicalGrounding:
             "This suggests the sample includes a scanner.",
             "In this case the sample includes a scanner.",
             "So far the sample includes a scanner.",
+            "Reportedly, the sample includes a scanner.",
+            "Allegedly, the sample includes a scanner.",
+            "According to the report from a rival, the sample includes a scanner.",
+            "According to the source, the sample includes a scanner.",
             "The article sample includes a scanner.",
         ],
     )
@@ -271,14 +274,25 @@ class TestCanonicalGrounding:
         with pytest.raises(claim_extraction.ClaimGroundingError, match="actual spoken text"):
             self._extract(rows, turns=[turn])
 
-    def test_qualification_feedback_is_actionable_and_names_turn_text(self):
+    def test_qualification_feedback_is_actionable_and_content_free(self):
         turn = "The sample includes a scanner."
         rows = self._rows([turn])
         rows[0]["grounding"] = "qualified"
         with pytest.raises(claim_extraction.ClaimGroundingError) as exc:
             self._extract(rows, turns=[turn])
+        assert "turn 1" in str(exc.value)
         assert "According to the article," in str(exc.value)
-        assert turn in str(exc.value)
+        assert turn not in str(exc.value)
+        assert turn in exc.value.repair_feedback()
+
+    def test_qualification_failure_logs_do_not_contain_turn_text(self, caplog):
+        turn = "The sample includes a scanner."
+        rows = self._rows([turn])
+        rows[0]["grounding"] = "qualified"
+        caplog.set_level("DEBUG")
+        with pytest.raises(claim_extraction.ClaimGroundingError):
+            self._extract(rows, turns=[turn])
+        assert turn not in caplog.text
 
     @pytest.mark.parametrize(
         "turn",

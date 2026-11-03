@@ -84,7 +84,24 @@ def _grounding_batches(turns: list[str]) -> list[tuple[list[str], int]]:
 
 
 class ClaimGroundingError(ValueError):
-    """Canonical speech cannot be tied to the provided source evidence."""
+    """Canonical speech cannot be tied to the provided source evidence.
+
+    ``str(error)`` is content-free (classes and turn indices only). Spoken turn
+    text needed for repair lives in ``repair_turns`` and reaches only the model
+    repair prompt via ``repair_feedback``.
+    """
+
+    def __init__(self, message: str, *, repair_turns: dict[int, str] | None = None) -> None:
+        super().__init__(message)
+        self.repair_turns = dict(repair_turns or {})
+
+    def repair_feedback(self) -> str:
+        lines = [str(self)]
+        lines.extend(
+            f"turn {index} text: {text[:240]!r}"
+            for index, text in sorted(self.repair_turns.items())
+        )
+        return "\n".join(lines)
 
 
 _EMPIRICAL_ASSERTION = re.compile(
@@ -99,9 +116,8 @@ _QUALIFICATION = re.compile(
     r"\b(?:the article (?:describes|calls|frames|argues|suggests|reports|states|notes|says|"
     r"explains|presents|highlights|observes|mentions)|"
     r"as the article (?:puts it|notes|says|describes)|per the article|"
-    r"according to (?:the|this) (?:article|authors?|report|post|source)|"
+    r"according to (?:the|this) (?:article|authors?)|"
     r"the authors? (?:claim|describe|report|say|state|write|note|argue|suggest|present)|"
-    r"reportedly|allegedly|"
     r"according to the breaking[- ]news (?:report|material)|"
     r"según el artículo|el artículo (?:describe|informa|señala|afirma|sugiere)|"
     r"según (?:los autores|las noticias de última hora)|"
@@ -340,6 +356,7 @@ def _parse_script_claims(
     claims = []
     issues = []
     failures: dict[int, str] = {}
+    repair_turns: dict[int, str] = {}
     safe_url = neutralize(article_url, limit=FIELD_LIMITS["reference"])
     for index, (row, turn) in enumerate(zip(rows, turns), turn_offset + 1):
         if not isinstance(row, dict) or row.get("script_excerpt") != turn:
@@ -396,9 +413,9 @@ def _parse_script_claims(
             issues.append(
                 f"turn {index}: qualification must be explicit in actual spoken text; "
                 "rewrite this turn to open with an attribution such as 'According to the "
-                "article,' or 'The article reports that', keeping its cited quote unchanged "
-                f"[turn text: {turn[:240]!r}]"
+                "article,' or 'The article reports that', keeping its cited quote unchanged"
             )
+            repair_turns[index] = turn
             failures[index] = "qualification"
         if _EMPIRICAL_ASSERTION.search(turn):
             issues.append(
@@ -428,7 +445,7 @@ def _parse_script_claims(
             len(failures),
             json.dumps({str(k): v for k, v in sorted(failures.items())}),
         )
-        raise ClaimGroundingError("; ".join(issues))
+        raise ClaimGroundingError("; ".join(issues), repair_turns=repair_turns)
     return claims
 
 
