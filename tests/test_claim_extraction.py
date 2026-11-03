@@ -145,7 +145,7 @@ class TestCanonicalGrounding:
         assert all("not factual verification or human approval" in c.editor_notes for c in claims)
 
     @pytest.mark.parametrize(
-        "defect", ["missing", "extra", "reordered", "paraphrased", "nonliteral", "unsupported"]
+        "defect", ["missing", "extra", "reordered", "paraphrased", "unsupported"]
     )
     def test_rejects_noncanonical_or_unsupported_ledger(self, defect):
         rows = self._rows()
@@ -157,8 +157,6 @@ class TestCanonicalGrounding:
             rows.reverse()
         elif defect == "paraphrased":
             rows[0]["script_excerpt"] = "Some PHP tools exist."
-        elif defect == "nonliteral":
-            rows[0]["source_quote"] = "The article proves a weekly exploitation surge."
         else:
             rows[0]["grounding"] = "unsupported"
         with pytest.raises(claim_extraction.ClaimGroundingError):
@@ -219,9 +217,12 @@ class TestCanonicalGrounding:
         assert claims[0].script_excerpt == turn
         assert claims[0].source_quote == self.source
         assert claims[0].verified is False
+        unrelated = "Quantum batteries now power every smartphone."
+        rows = self._rows([unrelated])
+        rows[0]["grounding"] = "qualified"
         rows[0]["source_quote"] = "Not in the supplied source."
         with pytest.raises(claim_extraction.ClaimGroundingError, match="exact provided source"):
-            self._extract(rows, turns=[turn])
+            self._extract(rows, turns=[unrelated])
 
     @pytest.mark.parametrize(
         "turn",
@@ -1014,3 +1015,174 @@ class TestNormalizedMatchingKeepsLiteralText:
             _ground(turns, rows)
         assert '"1": "script_excerpt"' in caplog.text
         assert '"2": "oversized_fields"' in caplog.text
+
+
+ARTICLE = (
+    "Acme Corp released Atlas 2.0 on March 4, 2026. The release cut inference latency by 35% "
+    "for enterprise customers. Analysts at Gartner expect adoption to grow through 2027.\n\n"
+    "Separately, Beta Labs announced a new robotics grant of $12 million in Berlin."
+)
+NEWS = "Breaking: Zenith Systems confirmed a data center outage in Dublin affecting 4,000 users."
+
+
+def _row(turn, quote, status="supported", kind=None):
+    row = {"turn": 1, "script_excerpt": turn, "grounding": status, "source_quote": quote}
+    if kind:
+        row["source_kind"] = kind
+    return row
+
+
+def _parse(turn, quote, news=None, kind=None):
+    content = json.dumps({"claims": [_row(turn, quote, kind=kind)]})
+    return claim_extraction._parse_script_claims(content, "https://e.com/a", ARTICLE, [turn], news)
+
+
+class TestSpanResolution:
+    def test_paraphrased_quote_resolves_to_literal_span(self):
+        claims = _parse(
+            "Acme Corp's Atlas 2.0 cut latency by 35% for enterprise customers.",
+            "Acme's Atlas 2.0 reduced inference latency 35 percent for enterprises",
+        )
+        assert claims[0].source_quote in ARTICLE
+        assert "35%" in claims[0].source_quote
+        assert claims[0].verified is False
+
+    def test_quote_cannot_vouch_for_role_reversed_turn(self):
+        evidence = "Acme acquired Beta in May."
+        resolve = claim_extraction._resolve_span_for_turn
+        assert resolve("Acme acquired Beta in May.", "Beta acquired Acme in May.", evidence) is None
+        assert resolve(None, "Beta acquired Acme in May.", evidence) is None
+        assert resolve(evidence, "Acme acquired Beta in May.", evidence) == evidence
+
+    def test_exact_quote_fast_path_unchanged(self):
+        quote = "The release cut inference latency by 35% for enterprise customers."
+        assert _parse("Latency fell 35%.", quote)[0].source_quote == quote
+
+    def test_number_mismatch_fails(self):
+        with pytest.raises(claim_extraction.ClaimGroundingError, match="exact provided source"):
+            _parse(
+                "Atlas 2.0 cut inference latency by 50% for enterprise customers.",
+                "Atlas 2.0 cut inference latency by half for enterprise customers",
+            )
+
+    def test_proper_noun_mismatch_fails(self):
+        with pytest.raises(claim_extraction.ClaimGroundingError, match="exact provided source"):
+            _parse(
+                "Atlas 2.0 from Initech cut inference latency for enterprise customers.",
+                "Initech Atlas 2.0 cutting inference latency",
+            )
+
+    def test_unsupported_turn_fails(self):
+        with pytest.raises(claim_extraction.ClaimGroundingError, match="exact provided source"):
+            _parse("Quantum batteries now power every smartphone.", "quantum smartphone batteries")
+
+    def test_ambiguous_spans_fail(self):
+        evidence = "Acme shipped Atlas in March. Acme shipped Atlas in March."
+        assert (
+            claim_extraction._resolve_span_for_turn(None, "Acme shipped Atlas.", evidence) is None
+        )
+
+    def test_negation_parity_required(self):
+        evidence = "The feature is not supported."
+        resolve = claim_extraction._resolve_span_for_turn
+        assert resolve("The feature is supported.", "The feature is supported.", evidence) is None
+        assert resolve(None, "The feature isn't supported.", evidence) == evidence
+        assert resolve(None, "The feature is not supported.", "The feature is supported.") is None
+
+    def test_number_sign_preserved(self):
+        resolve = claim_extraction._resolve_span_for_turn
+        assert resolve(None, "Revenue changed 5% in 2026.", "Revenue changed -5% in 2026.") is None
+        assert resolve(None, "Costs hit $5 million.", "Costs hit 5 million.") is None
+        ok = "Revenue changed 5-10% in 2026."
+        assert resolve(None, "Revenue changed 5-10% in 2026.", ok) == ok
+
+    def test_sentence_initial_entity_mandatory(self):
+        resolve = claim_extraction._resolve_span_for_turn
+        assert resolve(None, "Initech cut latency by half.", "Acme cut latency by half.") is None
+        ok = "Acme cut latency by half."
+        assert resolve(None, "However Acme cut latency by half.", ok) == ok
+
+    def test_partial_overlap_and_adjacent_ties_fail_closed(self):
+        resolve = claim_extraction._resolve_span_for_turn
+        assert (
+            resolve(None, "Acme shipped Atlas.", "Acme shipped Atlas. Acme shipped Atlas.") is None
+        )
+        evidence = "Acme shipped Atlas. Later Acme shipped Atlas. Acme shipped Atlas."
+        assert resolve(None, "Acme shipped Atlas.", evidence) is None
+
+    def test_decimal_separators_not_stripped(self):
+        resolve = claim_extraction._resolve_span_for_turn
+        assert resolve(None, "Growth was 1,5% in 2026.", "Growth was 15% in 2026.") is None
+        assert resolve(None, "Growth was 1.5% in 2026.", "Growth was 15% in 2026.") is None
+        ok = "Growth was 1,5% in 2026."
+        assert resolve(None, "Growth was 1.5% in 2026.", ok) == ok
+        ok = "Acme had 1.500 users in 2026."
+        assert resolve(None, "Acme had 1,500 users in 2026.", ok) == ok
+        assert resolve(None, "Acme had 1,500 users in 2026.", "Acme had 15 users in 2026.") is None
+
+    def test_number_words_mandatory(self):
+        resolve = claim_extraction._resolve_span_for_turn
+        assert (
+            resolve(None, "Acme cut fifty percent of jobs.", "Acme cut twenty percent of jobs.")
+            is None
+        )
+        ok = "Acme cut fifty percent of jobs."
+        assert resolve(None, "Acme cut fifty percent of jobs.", ok) == ok
+        assert resolve(None, "Acme cut 50 percent of jobs.", ok) == ok
+
+    def test_sentence_initial_determiner_not_entity(self):
+        ok = "Acme shipped the product in March."
+        assert (
+            claim_extraction._resolve_span_for_turn(None, "This product shipped in March.", ok)
+            == ok
+        )
+
+    def test_min_score_applies_to_chosen_shortest_span(self):
+        evidence = (
+            "Acme shipped Atlas in March 2026 with partners. "
+            "Acme shipped Atlas in March 2026 with partners and many others."
+        )
+        turn = "Acme shipped Atlas in March 2026 with partners and many others."
+        assert claim_extraction._resolve_span_for_turn(None, turn, evidence) is not None
+        # Chosen span must itself clear the threshold, not just the best-scoring one.
+        evidence = (
+            "Acme shipped Atlas. Acme shipped Atlas in March 2026 with partners and many others."
+        )
+        assert claim_extraction._resolve_span_for_turn(None, turn, evidence) is not None
+
+    def test_antonym_polarity_required(self):
+        resolve = claim_extraction._resolve_span_for_turn
+        assert (
+            resolve(None, "Acme revenue increased in 2026.", "Acme revenue decreased in 2026.")
+            is None
+        )
+        assert resolve(None, "Acme prices rose in 2026.", "Acme prices fell in 2026.") is None
+        ok = "Acme revenue increased in 2026."
+        assert resolve(None, "Acme revenue increased in 2026.", ok) == ok
+
+    def test_entity_order_required(self):
+        resolve = claim_extraction._resolve_span_for_turn
+        assert resolve(None, "Beta acquired Acme.", "Acme acquired Beta.") is None
+        ok = "Acme acquired Beta."
+        assert resolve(None, "Acme acquired Beta.", ok) == ok
+
+    def test_nested_tie_picks_minimal_span(self):
+        evidence = "Acme shipped Atlas in March. Weather was mild."
+        assert (
+            claim_extraction._resolve_span_for_turn(None, "Acme shipped Atlas in March.", evidence)
+            == "Acme shipped Atlas in March."
+        )
+
+    def test_multi_source_uses_declared_evidence(self):
+        turn = "Zenith Systems confirmed a Dublin data center outage affecting 4,000 users."
+        claims = _parse(
+            turn, "Zenith outage in Dublin hit 4,000 users", news=NEWS, kind="breaking_news"
+        )
+        assert claims[0].source_quote in NEWS
+        with pytest.raises(claim_extraction.ClaimGroundingError, match="exact provided source"):
+            _parse(turn, "Zenith outage in Dublin hit 4,000 users", news=NEWS, kind="article")
+
+    def test_failure_detail_is_content_free(self):
+        with pytest.raises(claim_extraction.ClaimGroundingError) as err:
+            _parse("Quantum batteries now power every smartphone.", "quantum smartphone batteries")
+        assert "Quantum" not in str(err.value)
