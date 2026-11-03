@@ -42,7 +42,7 @@ logger = logging.getLogger("podcaster.claim_extraction")
 
 # Maximum claims to extract per article
 MAX_CLAIMS = 15
-MAX_GROUNDING_REPAIRS = 1
+MAX_GROUNDING_REPAIRS = 2
 # The repo deploys gpt-4o-mini (infra/main.bicep), whose output cap is
 # 16,384 tokens. Bound total audit cost to eight such requests, without retries.
 GROUNDING_MAX_OUTPUT_TOKENS = 16_384
@@ -96,8 +96,12 @@ _EMPIRICAL_ASSERTION = re.compile(
     re.IGNORECASE,
 )
 _QUALIFICATION = re.compile(
-    r"\b(?:the article (?:describes|calls|frames|argues|suggests|reports|states|notes)|"
-    r"according to the article|the authors? (?:claim|describe|report)|"
+    r"\b(?:the article (?:describes|calls|frames|argues|suggests|reports|states|notes|says|"
+    r"explains|presents|highlights|observes|mentions)|"
+    r"as the article (?:puts it|notes|says|describes)|per the article|"
+    r"according to (?:the|this) (?:article|authors?|report|post|source)|"
+    r"the authors? (?:claim|describe|report|say|state|write|note|argue|suggest|present)|"
+    r"reportedly|allegedly|"
     r"according to the breaking[- ]news (?:report|material)|"
     r"según el artículo|el artículo (?:describe|informa|señala|afirma|sugiere)|"
     r"según (?:los autores|las noticias de última hora)|"
@@ -389,7 +393,12 @@ def _parse_script_claims(
             else:
                 quote = span
         if status == "qualified" and not _QUALIFICATION.search(turn):
-            issues.append(f"turn {index}: qualification must be explicit in actual spoken text")
+            issues.append(
+                f"turn {index}: qualification must be explicit in actual spoken text; "
+                "rewrite this turn to open with an attribution such as 'According to the "
+                "article,' or 'The article reports that', keeping its cited quote unchanged "
+                f"[turn text: {turn[:240]!r}]"
+            )
             failures[index] = "qualification"
         if _EMPIRICAL_ASSERTION.search(turn):
             issues.append(

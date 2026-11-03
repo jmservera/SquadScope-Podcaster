@@ -206,7 +206,7 @@ def test_grounding_repair_stages_only_exact_corrected_script_or_fails_closed(
         "Vera: Both voices are synthetic.\n"
     )
     final = corrected if repair_succeeds else original
-    generator = Mock(side_effect=[original, final])
+    generator = Mock(side_effect=[original, final, final])
     artifacts = Mock(wraps=jobs.generate_artifacts)
     audits = []
 
@@ -251,7 +251,7 @@ def test_grounding_repair_stages_only_exact_corrected_script_or_fails_closed(
         assert result.manifest["publishing"]["eligible"] is False
         artifacts.assert_called_once()
     else:
-        with pytest.raises(ScriptGenerationFailed, match="evidence limit.*exhausted 1") as caught:
+        with pytest.raises(ScriptGenerationFailed, match="evidence limit.*exhausted 2") as caught:
             run_generation_job(payload, storage=storage, now=now)
         assert "turn 1" in caught.value.quality_reason
         artifacts.assert_not_called()
@@ -263,7 +263,7 @@ def test_grounding_repair_stages_only_exact_corrected_script_or_fails_closed(
             row["job_id"] == job_id and row.get("state") == "reserved"
             for row in monthly["episodes"]
         )
-    assert generator.call_count == len(audits) == 2
+    assert generator.call_count == len(audits) == (2 if repair_succeeds else 3)
     first, second = [call.kwargs for call in generator.call_args_list]
     assert "previous_script" not in first
     assert second["previous_script"] == original

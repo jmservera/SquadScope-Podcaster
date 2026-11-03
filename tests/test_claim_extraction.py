@@ -243,6 +243,46 @@ class TestCanonicalGrounding:
     @pytest.mark.parametrize(
         "turn",
         [
+            "The article says the PHP sample lists exploit repositories.",
+            "Per the article, the sample lists a scanner.",
+            "Reportedly, the sample includes a scanner.",
+            "As the article puts it, the sample includes a scanner.",
+            "The authors say the sample includes a scanner.",
+        ],
+    )
+    def test_additional_explicit_attributions_qualify(self, turn):
+        rows = self._rows([turn])
+        rows[0]["grounding"] = "qualified"
+        assert self._extract(rows, turns=[turn])[0].script_excerpt == turn
+
+    @pytest.mark.parametrize(
+        "turn",
+        [
+            "The sample may include a scanner.",
+            "This suggests the sample includes a scanner.",
+            "In this case the sample includes a scanner.",
+            "So far the sample includes a scanner.",
+            "The article sample includes a scanner.",
+        ],
+    )
+    def test_generic_hedges_without_attribution_do_not_qualify(self, turn):
+        rows = self._rows([turn])
+        rows[0]["grounding"] = "qualified"
+        with pytest.raises(claim_extraction.ClaimGroundingError, match="actual spoken text"):
+            self._extract(rows, turns=[turn])
+
+    def test_qualification_feedback_is_actionable_and_names_turn_text(self):
+        turn = "The sample includes a scanner."
+        rows = self._rows([turn])
+        rows[0]["grounding"] = "qualified"
+        with pytest.raises(claim_extraction.ClaimGroundingError) as exc:
+            self._extract(rows, turns=[turn])
+        assert "According to the article," in str(exc.value)
+        assert turn in str(exc.value)
+
+    @pytest.mark.parametrize(
+        "turn",
+        [
             "The board includes a power-surge protector.",
             "The article reports that Surge includes a circuit monitor.",
         ],
