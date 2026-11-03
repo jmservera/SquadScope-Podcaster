@@ -1040,12 +1040,19 @@ def _parse(turn, quote, news=None, kind=None):
 class TestSpanResolution:
     def test_paraphrased_quote_resolves_to_literal_span(self):
         claims = _parse(
-            "Atlas 2.0 from Acme Corp cut latency by 35% for enterprise customers.",
+            "Acme Corp's Atlas 2.0 cut latency by 35% for enterprise customers.",
             "Acme's Atlas 2.0 reduced inference latency 35 percent for enterprises",
         )
         assert claims[0].source_quote in ARTICLE
         assert "35%" in claims[0].source_quote
         assert claims[0].verified is False
+
+    def test_quote_cannot_vouch_for_role_reversed_turn(self):
+        evidence = "Acme acquired Beta in May."
+        resolve = claim_extraction._resolve_span_for_turn
+        assert resolve("Acme acquired Beta in May.", "Beta acquired Acme in May.", evidence) is None
+        assert resolve(None, "Beta acquired Acme in May.", evidence) is None
+        assert resolve(evidence, "Acme acquired Beta in May.", evidence) == evidence
 
     def test_exact_quote_fast_path_unchanged(self):
         quote = "The release cut inference latency by 35% for enterprise customers."

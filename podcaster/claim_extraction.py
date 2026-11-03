@@ -555,8 +555,8 @@ def _resolve_span_for_turn(quote: str | None, turn: str, evidence: str) -> str |
         shared = [e for e in _entity_order(text) if e in span_order]
         return shared == [e for e in span_order if e in shared]
 
-    # A quote that preserves the source's entity order vouches for a reordered spoken turn.
-    if not order_matches(turn) and not (quote and order_matches(quote)):
+    # The spoken turn's own entity order must match the source; a quote cannot vouch for it.
+    if not order_matches(turn):
         return None
     return span
 
