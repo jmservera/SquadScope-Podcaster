@@ -453,7 +453,7 @@ def run_generation_job(
                                 f"{error}; exhausted {MAX_GROUNDING_REPAIRS} grounding repair"
                             ) from None
                         previous_script = llm_script
-                        repair_feedback = str(error)
+                        repair_feedback = error.repair_feedback()
                 llm_generation_engine = "llm-script-gen"
                 sections = parse_script_sections(llm_script, podcast_config)
                 if sections:
