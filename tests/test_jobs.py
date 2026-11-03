@@ -264,7 +264,7 @@ def test_grounding_repair_stages_only_exact_corrected_script_or_fails_closed(
             for row in monthly["episodes"]
         )
     assert generator.call_count == len(audits) == (2 if repair_succeeds else 3)
-    first, second = [call.kwargs for call in generator.call_args_list]
+    first, second = [call.kwargs for call in generator.call_args_list][:2]
     assert "previous_script" not in first
     assert second["previous_script"] == original
     assert "turn 1" in second["repair_feedback"]
