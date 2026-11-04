@@ -984,3 +984,13 @@ def test_chat_runtime_deployment_binds_only_api_and_synthesis():
     workflow = REUSABLE_WORKFLOW.read_text()
     assert 'chatRuntimeDeploymentName="${CHAT_RUNTIME_DEPLOYMENT_NAME}"' in workflow
     assert "CHAT_RUNTIME_DEPLOYMENT_NAME_VAR:-chat-gpt4o-w44-20261101" in workflow
+
+
+def test_api_module_sets_grounding_mode_env() -> None:
+    api_module = (ROOT / "infra/modules/api.bicep").read_text(encoding="utf-8")
+    main = (ROOT / "infra/main.bicep").read_text(encoding="utf-8")
+
+    assert "param groundingMode string = 'construct'" in api_module
+    assert "name: 'GROUNDING_MODE'" in api_module
+    assert "param groundingMode string = 'construct'" in main
+    assert "groundingMode: groundingMode" in main
