@@ -682,7 +682,7 @@ def test_unknown_provider_key_names_are_redacted_from_rejection_path():
 
 def _error_only_response():
     response = _default_v2_gpt4o_response()
-    response["choices"][0]["content_filter_results"]["jailbreak"] = {
+    response["choices"][0]["content_filter_results"]["task_adherence"] = {
         "filtered": False,
         "detected": False,
         "details": {"error": {"code": "internal"}},
@@ -751,3 +751,32 @@ def test_flagged_response_is_not_retried():
     transport, calls = _sequence_transport([flagged])
     request_with_filter_retry(transport, object())
     assert len(calls) == 1
+
+
+def test_error_with_malformed_annotation_is_terminal_regardless_of_order():
+    from podcaster.provider_filter import request_with_filter_retry
+
+    for first in ("task_adherence", "zz_last"):
+        response = _error_only_response()
+        results = response["choices"][0]["content_filter_results"]
+        results["hate"] = None
+        if first == "zz_last":
+            results["zz_last"] = results.pop("task_adherence")
+        transport, calls = _sequence_transport([response, _default_v2_gpt4o_response()])
+        request_with_filter_retry(transport, object())
+        assert len(calls) == 1
+
+
+def test_filter_retry_budget_is_shared_across_calls():
+    from podcaster.provider_filter import (
+        MAX_FILTER_EVALUATION_RETRIES,
+        request_with_filter_retry,
+    )
+
+    used = [0]
+    transport, calls = _sequence_transport([_error_only_response()])
+    request_with_filter_retry(transport, object(), used)
+    before = len(calls)
+    request_with_filter_retry(transport, object(), used)
+    assert before == MAX_FILTER_EVALUATION_RETRIES + 1
+    assert len(calls) == before + 1

@@ -153,15 +153,47 @@ def _decision_reported(value: Any) -> bool:
     return False
 
 
-def request_with_filter_retry(transport: Callable[[Any], bytes], request: Any) -> bytes:
-    """Send ``request``; re-send only when the provider filter errored without a decision.
+def _without_error_keys(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_error_keys(field)
+            for key, field in value.items()
+            if not _is_error_key(key)
+        }
+    if isinstance(value, list):
+        return [_without_error_keys(item) for item in value]
+    return value
 
-    Bounded by ``MAX_FILTER_EVALUATION_RETRIES``. Flagged, filtered, malformed and
-    persistent-error responses are returned for the caller's own validation to raise
-    ``FilterSafetyError``, so the fail-closed contract is unchanged.
+
+def _only_evaluation_errors(response: Any) -> bool:
+    """True when removing every error key leaves a fully valid, decision-free response.
+
+    Order-independent: malformed or flagged data anywhere makes the response terminal
+    even if an error key is encountered first.
     """
 
-    attempt = 0
+    try:
+        validate_chat_filter_response(_without_error_keys(response))
+    except FilterSafetyError:
+        return False
+    return True
+
+
+def request_with_filter_retry(
+    transport: Callable[[Any], bytes],
+    request: Any,
+    retries_used: list[int] | None = None,
+) -> bytes:
+    """Send ``request``; re-send only when the provider filter errored without a decision.
+
+    Bounded by ``MAX_FILTER_EVALUATION_RETRIES`` across every call sharing
+    ``retries_used`` (callers with an outer HTTP retry loop pass one list so the budget
+    is not reset). Flagged, filtered, malformed and persistent-error responses are
+    returned for the caller's own validation to raise ``FilterSafetyError``, so the
+    fail-closed contract is unchanged.
+    """
+
+    used = retries_used if retries_used is not None else [0]
     while True:
         raw = transport(request)
         try:
@@ -172,17 +204,21 @@ def request_with_filter_retry(transport: Callable[[Any], bytes], request: Any) -
             validate_chat_filter_response(response)
             return raw
         except FilterSafetyError as error:
-            if not error.evaluation_error or attempt >= MAX_FILTER_EVALUATION_RETRIES:
+            if (
+                not error.evaluation_error
+                or used[0] >= MAX_FILTER_EVALUATION_RETRIES
+                or not _only_evaluation_errors(response)
+            ):
                 return raw
-            attempt += 1
+            used[0] += 1
             logger.warning(
                 "chat filter evaluation error request_id=%s path=%s; re-requesting %d/%d",
                 error.request_id,
                 error.path,
-                attempt,
+                used[0],
                 MAX_FILTER_EVALUATION_RETRIES,
             )
-            _sleep(FILTER_EVALUATION_RETRY_SECONDS * attempt)
+            _sleep(FILTER_EVALUATION_RETRY_SECONDS * used[0])
 
 
 def validate_chat_filter_response(response: Any) -> None:

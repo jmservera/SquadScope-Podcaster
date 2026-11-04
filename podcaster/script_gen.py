@@ -1498,12 +1498,13 @@ def _request_dialogue(
         },
     )
     retries_used = 0
+    filter_retries_used = [0]
     wait_used = generation.provider_wait_seconds if generation is not None else 0.0
     if generation is not None:
         retries_used = generation.provider_retries
     while True:
         try:
-            raw_response = request_with_filter_retry(transport, request)
+            raw_response = request_with_filter_retry(transport, request, filter_retries_used)
             break
         except HTTPError as exc:
             if generation is not None:
