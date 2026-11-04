@@ -50,7 +50,7 @@ AUDIT_TEMPERATURE = 0
 AUDIT_SEED = 20261104
 MAX_GROUNDING_REPAIRS = 3
 # Targeted single-turn repairs are cheap (one small chat call), so allow more.
-MAX_TARGETED_REPAIRS = 5
+MAX_TARGETED_REPAIRS = 8
 TARGETED_REPAIR_CLASSES = frozenset({"quote", "qualification", "unsupported"})
 # A further repair only starts while enough of the 240s ingress budget remains.
 GROUNDING_REPAIR_DEADLINE_SECONDS = 170.0
