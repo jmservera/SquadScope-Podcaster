@@ -389,6 +389,65 @@ def _check_turn(index: int, text: str, ctx: _Context) -> TurnResult:
     return fail("fact", "unsupported")
 
 
+def _disclosure_holders(turns: list[str], ctx: _Context) -> list[int]:
+    return [i for i, t in enumerate(turns, 1) if ctx.disclosure in _norm(t)]
+
+
+def _disclosure_placement_ok(holders: list[int], total: int) -> bool:
+    # _format_script closes the show with a second disclosure; any other repeat is a defect.
+    return bool(holders) and len(holders) <= 2 and (len(holders) == 1 or holders[1] == total)
+
+
+def normalize_disclosure(script: str, *, ctx: _Context) -> str:
+    """Place the approved AI disclosure deterministically (pure, idempotent).
+
+    Only runs when the placement rule is violated. Disclosure text is removed from every turn
+    other than the first and last (turns left without words are dropped), then the exact
+    configured disclosure is inserted as a host_b turn at the start and/or end if missing.
+    """
+
+    config = ctx.podcast_config
+    approved = config.ai_voice_disclosure.strip()
+    if not ctx.disclosure or not approved:
+        return script
+    turns = spoken_turns(script, config)
+    if not turns or _disclosure_placement_ok(_disclosure_holders(turns, ctx), len(turns)):
+        return script
+    header, lines = _split_body(script)
+    positions = _spoken_positions(lines, config)
+    if len(positions) != len(turns):
+        return script
+    total = len(positions)
+    drop: list[int] = []
+    for index, (position, label) in enumerate(positions, 1):
+        if index in (1, total) or ctx.disclosure not in _norm(turns[index - 1]):
+            continue
+        stripped, _ = _strip_disclosure(turns[index - 1], ctx)
+        stripped = " ".join(stripped.split())
+        if ctx.disclosure in _norm(stripped):
+            return script
+        if re.search(r"\w", stripped):
+            ending = "\n" if lines[position].endswith("\n") else ""
+            lines[position] = f"{label}: {stripped}{ending}"
+        else:
+            drop.append(position)
+    for position in sorted(drop, reverse=True):
+        del lines[position]
+    positions = _spoken_positions(lines, config)
+    kept = [t for t in spoken_turns(header + "".join(lines), config)]
+    if not positions or len(positions) != len(kept):
+        return script
+    host_b = config.host_b.name
+    if ctx.disclosure not in _norm(kept[-1]):
+        last = positions[-1][0]
+        if not lines[last].endswith(("\n", "\r")):
+            lines[last] += "\n"
+        lines.insert(last + 1, f"{host_b}: {approved}\n")
+    if ctx.disclosure not in _norm(kept[0]):
+        lines.insert(positions[0][0], f"{host_b}: {approved}\n")
+    return header + "".join(lines)
+
+
 def _word_count(turns: list[str]) -> int:
     return sum(len(t.split()) for t in turns)
 
@@ -423,9 +482,7 @@ def check_script(
     results = tuple(_check_turn(i, t, ctx) for i, t in enumerate(turns, 1))
     problems: list[str] = []
     if ctx.disclosure:
-        holders = [i for i, t in enumerate(turns, 1) if ctx.disclosure in _norm(t)]
-        # _format_script closes the show with a second disclosure; any other repeat is a defect.
-        if not holders or len(holders) > 2 or (len(holders) == 2 and holders[1] != len(turns)):
+        if not _disclosure_placement_ok(_disclosure_holders(turns, ctx), len(turns)):
             problems.append("ai_disclosure_count")
     words = _word_count(turns)
     if not _bounds_ok(words, word_bounds):
@@ -712,6 +769,7 @@ def enforce(
             _ctx=ctx,
         )
 
+    script = normalize_disclosure(script, ctx=ctx)
     result = check(script)
     initial_words = result.words
     rounds = 0
@@ -739,6 +797,10 @@ def enforce(
         downgraded = tuple(sorted(result.failures))
         failing = {t.index: t.text for t in result.turns if t.failure}
         script = downgrade_turns(script, failing, ctx=ctx, word_bounds=word_bounds)
+        result = check(script)
+    normalized = normalize_disclosure(script, ctx=ctx)
+    if normalized != script:
+        script = normalized
         result = check(script)
     words_after_downgrade = result.words
     if "word_range" in result.global_failures and not result.failures and word_bounds:
