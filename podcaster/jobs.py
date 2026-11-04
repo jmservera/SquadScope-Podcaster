@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -13,6 +14,8 @@ from podcaster.article_validation import validate_article_inputs
 from podcaster.artifact_access import ACCESS_MODEL, artifact_access_metadata
 from podcaster.audio import placeholder_audio_validation
 from podcaster.claim_extraction import (
+    GROUNDING_REPAIR_DEADLINE_SECONDS,
+    GROUNDING_REPAIRS_UNCONDITIONAL,
     MAX_GROUNDING_REPAIRS,
     ClaimGroundingError,
     claims_to_ledger_json,
@@ -405,6 +408,7 @@ def run_generation_job(
             try:
                 previous_script = None
                 repair_feedback = None
+                grounding_started = time.monotonic()
                 for attempt in range(MAX_GROUNDING_REPAIRS + 1):
                     repair_args = (
                         {"previous_script": previous_script, "repair_feedback": repair_feedback}
@@ -448,9 +452,14 @@ def run_generation_job(
                             MAX_GROUNDING_REPAIRS + 1,
                             str(error)[:500],
                         )
-                        if attempt == MAX_GROUNDING_REPAIRS:
+                        out_of_time = (
+                            attempt >= GROUNDING_REPAIRS_UNCONDITIONAL
+                            and time.monotonic() - grounding_started
+                            > GROUNDING_REPAIR_DEADLINE_SECONDS
+                        )
+                        if attempt == MAX_GROUNDING_REPAIRS or out_of_time:
                             raise ClaimGroundingError(
-                                f"{error}; exhausted {MAX_GROUNDING_REPAIRS} grounding repair"
+                                f"{error}; exhausted {attempt} grounding repair"
                             ) from None
                         previous_script = llm_script
                         repair_feedback = error.repair_feedback()

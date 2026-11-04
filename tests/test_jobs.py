@@ -206,7 +206,7 @@ def test_grounding_repair_stages_only_exact_corrected_script_or_fails_closed(
         "Vera: Both voices are synthetic.\n"
     )
     final = corrected if repair_succeeds else original
-    generator = Mock(side_effect=[original, final, final])
+    generator = Mock(side_effect=[original, final, final, final])
     artifacts = Mock(wraps=jobs.generate_artifacts)
     audits = []
 
@@ -251,7 +251,7 @@ def test_grounding_repair_stages_only_exact_corrected_script_or_fails_closed(
         assert result.manifest["publishing"]["eligible"] is False
         artifacts.assert_called_once()
     else:
-        with pytest.raises(ScriptGenerationFailed, match="evidence limit.*exhausted 2") as caught:
+        with pytest.raises(ScriptGenerationFailed, match="evidence limit.*exhausted 3") as caught:
             run_generation_job(payload, storage=storage, now=now)
         assert "turn 1" in caught.value.quality_reason
         assert "witnessed a surge" not in caught.value.quality_reason
@@ -265,7 +265,7 @@ def test_grounding_repair_stages_only_exact_corrected_script_or_fails_closed(
             row["job_id"] == job_id and row.get("state") == "reserved"
             for row in monthly["episodes"]
         )
-    assert generator.call_count == len(audits) == (2 if repair_succeeds else 3)
+    assert generator.call_count == len(audits) == (2 if repair_succeeds else 4)
     first, second = [call.kwargs for call in generator.call_args_list][:2]
     assert "previous_script" not in first
     assert second["previous_script"] == original
@@ -1892,3 +1892,33 @@ def test_filter_failure_marker_records_sanitized_rejection(monkeypatch, tmp_path
     marker = json.loads(storage.get_bytes(f"jobs/{build_job_id(payload)}/filter-failure.json"))
     assert marker["rejection"] == "malformed filter detail at a.b"
     assert marker["request_id"] == "chatcmpl-1"
+
+
+def test_grounding_repair_stops_early_when_ingress_budget_is_spent(tmp_path, monkeypatch):
+    from podcaster import claim_extraction, jobs
+
+    payload = {
+        "week": "2026-W44",
+        "article_url": "https://example.com/w44",
+        "article_title": "Source-grounded review",
+        "article_content": VALID_ARTICLE_CONTENT,
+    }
+    bad = (
+        "Title: Original\n---\n"
+        "Theo: We witnessed a surge of exploit repositories.\n"
+        "Vera: Both voices are synthetic.\n"
+    )
+    generator = Mock(side_effect=[bad, bad, bad, bad])
+    monkeypatch.setattr(jobs, "generate_script", generator)
+    monkeypatch.setattr(jobs, "GROUNDING_REPAIR_DEADLINE_SECONDS", -1.0)
+
+    def failing(**_kwargs):
+        raise claim_extraction.ClaimGroundingError("turn 1: unsupported")
+
+    monkeypatch.setattr(jobs, "extract_claims", failing)
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    with pytest.raises(ScriptGenerationFailed, match="exhausted 2"):
+        run_generation_job(
+            payload, storage=storage, now=datetime(2026, 10, 30, 10, tzinfo=timezone.utc)
+        )
+    assert generator.call_count == 3
