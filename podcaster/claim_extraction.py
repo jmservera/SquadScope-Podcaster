@@ -801,6 +801,8 @@ class Claim:
     verified: bool
     editor_notes: str
     source_kind: str = "article"
+    span_ids: tuple[str, ...] = ()
+    grounding_mode: str = ""
 
 
 def _build_claim_extraction_prompt(article_content: str) -> tuple[str, str]:
@@ -1165,6 +1167,10 @@ def claims_to_ledger_json(claims: list[Claim]) -> str:
         }
         if claim.source_paragraph is not None:
             entry["source_paragraph"] = claim.source_paragraph
+        if claim.span_ids:
+            entry["span_ids"] = list(claim.span_ids)
+        if claim.grounding_mode:
+            entry["grounding_mode"] = claim.grounding_mode
         ledger.append(entry)
 
     return json.dumps(ledger, sort_keys=True, indent=2) + "\n"
