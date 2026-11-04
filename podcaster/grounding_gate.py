@@ -222,7 +222,9 @@ def _build_context(
     names = {n.strip() for n in names if n and n.strip()}
     allow = (
         re.compile(
-            "|".join(re.escape(n) for n in sorted(names, key=lambda n: (-len(n), n))),
+            r"(?<!\w)(?:"
+            + "|".join(re.escape(n) for n in sorted(names, key=lambda n: (-len(n), n)))
+            + r")(?!\w)",
             re.IGNORECASE,
         )
         if names

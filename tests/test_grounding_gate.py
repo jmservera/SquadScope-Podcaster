@@ -528,3 +528,14 @@ def test_audit_mode_default_unchanged(tmp_path, monkeypatch):
     )
     assert result.manifest["generation"]["grounding_mode"] == "audit"
     assert len(ledger) == len(turns) and "span_ids" not in ledger[0]
+
+
+@pytest.mark.parametrize("name", ["Theodore", "Veranda", "Veracruz"])
+def test_name_exemption_respects_word_boundaries(name):
+    result = gate(script(GOOD[0], f"I wonder what {name} thinks about that."))
+    assert result.failures == {2: "qualification"}
+
+
+def test_plain_host_name_still_exempt_in_chat():
+    result = gate(script(GOOD[0], f"I wonder what {A} thinks about that."))
+    assert result.ok, result.summary()
