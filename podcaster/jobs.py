@@ -443,6 +443,14 @@ def run_generation_job(
                                     job_id,
                                 )
                         if llm_script is None:
+                            if full_repairs >= MAX_GROUNDING_REPAIRS or (
+                                rounds > GROUNDING_REPAIRS_UNCONDITIONAL
+                                and time.monotonic() - grounding_started
+                                > GROUNDING_REPAIR_DEADLINE_SECONDS
+                            ):
+                                raise ClaimGroundingError(
+                                    f"{repair_error}; exhausted {rounds - 1} grounding repair"
+                                ) from None
                             full_repairs += 1
                     if llm_script is None:
                         repair_args = (

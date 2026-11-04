@@ -250,3 +250,37 @@ def test_targeted_repair_deadline_stops_new_repairs(tmp_path, monkeypatch):
         run_generation_job(PAYLOAD, storage=storage, now=NOW)
     assert generator.call_count == 1
     assert repairer.call_count == 2
+
+
+def test_rejected_patch_after_full_budget_fails_closed(tmp_path, monkeypatch):
+    budget = jobs.MAX_GROUNDING_REPAIRS
+    generator, repairer, storage = _run(
+        tmp_path,
+        monkeypatch,
+        audits=[ClaimGroundingError("turn 1: empirical")] * budget + [_error()],
+        repairs=[None],
+        generations=[SCRIPT_A] + [SCRIPT_B] * budget,
+    )
+    with pytest.raises(ScriptGenerationFailed, match="exhausted"):
+        run_generation_job(PAYLOAD, storage=storage, now=NOW)
+    assert repairer.call_count == 1
+    assert generator.call_count == 1 + budget
+
+
+def test_rejected_patch_with_deadline_spent_fails_closed(tmp_path, monkeypatch):
+    generator, repairer, storage = _run(
+        tmp_path,
+        monkeypatch,
+        audits=[ClaimGroundingError("turn 1: empirical")] * 2 + [_error()],
+        repairs=[],
+        generations=[SCRIPT_A, SCRIPT_B, SCRIPT_C],
+    )
+
+    def reject_after_deadline(*args, **kwargs):
+        monkeypatch.setattr(jobs, "GROUNDING_REPAIR_DEADLINE_SECONDS", -1.0)
+
+    repairer.side_effect = reject_after_deadline
+    with pytest.raises(ScriptGenerationFailed, match="exhausted"):
+        run_generation_job(PAYLOAD, storage=storage, now=NOW)
+    assert repairer.call_count == 1
+    assert generator.call_count == 3
