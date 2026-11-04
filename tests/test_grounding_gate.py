@@ -341,18 +341,122 @@ def test_replay_fixture_scripts_stable_and_content_free_logs(caplog):
 def test_advisory_never_fails_but_filter_is_terminal():
     from podcaster.provider_filter import FilterSafetyError
 
-    assert run_advisory(lambda: 1 / 0).status == "failed"
-    assert run_advisory(lambda: [1, 2]).status == "ok"
-    assert run_advisory(lambda: time.sleep(2), timeout=0.05).status == "timeout"
+    assert run_advisory(lambda t: 1 / 0).status == "failed"
+    assert run_advisory(lambda t: [1, 2]).status == "ok"
+    assert run_advisory(lambda t: time.sleep(2), timeout=0.05, grace=0.05).status == "timeout"
     assert run_advisory(
-        lambda: (_ for _ in ()).throw(ClaimGroundingError("x", failure_classes={1: "quote"}))
+        lambda t: (_ for _ in ()).throw(ClaimGroundingError("x", failure_classes={1: "quote"}))
     ).detail == {"failed_turns": 1}
 
-    def filtered():
+    def filtered(_transport):
         raise FilterSafetyError("blocked", request_id="r")
 
     with pytest.raises(FilterSafetyError):
         run_advisory(filtered)
+
+
+def test_advisory_cancelled_after_cutoff_and_late_filter_error_is_terminal():
+    from podcaster.grounding_gate import AdvisoryCancelled
+    from podcaster.provider_filter import FilterSafetyError
+
+    sent = []
+
+    def worker(transport):
+        time.sleep(0.2)
+        try:
+            transport(object())  # past the cutoff: must refuse, never reach the network
+        except AdvisoryCancelled:
+            sent.append("refused")
+            raise FilterSafetyError("blocked", request_id="late") from None
+
+    with pytest.raises(FilterSafetyError):
+        run_advisory(worker, timeout=0.05, grace=2.0)
+    assert sent == ["refused"]
+
+    def cancelled(transport):
+        time.sleep(0.2)
+        transport(object())
+
+    assert run_advisory(cancelled, timeout=0.05, grace=2.0).status == "timeout"
+
+
+def test_short_quotations_are_validated():
+    bad = gate(
+        script(
+            'According to the authors, Acme Labs released Pelican 2.0 with a new "autonomous" '
+            "planner module."
+        )
+    )
+    assert bad.failures.get(1) == "quote"
+    ok = gate(
+        script('According to the authors, Acme Labs released Pelican 2.0 with a new "planner".')
+    )
+    assert ok.turns[0].failure is None
+
+
+def test_quote_shortcut_needs_single_quote_and_nothing_else():
+    q = "Acme Labs released Pelican 2.0 with a new planner module."
+    trailing = gate(script(f'According to the authors, "{q}" Version 99.'))
+    assert trailing.failures.get(1) in {"unsupported", "quote"}
+    two = gate(
+        script(
+            'According to the authors, "Acme Labs released Pelican 2.0" and '
+            '"The planner reduced failed runs by 12% in internal tests."'
+        )
+    )
+    assert two.turns[0].kind != "quote"
+    single = gate(script(f'According to the authors, "{q}"'))
+    assert single.turns[0].kind == "quote" and single.turns[0].failure is None
+
+
+def test_host_name_inside_quotation_is_preserved():
+    cfg = PodcastConfig()
+    evidence = "Acme Labs credits {h} for releasing Pelican 2.0. Other text follows here."
+    article = evidence.format(h=cfg.host_a.name)
+    text = (
+        f"Title: t\n---\n\n{A}: According to the authors, "
+        f'"Acme Labs credits {A} for releasing Pelican 2.0."\n'
+    )
+    result = check_script(text, article_content=article, breaking_news=None, podcast_config=cfg)
+    assert result.turns[0].failure is None and result.turns[0].kind == "quote"
+
+
+def test_quote_scan_is_linear_on_pathological_input():
+    from podcaster.grounding_gate import _quotes
+
+    start = time.monotonic()
+    assert _quotes("\u00ab" + " " * 200000) == []
+    assert _quotes("\u00ab " * 100000) == []
+    assert time.monotonic() - start < 2
+    assert _quotes('say "a b" and \u201cc d\u201d and \u00ab e f \u00bb') == ["a b", "c d", "e f"]
+
+
+def test_both_mode_provenance_replaced_together_from_gate():
+    from podcaster.claim_extraction import Claim
+    from podcaster.grounding_gate import apply_gate_provenance
+
+    result = gate(script(*GOOD))
+    turn = result.turns[0]
+    stale = [
+        Claim(
+            f"c{i}",
+            t.text,
+            "",
+            "stale",
+            None,
+            False,
+            "",
+            source_kind="breaking_news",
+            span_ids=("N1",),
+        )
+        for i, t in enumerate(result.turns)
+    ]
+    fixed = apply_gate_provenance(stale, result, "https://example.test/a", "both")
+    assert fixed[0].source_kind == "article" == turn.source_kind
+    assert fixed[0].span_ids == turn.span_ids and fixed[0].span_ids[0].startswith("A")
+    assert fixed[0].source_quote == turn.quote
+    assert fixed[0].source_url == "https://example.test/a"
+    assert all(c.grounding_mode == "both" for c in fixed)
 
 
 def test_mode_flag_defaults_to_audit(monkeypatch):

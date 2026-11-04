@@ -5,7 +5,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from urllib.parse import urlparse
@@ -38,6 +38,7 @@ from podcaster.grounding_gate import (
     MODE_AUDIT,
     MODE_BOTH,
     MODE_CONSTRUCT,
+    apply_gate_provenance,
     check_script,
     claims_from_result,
     enforce,
@@ -502,10 +503,11 @@ def run_generation_job(
                         downgraded_turns=len(outcome.downgraded),
                     )
                     advisory = run_advisory(
-                        lambda: extract_claims(
+                        lambda audit_transport: extract_claims(
                             article_content=payload["article_content"],
                             article_url=str(payload["article_url"]),
                             config=script_config,
+                            transport=audit_transport,
                             script=llm_script,
                             podcast_config=podcast_config,
                             breaking_news=payload.get("breaking_news") or None,
@@ -601,10 +603,9 @@ def run_generation_job(
                             )
                             if not gate.ok:
                                 raise to_grounding_error(gate)
-                            claims = [
-                                replace(c, span_ids=t.span_ids, grounding_mode=gate_mode)
-                                for c, t in zip(claims, gate.turns)
-                            ]
+                            claims = apply_gate_provenance(
+                                claims, gate, str(payload["article_url"]), gate_mode
+                            )
                         llm_claims_json = claims_to_ledger_json(claims)
                         break
                     except ClaimGroundingError as error:

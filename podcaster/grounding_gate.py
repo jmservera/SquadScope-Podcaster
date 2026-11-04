@@ -29,7 +29,7 @@ import re
 import threading
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from podcaster.claim_extraction import (
@@ -66,9 +66,9 @@ MODE_AUDIT, MODE_BOTH, MODE_CONSTRUCT = "audit", "both", "construct"
 MAX_GATE_REPAIRS = 3
 GATE_BUDGET_SECONDS = 200.0
 ADVISORY_AUDIT_SECONDS = 45.0
+ADVISORY_GRACE_SECONDS = 5.0
 MAX_RENDER_CANDIDATES = 12
 MAX_CHAT_WORDS = 20
-MIN_QUOTE_WORDS = 4
 MAX_RENDERED_QUOTE_CHARS = 1000
 
 _LEAD_INS = {
@@ -82,7 +82,7 @@ _FILLERS = {
     "fr": "Passons au point suivant.",
 }
 _QUOTE_CHARS = '"\u201c\u201d\u00ab\u00bb'
-_QUOTED = re.compile(r'"([^"]+)"|\u201c([^\u201d]+)\u201d|\u00ab\s*([^\u00bb]+?)\s*\u00bb')
+_QUOTE_PAIRS = {'"': '"', "\u201c": "\u201d", "\u00ab": "\u00bb"}
 _URL_OR_CONTROL = re.compile(r"https?://|www\.|[\x00-\x1f\x7f]", re.IGNORECASE)
 _FACTUAL_CUE = re.compile(
     r"(?:\b(?:because|leads? to|led to|results? in|caused?|(?:faster|slower|better|worse|bigger|"
@@ -266,11 +266,24 @@ def _chat_entities(text: str) -> list[str]:
 
 
 def _quotes(text: str) -> list[str]:
-    out = []
-    for match in _QUOTED.finditer(text):
-        quote = next(g for g in match.groups() if g is not None)
-        if len(quote.split()) >= MIN_QUOTE_WORDS:
-            out.append(quote)
+    """Every quoted passage, of any length, found by a linear scan (no backtracking regex)."""
+
+    out: list[str] = []
+    missing: set[str] = set()
+    i = 0
+    while i < len(text):
+        close = _QUOTE_PAIRS.get(text[i])
+        if close is not None and close not in missing:
+            end = text.find(close, i + 1)
+            if end < 0:
+                missing.add(close)
+            else:
+                quote = text[i + 1 : end].strip()
+                if quote:
+                    out.append(quote)
+                i = end + 1
+                continue
+        i += 1
     return out
 
 
@@ -307,14 +320,16 @@ def _check_turn(index: int, text: str, ctx: _Context) -> TurnResult:
         return fail("fact", "violation")
     if _EMPIRICAL_ASSERTION.search(text):
         return fail("fact", "empirical")
-    body, had_disclosure = _strip_disclosure(text, ctx)
-    if ctx.allow is not None:
-        body = ctx.allow.sub(" ", body)
+    plain, had_disclosure = _strip_disclosure(text, ctx)
+    plain = " ".join(plain.split())
+    # Name exemptions apply to the conversational checks only; quotations and factual
+    # spans are matched against the original wording.
+    body = ctx.allow.sub(" ", plain) if ctx.allow is not None else plain
     body = " ".join(body.split())
     if not re.search(r"\w", body):
         return TurnResult(index, text, "disclosure" if had_disclosure else "chat")
 
-    quotes = _quotes(body)
+    quotes = _quotes(plain)
     digits = bool(_DIGIT.search(body))
     entities = _chat_entities(body)
     cue = bool(_FACTUAL_CUE.search(body))
@@ -345,24 +360,33 @@ def _check_turn(index: int, text: str, ctx: _Context) -> TurnResult:
         quote_hits.append(hit)
     if len({kind for kind, _ in quote_hits}) > 1:
         return fail("fact", "quote")
-    core = _QUALIFICATION.sub(" ", body)
-    for quote in quotes:
-        core = core.replace(quote, " ")
-    core = re.sub(f"[{re.escape(_QUOTE_CHARS)}]", " ", core)
-    if quote_hits and len(core.split()) <= 3:
-        kind, span = quote_hits[0]
-        return TurnResult(
-            index, text, "quote", source_kind=kind, quote=span, span_ids=_ids(ctx, kind, span)
-        )
-    core = " ".join(_QUALIFICATION.sub(" ", body).split())
-    for kind, evidence in (("article", ctx.article), ("breaking_news", ctx.news)):
-        if not evidence or (quote_hits and quote_hits[0][0] != kind):
-            continue
-        span = _resolve_span_for_turn(None, core, evidence)
-        if span is not None:
+    core = _QUALIFICATION.sub(" ", plain)
+    if len(quotes) == 1:
+        # Shortcut only for one quotation with nothing but punctuation/attribution around it.
+        remainder = core.replace(quotes[0], " ")
+        remainder = re.sub(f"[{re.escape(_QUOTE_CHARS)}]", " ", remainder)
+        if not re.search(r"\w", remainder):
+            kind, span = quote_hits[0]
             return TurnResult(
-                index, text, "fact", source_kind=kind, quote=span, span_ids=_ids(ctx, kind, span)
+                index, text, "quote", source_kind=kind, quote=span, span_ids=_ids(ctx, kind, span)
             )
+    candidates = [" ".join(core.split())]
+    if not quotes and body != plain:
+        candidates.append(" ".join(_QUALIFICATION.sub(" ", body).split()))
+    for core_text in candidates:
+        for kind, evidence in (("article", ctx.article), ("breaking_news", ctx.news)):
+            if not evidence or (quote_hits and quote_hits[0][0] != kind):
+                continue
+            span = _resolve_span_for_turn(None, core_text, evidence)
+            if span is not None:
+                return TurnResult(
+                    index,
+                    text,
+                    "fact",
+                    source_kind=kind,
+                    quote=span,
+                    span_ids=_ids(ctx, kind, span),
+                )
     return fail("fact", "unsupported")
 
 
@@ -626,24 +650,67 @@ def claims_from_result(result: GateResult, article_url: str, mode: str) -> list[
     return claims
 
 
+def apply_gate_provenance(
+    claims: list[Claim], result: GateResult, article_url: str, mode: str
+) -> list[Claim]:
+    """Overlay the gate's evidence on audit rows: ids, kind, quote and url move together."""
+
+    safe_url = neutralize(article_url, limit=FIELD_LIMITS["reference"])
+    return [
+        replace(
+            c,
+            span_ids=t.span_ids,
+            source_kind=t.source_kind,
+            source_quote=t.quote,
+            source_url=safe_url if t.source_kind == "article" else "",
+            grounding_mode=mode,
+        )
+        for c, t in zip(claims, result.turns)
+    ]
+
+
 @dataclass
 class AdvisoryOutcome:
     status: str = "skipped"
     detail: dict[str, Any] = field(default_factory=dict)
 
 
-def run_advisory(fn: Callable[[], Any], timeout: float = ADVISORY_AUDIT_SECONDS) -> AdvisoryOutcome:
-    """Run the non-gating LLM audit with a hard wall-clock cutoff.
+class AdvisoryCancelled(TimeoutError):
+    """Raised by the advisory transport once the cutoff passed; no request is sent."""
 
-    Every failure (including timeout) is logged content-free and swallowed, except
-    ``FilterSafetyError`` which stays terminal.
+
+def run_advisory(
+    fn: Callable[[Callable[[Any], bytes]], Any],
+    timeout: float = ADVISORY_AUDIT_SECONDS,
+    *,
+    grace: float = ADVISORY_GRACE_SECONDS,
+) -> AdvisoryOutcome:
+    """Run the non-gating LLM audit with a hard, cancellable wall-clock cutoff.
+
+    ``fn`` receives a transport it must use for every provider request. The transport
+    refuses to send once the cutoff passed or the run was cancelled and bounds each
+    in-flight request by the time left, so the worker cannot keep calling the provider
+    after the cutoff. After the cutoff the worker is joined for a short grace so a late
+    ``FilterSafetyError`` still reaches the caller. Every other failure (including
+    timeout) is logged content-free and swallowed; ``FilterSafetyError`` stays terminal.
     """
 
+    from urllib.request import urlopen
+
     box: dict[str, Any] = {}
+    cancel = threading.Event()
+    deadline = time.monotonic() + timeout
+
+    def transport(request: Any) -> bytes:
+        remaining = deadline - time.monotonic()
+        if cancel.is_set() or remaining <= 0:
+            raise AdvisoryCancelled("advisory audit cutoff reached")
+        with urlopen(request, timeout=remaining) as response:
+            return response.read()
 
     def target() -> None:
         try:
-            box["value"] = fn()
+            box["value"] = fn(transport)
         except BaseException as error:  # noqa: BLE001 - advisory must never fail the job
             box["error"] = error
 
@@ -651,9 +718,15 @@ def run_advisory(fn: Callable[[], Any], timeout: float = ADVISORY_AUDIT_SECONDS)
     worker.start()
     worker.join(timeout)
     if worker.is_alive():
+        cancel.set()
+        worker.join(grace)
+    if worker.is_alive():
         logger.warning("advisory audit timed out after %.0fs (non-gating)", timeout)
         return AdvisoryOutcome("timeout")
     error = box.get("error")
+    if isinstance(error, AdvisoryCancelled):
+        logger.warning("advisory audit cancelled at cutoff (non-gating)")
+        return AdvisoryOutcome("timeout")
     if isinstance(error, FilterSafetyError):
         raise error
     if error is not None:
