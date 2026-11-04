@@ -678,3 +678,111 @@ def test_unknown_provider_key_names_are_redacted_from_rejection_path():
         validate_chat_filter_response(response)
     assert "CANARY" not in caught.value.reason
     assert caught.value.reason.endswith("content_filter_results.?.filtered")
+
+
+def _error_only_response():
+    response = _default_v2_gpt4o_response()
+    response["choices"][0]["content_filter_results"]["task_adherence"] = {
+        "filtered": False,
+        "detected": False,
+        "details": {"error": {"code": "internal"}},
+    }
+    return response
+
+
+def test_filter_evaluation_error_without_decision_is_marked_retryable():
+    with pytest.raises(FilterSafetyError) as caught:
+        validate_chat_filter_response(_error_only_response())
+    assert caught.value.evaluation_error is True
+
+
+def test_error_alongside_flag_is_never_retryable():
+    response = _error_only_response()
+    response["choices"][0]["content_filter_results"]["hate"] = {
+        "filtered": True,
+        "severity": "high",
+    }
+    with pytest.raises(FilterSafetyError) as caught:
+        validate_chat_filter_response(response)
+    assert caught.value.evaluation_error is False
+
+
+def _sequence_transport(responses):
+    calls = []
+
+    def transport(request):
+        calls.append(request)
+        return json.dumps(responses[min(len(calls), len(responses)) - 1]).encode()
+
+    return transport, calls
+
+
+def test_transient_filter_error_is_retried_and_clean_response_accepted():
+    from podcaster.provider_filter import request_with_filter_retry
+
+    clean = _default_v2_gpt4o_response()
+    transport, calls = _sequence_transport([_error_only_response(), clean])
+    raw = request_with_filter_retry(transport, object())
+    assert len(calls) == 2
+    validate_chat_filter_response(json.loads(raw))
+
+
+def test_persistent_filter_error_is_bounded_and_still_fails_closed():
+    from podcaster.provider_filter import (
+        MAX_FILTER_EVALUATION_RETRIES,
+        request_with_filter_retry,
+    )
+
+    transport, calls = _sequence_transport([_error_only_response()])
+    raw = request_with_filter_retry(transport, object())
+    assert len(calls) == MAX_FILTER_EVALUATION_RETRIES + 1
+    with pytest.raises(FilterSafetyError):
+        validate_chat_filter_response(json.loads(raw))
+
+
+def test_flagged_response_is_not_retried():
+    from podcaster.provider_filter import request_with_filter_retry
+
+    flagged = _default_v2_gpt4o_response()
+    flagged["choices"][0]["content_filter_results"]["hate"] = {
+        "filtered": True,
+        "severity": "high",
+    }
+    transport, calls = _sequence_transport([flagged])
+    request_with_filter_retry(transport, object())
+    assert len(calls) == 1
+
+
+def test_error_with_malformed_annotation_is_terminal_regardless_of_order():
+    from podcaster.provider_filter import request_with_filter_retry
+
+    for error_first in (True, False):
+        response = _error_only_response()
+        choice = response["choices"][0]
+        results = choice["content_filter_results"]
+        error_entry = results.pop("task_adherence")
+        results.pop("hate")
+        ordered = {"task_adherence": error_entry, "hate": None}
+        if not error_first:
+            ordered = {"hate": None, "task_adherence": error_entry}
+        choice["content_filter_results"] = {**ordered, **results}
+        keys = list(choice["content_filter_results"])
+        assert keys.index("task_adherence") < keys.index("hate") if error_first else True
+        transport, calls = _sequence_transport([response, _default_v2_gpt4o_response()])
+        request_with_filter_retry(transport, object())
+        assert len(calls) == 1
+
+
+def test_filter_retry_budget_is_shared_across_calls():
+    from podcaster.provider_filter import (
+        MAX_FILTER_EVALUATION_RETRIES,
+        request_with_filter_retry,
+    )
+
+    used = [0]
+    transport, calls = _sequence_transport([_error_only_response()])
+    request_with_filter_retry(transport, object(), used)
+    before = len(calls)
+    request_with_filter_retry(transport, object(), used)
+    assert before == MAX_FILTER_EVALUATION_RETRIES + 1
+    assert len(calls) == before + 1

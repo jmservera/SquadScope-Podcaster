@@ -1186,3 +1186,20 @@ class TestSpanResolution:
         with pytest.raises(claim_extraction.ClaimGroundingError) as err:
             _parse("Quantum batteries now power every smartphone.", "quantum smartphone batteries")
         assert "Quantum" not in str(err.value)
+
+
+class TestUnsupportedDisposition:
+    def test_unsupported_row_gets_actionable_repair_not_unknown_disposition(self):
+        turn = "Atlas 2.0 will dominate the market next year."
+        content = json.dumps({"claims": [_row(turn, None, status="unsupported")]})
+        with pytest.raises(claim_extraction.ClaimGroundingError) as caught:
+            claim_extraction._parse_script_claims(content, "https://e.com/a", ARTICLE, [turn])
+        assert "unknown grounding disposition" not in str(caught.value)
+        assert "not supported by the source" in str(caught.value)
+        assert caught.value.repair_turns == {1: turn}
+
+    def test_truly_unknown_disposition_still_fails_closed(self):
+        turn = "Atlas 2.0 shipped."
+        content = json.dumps({"claims": [_row(turn, None, status="maybe")]})
+        with pytest.raises(claim_extraction.ClaimGroundingError, match="unknown grounding"):
+            claim_extraction._parse_script_claims(content, "https://e.com/a", ARTICLE, [turn])

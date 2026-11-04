@@ -34,7 +34,11 @@ from podcaster.ownership_tone import (
     find_soft_flags,
     find_violations,
 )
-from podcaster.provider_filter import raise_on_blocked_http, validate_chat_filter_response
+from podcaster.provider_filter import (
+    raise_on_blocked_http,
+    request_with_filter_retry,
+    validate_chat_filter_response,
+)
 from podcaster.repo_naming import (
     MAX_REPOS as REPO_NAMING_MAX_REPOS,
 )
@@ -1494,12 +1498,13 @@ def _request_dialogue(
         },
     )
     retries_used = 0
+    filter_retries_used = [0]
     wait_used = generation.provider_wait_seconds if generation is not None else 0.0
     if generation is not None:
         retries_used = generation.provider_retries
     while True:
         try:
-            raw_response = transport(request)
+            raw_response = request_with_filter_retry(transport, request, filter_retries_used)
             break
         except HTTPError as exc:
             if generation is not None:

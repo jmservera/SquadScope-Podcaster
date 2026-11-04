@@ -25,7 +25,11 @@ from urllib.error import HTTPError
 from urllib.request import Request
 
 from podcaster.config import PodcastConfig
-from podcaster.provider_filter import raise_on_blocked_http, validate_chat_filter_response
+from podcaster.provider_filter import (
+    raise_on_blocked_http,
+    request_with_filter_retry,
+    validate_chat_filter_response,
+)
 from podcaster.sanitization import FIELD_LIMITS, fence_json, neutralize
 from podcaster.script_gen import (
     MAX_ARTICLE_CHARS,
@@ -654,6 +658,16 @@ def _parse_script_claims(
             failures[index] = "provenance"
             continue
         evidence = article_content if source_kind == "article" else (breaking_news or "")
+        if status == "unsupported":
+            issues.append(
+                f"turn {index}: the audit found factual content in this turn not supported by "
+                "the source; rewrite the turn to state only what the article text says, "
+                "attributed ('The article reports that ...'), or drop the unsupported "
+                "assertion; do not add new facts"
+            )
+            repair_turns[index] = turn
+            failures[index] = "unsupported"
+            continue
         if not isinstance(status, str) or status not in {"supported", "qualified", "nonfactual"}:
             issues.append(f"turn {index}: unsupported or unknown grounding disposition")
             failures[index] = "disposition"
@@ -673,7 +687,12 @@ def _parse_script_claims(
             if span is None:
                 span = _resolve_span_for_turn(quote if has_quote else None, turn, evidence)
             if span is None:
-                issues.append(f"turn {index}: source_quote is not an exact provided source excerpt")
+                issues.append(
+                    f"turn {index}: source_quote is not an exact provided source excerpt; "
+                    "rewrite the turn so each factual statement closely follows one "
+                    "contiguous article passage, attributed to the article"
+                )
+                repair_turns[index] = turn
                 failures[index] = "quote"
             else:
                 quote = span
@@ -894,7 +913,7 @@ def extract_claims(
         )
 
         try:
-            raw_response = transport(request)
+            raw_response = request_with_filter_retry(transport, request)
         except HTTPError as exc:
             raise_on_blocked_http(exc)
             raise
