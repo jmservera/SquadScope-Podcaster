@@ -623,3 +623,45 @@ def test_trim_keeps_combined_signoff_disclosure_chat_turn():
     assert out.result.ok, out.result.summary()
     assert spoken_turns(out.script, CFG)[-1] == closing
     assert chat not in out.script
+
+
+def _disc_turns(text: str) -> list[int]:
+    return [i for i, t in enumerate(spoken_turns(text, CFG), 1) if DISC in t]
+
+
+def test_disclosure_missing_is_inserted_at_both_ends():
+    out = _enforce(script(*GOOD, with_disclosure=False))
+    turns = spoken_turns(out.script, CFG)
+    assert out.result.ok, out.result.summary()
+    assert turns[0] == DISC and turns[-1] == DISC and len(turns) == len(GOOD) + 2
+
+
+def test_disclosure_surplus_turns_are_stripped_or_dropped():
+    mixed = f"Welcome back. {DISC}"
+    bad = script(DISC, GOOD[0], mixed, DISC, GOOD[1], GOOD[2])
+    assert "ai_disclosure_count" in gate(bad).global_failures
+    out = _enforce(bad)
+    turns = spoken_turns(out.script, CFG)
+    assert out.result.ok, out.result.summary()
+    assert _disc_turns(out.script) == [1, len(turns)]
+    assert "Welcome back." in turns[2] and DISC not in turns[2]
+    assert not any(t == DISC for t in turns[1:-1])
+
+
+def test_disclosure_misplaced_second_moves_to_end_and_is_idempotent():
+    bad = script(GOOD[0], DISC, GOOD[1], DISC, GOOD[2], with_disclosure=False)
+    out = _enforce(bad)
+    turns = spoken_turns(out.script, CFG)
+    assert out.result.ok, out.result.summary()
+    assert turns[0] == DISC and turns[-1] == DISC and _disc_turns(out.script) == [1, len(turns)]
+    again = _enforce(out.script)
+    assert again.script == out.script
+
+
+def test_disclosure_normalization_respects_word_bounds_and_stays_fail_closed():
+    bad = script(*GOOD, with_disclosure=False)
+    words = gate(bad).words + 2 * len(DISC.split())
+    out = _enforce(bad, word_bounds=(words, words))
+    assert out.result.ok and out.result.words == words
+    with pytest.raises(ClaimGroundingError):
+        _enforce(bad, word_bounds=(words + 500, None))
