@@ -756,12 +756,18 @@ def test_flagged_response_is_not_retried():
 def test_error_with_malformed_annotation_is_terminal_regardless_of_order():
     from podcaster.provider_filter import request_with_filter_retry
 
-    for first in ("task_adherence", "zz_last"):
+    for error_first in (True, False):
         response = _error_only_response()
-        results = response["choices"][0]["content_filter_results"]
-        results["hate"] = None
-        if first == "zz_last":
-            results["zz_last"] = results.pop("task_adherence")
+        choice = response["choices"][0]
+        results = choice["content_filter_results"]
+        error_entry = results.pop("task_adherence")
+        results.pop("hate")
+        ordered = {"task_adherence": error_entry, "hate": None}
+        if not error_first:
+            ordered = {"hate": None, "task_adherence": error_entry}
+        choice["content_filter_results"] = {**ordered, **results}
+        keys = list(choice["content_filter_results"])
+        assert keys.index("task_adherence") < keys.index("hate") if error_first else True
         transport, calls = _sequence_transport([response, _default_v2_gpt4o_response()])
         request_with_filter_retry(transport, object())
         assert len(calls) == 1
