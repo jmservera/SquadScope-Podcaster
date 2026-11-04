@@ -373,10 +373,10 @@ Checks include:
 - content type: MP3
 - channels: mono
 - sample rate: `44.1 kHz`
-- bitrate: `64-96 kbps`
+- bitrate: `192 kbps`
 - loudness: near `-16 LUFS`
 - duration: `< 10 minutes` unless manually overridden
-- file size: `< 10 MB`
+- file size: `< ~13.8 MB` (10 min at 192 kbps + margin)
 
 `ffprobe` verifies the file's technical metadata. `ebur128` measures actual loudness in LUFS. The result is stored as structured validation metadata and written back to the manifest.
 
