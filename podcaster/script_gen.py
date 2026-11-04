@@ -2661,6 +2661,227 @@ def generate_script(
     return script
 
 
+TURN_REPAIR_MAX_TOKENS = 1500
+TURN_REPAIR_MIN_RATIO = 0.5
+TURN_REPAIR_MAX_RATIO = 1.5
+TURN_REPAIR_MAX_EXTRA_WORDS = 5
+TURN_REPAIR_MAX_CHARS = 1500
+
+
+def merge_turn_replacements(
+    script: str,
+    replacements: Mapping[int, str],
+    *,
+    failing_turns: Mapping[int, str],
+    podcast_config: PodcastConfig,
+    word_range: tuple[int, int] | None,
+) -> str | None:
+    """Replace only the named spoken turns; return None when anything is unsafe.
+
+    Indices are 1-based positions in ``spoken_turns(script, podcast_config)``.
+    Every other line of the script stays byte-identical.
+    """
+
+    turns = spoken_turns(script, podcast_config)
+    if not replacements or any(
+        type(index) is not int or index not in failing_turns or not 1 <= index <= len(turns)
+        for index in replacements
+    ):
+        return None
+    folded_others = {
+        turn.casefold() for number, turn in enumerate(turns, 1) if number not in replacements
+    }
+    seen: set[str] = set()
+    for index, text in replacements.items():
+        if (
+            not isinstance(text, str)
+            or text != text.strip()
+            or not text
+            or len(text) > TURN_REPAIR_MAX_CHARS
+            or any(ord(char) < 32 or ord(char) == 127 for char in text)
+            or len(text.splitlines()) != 1
+            or re.search(r"https?://|www\.", text, re.IGNORECASE)
+            or find_violations(text)
+        ):
+            return None
+        folded = text.casefold()
+        if folded in folded_others or folded in seen:
+            return None
+        seen.add(folded)
+        original_words = len(turns[index - 1].split())
+        words = len(text.split())
+        if words < int(original_words * TURN_REPAIR_MIN_RATIO) or words > max(
+            -(-original_words * 3 // 2),
+            original_words + TURN_REPAIR_MAX_EXTRA_WORDS,
+        ):
+            return None
+
+    host_a, host_b = podcast_config.host_a.name, podcast_config.host_b.name
+    header, separator, body = script.partition("\n---")
+    source = body if separator else script
+    lines = source.splitlines(keepends=True)
+    segment = 0
+    for position, raw_line in enumerate(lines):
+        line = raw_line.strip()
+        if not line or match_section_header(line) is not None:
+            continue
+        label = next((name for name in (host_a, host_b) if line.startswith(name + ":")), None)
+        if label is None or not line[len(label) + 1 :].strip():
+            continue
+        segment += 1
+        if segment not in replacements:
+            continue
+        start = raw_line.index(label + ":") + len(label) + 1
+        ending = raw_line[len(raw_line.rstrip("\r\n")) :]
+        lines[position] = f"{raw_line[:start]} {replacements[segment]}{ending}"
+    merged = "".join(lines) if not separator else header + separator + "".join(lines)
+
+    patched = spoken_turns(merged, podcast_config)
+    if len(patched) != len(turns) or len(merged) > MAX_SCRIPT_CHARS + 4000:
+        return None
+    if any(
+        (patched[number - 1] != replacements[number])
+        if number in replacements
+        else (patched[number - 1] != turns[number - 1])
+        for number in range(1, len(turns) + 1)
+    ):
+        return None
+    if word_range is not None:
+        total = sum(len(turn.split()) for turn in patched)
+        if not word_range[0] <= total <= word_range[1]:
+            return None
+    return merged
+
+
+def repair_turns_in_script(
+    script: str,
+    *,
+    failing_turns: Mapping[int, str],
+    findings: str,
+    week: str,
+    article_title: str,
+    article_content: str,
+    config: ScriptGenConfig,
+    podcast_config: PodcastConfig | None = None,
+    script_directions: ScriptDirections | None = None,
+    breaking_news: str | None = None,
+    token_provider: TokenProvider | None = None,
+    transport: Transport | None = None,
+) -> str | None:
+    """Rewrite only the failing spoken turns with one small chat call.
+
+    Returns the merged script, or None when the model's patch is rejected (the
+    caller then falls back to full regeneration). Provider throttling and filter
+    failures propagate exactly as in ``generate_script``.
+    """
+
+    if not config.ready:
+        raise ValueError("script generation requires a configured Azure OpenAI chat endpoint")
+    if not failing_turns:
+        return None
+    podcast_config = podcast_config or PodcastConfig()
+    validate_article_inputs(article_title, article_content)
+    word_range = requested_word_range(script_directions)
+    article_evidence, news_evidence = bounded_source_evidence(article_content, breaking_news)
+    safe_content = neutralize(article_evidence, limit=MAX_ARTICLE_CHARS)
+    evidence_blocks = [
+        _build_untrusted_prompt_block("ARTICLE", safe_content, limit=MAX_ARTICLE_CHARS)
+    ]
+    if news_evidence:
+        evidence_blocks.append(
+            _build_untrusted_prompt_block(
+                "BREAKING NEWS",
+                neutralize(news_evidence, limit=MAX_BREAKING_NEWS_CHARS),
+                limit=MAX_BREAKING_NEWS_CHARS,
+            )
+        )
+    turns = [
+        {"turn": index, "text": text, "words": len(text.split())}
+        for index, text in sorted(failing_turns.items())
+    ]
+    system_prompt = (
+        "You repair individual spoken turns of a two-host podcast script. "
+        "Use ONLY the supplied article and breaking-news evidence; add no new facts. "
+        f"{UNTRUSTED_PROMPT_POLICY}"
+    )
+    user_prompt = (
+        "\n\n".join(evidence_blocks) + f"\n\nWeek: {neutralize(week, limit=32)}\n\n"
+        "Rewrite ONLY the failing turns below. Each replacement must be one line of spoken "
+        "words without the host label, no URLs, similar length to the original, state only "
+        "what one contiguous article passage says (closely following its wording), and "
+        "explicitly attribute interpretations with 'According to the authors, ...' or "
+        "'The authors report that ...' (never say 'the article', 'this article', 'the "
+        "report' or 'the roundup'). Keep scoped observations; drop surge/never-before/"
+        "absence claims. Reply with JSON "
+        '{"replacements":[{"turn":N,"text":"..."}]} containing exactly one entry per '
+        "failing turn.\n"
+        f"FAILING TURNS:\n{UNTRUSTED_PROMPT_POLICY}\n{fence_json(turns)}\n"
+        + _build_untrusted_prompt_block("AUDIT FINDINGS", findings, limit=4000)
+    )
+    generation = _GenerationDiagnostics(
+        podcast_config=podcast_config,
+        canonicalize=lambda draft: draft,
+        word_range=None,
+        targets=(),
+        deployment=_observed_identifier(config.chat_deployment),
+        api_version=_observed_identifier(config.api_version),
+        call_budget=1,
+        article_chars=len(article_evidence),
+    )
+    token_provider = token_provider or ManagedIdentityTokenCredential().get_token
+    transport = transport or _default_transport
+    token = token_provider(OPENAI_SCOPE)
+    if not token:
+        raise RuntimeError("managed identity returned an empty token for Azure OpenAI chat")
+    base = config.endpoint if config.endpoint.endswith("/") else f"{config.endpoint}/"
+    url = (
+        f"{base}openai/deployments/{config.chat_deployment}/chat/completions?"
+        f"api-version={config.api_version}"
+    )
+    try:
+        content = _request_dialogue(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            url=url,
+            token=token,
+            transport=transport,
+            max_tokens=TURN_REPAIR_MAX_TOKENS,
+            generation=generation,
+            stage="turn_repair",
+            response_format={"type": "json_object"},
+        )
+    except ScriptQualityError:
+        return None
+    try:
+        data = json.loads(content)
+    except ValueError:
+        return None
+    items = data.get("replacements") if isinstance(data, dict) else None
+    if not isinstance(items, list) or len(items) != len(failing_turns):
+        return None
+    replacements: dict[int, str] = {}
+    for item in items:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"turn", "text"}
+            or type(item["turn"]) is not int
+            or item["turn"] in replacements
+        ):
+            return None
+        replacements[item["turn"]] = item["text"]
+    if set(replacements) != set(failing_turns):
+        return None
+    return merge_turn_replacements(
+        script,
+        replacements,
+        failing_turns=failing_turns,
+        podcast_config=podcast_config,
+        word_range=word_range,
+    )
+
+
 def _normalize_spoken_markdown(text: str) -> str:
     """Remove editorial Markdown without interpreting inline code contents."""
 

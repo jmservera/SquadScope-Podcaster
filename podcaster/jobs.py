@@ -17,6 +17,7 @@ from podcaster.claim_extraction import (
     GROUNDING_REPAIR_DEADLINE_SECONDS,
     GROUNDING_REPAIRS_UNCONDITIONAL,
     MAX_GROUNDING_REPAIRS,
+    MAX_TARGETED_REPAIRS,
     ClaimGroundingError,
     claims_to_ledger_json,
     extract_claims,
@@ -45,6 +46,7 @@ from podcaster.script_gen import (
     ScriptGenConfig,
     ScriptQualityError,
     generate_script,
+    repair_turns_in_script,
 )
 from podcaster.sections import SectionValidationError, parse_script_sections, sections_to_metadata
 from podcaster.storage import StorageBackend, StoredArtifact, create_storage_backend
@@ -408,27 +410,60 @@ def run_generation_job(
             try:
                 previous_script = None
                 repair_feedback = None
+                repair_error: ClaimGroundingError | None = None
+                full_repairs = 0
+                rounds = 0
+                targeted_repairs = 0
                 grounding_started = time.monotonic()
-                for attempt in range(MAX_GROUNDING_REPAIRS + 1):
-                    repair_args = (
-                        {"previous_script": previous_script, "repair_feedback": repair_feedback}
-                        if previous_script is not None
-                        else {}
-                    )
-                    llm_script = generate_script(
-                        week=str(payload["week"]),
-                        article_title=str(payload.get("article_title") or ""),
-                        article_url=str(payload["article_url"]),
-                        article_content=payload["article_content"],
-                        article_sha256=str(payload.get("article_sha256") or ""),
-                        config=script_config,
-                        podcast_config=podcast_config,
-                        script_directions=script_directions,
-                        historical_context=historical_context,
-                        breaking_news=payload.get("breaking_news") or None,
-                        generated_at=current,
-                        **repair_args,
-                    )
+                while True:
+                    llm_script = None
+                    if previous_script is not None and repair_error is not None:
+                        rounds += 1
+                        if (
+                            repair_error.targeted_repairable
+                            and targeted_repairs < MAX_TARGETED_REPAIRS
+                        ):
+                            targeted_repairs += 1
+                            llm_script = repair_turns_in_script(
+                                previous_script,
+                                failing_turns=repair_error.repair_turns,
+                                findings=repair_error.repair_feedback(),
+                                week=str(payload["week"]),
+                                article_title=str(payload.get("article_title") or ""),
+                                article_content=payload["article_content"],
+                                config=script_config,
+                                podcast_config=podcast_config,
+                                script_directions=script_directions,
+                                breaking_news=payload.get("breaking_news") or None,
+                            )
+                            if llm_script is None:
+                                logging.warning(
+                                    "targeted turn repair rejected job_id=%s; "
+                                    "falling back to full regeneration",
+                                    job_id,
+                                )
+                        if llm_script is None:
+                            full_repairs += 1
+                    if llm_script is None:
+                        repair_args = (
+                            {"previous_script": previous_script, "repair_feedback": repair_feedback}
+                            if previous_script is not None
+                            else {}
+                        )
+                        llm_script = generate_script(
+                            week=str(payload["week"]),
+                            article_title=str(payload.get("article_title") or ""),
+                            article_url=str(payload["article_url"]),
+                            article_content=payload["article_content"],
+                            article_sha256=str(payload.get("article_sha256") or ""),
+                            config=script_config,
+                            podcast_config=podcast_config,
+                            script_directions=script_directions,
+                            historical_context=historical_context,
+                            breaking_news=payload.get("breaking_news") or None,
+                            generated_at=current,
+                            **repair_args,
+                        )
                     try:
                         claims = extract_claims(
                             article_content=payload["article_content"],
@@ -445,24 +480,34 @@ def run_generation_job(
                         llm_claims_json = claims_to_ledger_json(claims)
                         break
                     except ClaimGroundingError as error:
+                        repairs = rounds
                         logging.warning(
-                            "claim grounding failed job_id=%s attempt=%d/%d error=%s",
+                            "claim grounding failed job_id=%s repairs=%d "
+                            "(targeted=%d full=%d) error=%s",
                             job_id,
-                            attempt + 1,
-                            MAX_GROUNDING_REPAIRS + 1,
+                            repairs,
+                            targeted_repairs,
+                            full_repairs,
                             str(error)[:500],
                         )
                         out_of_time = (
-                            attempt >= GROUNDING_REPAIRS_UNCONDITIONAL
+                            repairs >= GROUNDING_REPAIRS_UNCONDITIONAL
                             and time.monotonic() - grounding_started
                             > GROUNDING_REPAIR_DEADLINE_SECONDS
                         )
-                        if attempt == MAX_GROUNDING_REPAIRS or out_of_time:
+                        # The next repair is targeted only when this error allows it
+                        # and the targeted budget remains; otherwise it is a full one.
+                        next_targeted = (
+                            error.targeted_repairable and targeted_repairs < MAX_TARGETED_REPAIRS
+                        )
+                        exhausted = not next_targeted and full_repairs >= MAX_GROUNDING_REPAIRS
+                        if exhausted or out_of_time:
                             raise ClaimGroundingError(
-                                f"{error}; exhausted {attempt} grounding repair"
+                                f"{error}; exhausted {repairs} grounding repair"
                             ) from None
                         previous_script = llm_script
                         repair_feedback = error.repair_feedback()
+                        repair_error = error
                 llm_generation_engine = "llm-script-gen"
                 sections = parse_script_sections(llm_script, podcast_config)
                 if sections:
