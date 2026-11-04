@@ -17,13 +17,6 @@ TARGET_MP3_BITRATE_BPS = 192_000
 TARGET_LOUDNESS_LUFS = -16.0
 LOUDNESS_TOLERANCE_LUFS = 1.0
 MAX_DURATION_SECONDS = 10 * 60
-# MP3 is CBR, so the size ceiling follows from the duration cap and bitrate plus
-# a margin for ID3/Xing/container overhead.
-MP3_CONTAINER_MARGIN_BYTES = 64 * 1024
-MAX_FILE_SIZE_BYTES_MP3 = (
-    MAX_DURATION_SECONDS * TARGET_MP3_BITRATE_BPS // 8 + MP3_CONTAINER_MARGIN_BYTES
-)
-MAX_FILE_SIZE_BYTES_WAV = 100 * 1024 * 1024
 OUTRO_SPEECH_DUCK_GAIN = 0.10
 TARGET_CONTENT_TYPE = TARGET_MP3_CONTENT_TYPE
 
@@ -960,9 +953,6 @@ def validate_audio_metadata(
         errors.append("audio WAV must use PCM encoding")
     if metadata.duration_seconds > MAX_DURATION_SECONDS and not manual_duration_override:
         errors.append("audio duration must not exceed 10 minutes without manual override")
-    max_size = MAX_FILE_SIZE_BYTES_WAV if profile["format"] == "wav" else MAX_FILE_SIZE_BYTES_MP3
-    if metadata.byte_length > max_size:
-        errors.append(f"audio file size must be under {max_size / (1024 * 1024):.1f} MB")
     if metadata.loudness_lufs is None:
         errors.append("audio loudness must be measured in LUFS")
     elif abs(metadata.loudness_lufs - TARGET_LOUDNESS_LUFS) > LOUDNESS_TOLERANCE_LUFS:
@@ -1112,9 +1102,6 @@ def _constraints(expected_format: str) -> dict[str, object]:
             "tolerance": LOUDNESS_TOLERANCE_LUFS,
         },
         "max_duration_seconds": MAX_DURATION_SECONDS,
-        "max_file_size_bytes": (
-            MAX_FILE_SIZE_BYTES_WAV if profile["format"] == "wav" else MAX_FILE_SIZE_BYTES_MP3
-        ),
     }
     if profile["format"] == "mp3":
         constraints["bitrate_bps"] = {"min": TARGET_MP3_BITRATE_BPS, "max": TARGET_MP3_BITRATE_BPS}

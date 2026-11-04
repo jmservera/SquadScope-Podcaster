@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from podcaster.audio import (
-    MAX_FILE_SIZE_BYTES_MP3,
     AudioMetadata,
     compute_segment_timeline,
     normalize_audio,
@@ -49,20 +48,18 @@ def _mp3(duration: float, size: int) -> AudioMetadata:
     )
 
 
-def test_w45_489_seconds_at_192kbps_passes_size_cap() -> None:
+def test_w45_489_seconds_at_192kbps_passes() -> None:
     result = validate_audio_metadata(_mp3(489.5, 11_749_502))
 
     assert result.ready is True
     assert result.errors == []
 
 
-def test_mp3_size_cap_covers_max_duration_at_target_bitrate() -> None:
-    full_length = 600 * 192_000 // 8
-    assert validate_audio_metadata(_mp3(600.0, full_length)).ready is True
-    assert validate_audio_metadata(_mp3(600.0, MAX_FILE_SIZE_BYTES_MP3)).ready is True
-    over = validate_audio_metadata(_mp3(600.0, MAX_FILE_SIZE_BYTES_MP3 + 1))
-    assert over.ready is False
-    assert any("file size must be under" in e for e in over.errors)
+def test_audio_file_size_is_not_gated() -> None:
+    result = validate_audio_metadata(_mp3(600.0, 500 * 1024 * 1024))
+
+    assert result.ready is True
+    assert not any("size" in e for e in result.errors)
 
 
 def test_over_duration_still_fails_even_if_size_fits() -> None:
@@ -81,7 +78,7 @@ def test_overlong_oversized_audio_fails_without_override() -> None:
             bitrate_bps=64000,
             channels=1,
             content_type="audio/mpeg",
-            byte_length=MAX_FILE_SIZE_BYTES_MP3 + 1,
+            byte_length=500 * 1024 * 1024,
             sha256="b" * 64,
         )
     )
@@ -89,7 +86,7 @@ def test_overlong_oversized_audio_fails_without_override() -> None:
     assert result.ready is False
     assert result.status == "failed"
     assert "audio duration must not exceed 10 minutes without manual override" in result.errors
-    assert "audio file size must be under 13.8 MB" in result.errors
+    assert not any("size" in e for e in result.errors)
 
 
 def test_overlong_audio_with_override_records_warning() -> None:
