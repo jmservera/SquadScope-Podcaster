@@ -3212,3 +3212,31 @@ class TestSectionBySectionDraft:
                 transport=transport,
             )
         assert "SECTION-BY-SECTION" not in requests[0]["messages"][0]["content"]
+
+
+def test_length_expansion_drops_unsafe_turn_but_keeps_safe_ones():
+    config = PodcastConfig()
+    hosts = (config.host_a.name, config.host_b.name)
+    gen = script_gen._GenerationDiagnostics(
+        podcast_config=config,
+        canonicalize=lambda text: text,
+        word_range=(1, 100),
+        targets=(("S", 50),),
+        deployment=None,
+        api_version=None,
+    )
+    dialogue = f"## Section: S\n{hosts[0]}: Existing line here.\n"
+    plan = [{"section_index": 1, "add_words": 30, "before_line": 1}]
+    good = f"{hosts[1]}: A brand new grounded remark about evidence."
+    bad = f"{hosts[1]}: See https://example.com/x for more."
+    merged = script_gen._merge_length_expansion(
+        dialogue,
+        json.dumps({"insertions": [{"section_index": 1, "turns": [bad, good]}]}),
+        plan,
+        gen,
+    )
+    assert merged is not None and good in merged and "https://" not in merged
+    only_bad = script_gen._merge_length_expansion(
+        dialogue, json.dumps({"insertions": [{"section_index": 1, "turns": [bad]}]}), plan, gen
+    )
+    assert only_bad is None and gen.last_rejection == "turn_content"

@@ -125,7 +125,7 @@ MAX_SECTION_REPAIRS = 2
 MAX_LENGTH_REPAIRS = 2
 # Section-by-section draft: gpt-4o-mini lands at ~0.75-0.8 of per-call targets (W45:
 # 1054 words vs 1350 summed target), so ask for more.
-SECTION_DRAFT_OVERSHOOT = 1.35
+SECTION_DRAFT_OVERSHOOT = 1.6
 # Shared pool of retries (across all sections) for empty/malformed section replies.
 MAX_SECTION_DRAFT_RETRIES = 2
 GENERATION_CALL_BUDGET = 20
@@ -1787,6 +1787,8 @@ def _merge_length_expansion(
         if not isinstance(turns, list) or not turns:
             return reject("turns_list", section_index=index)
         turn_words: list[int] = []
+        kept_turns: list[str] = []
+        bad_turn = False
         for turn in turns:
             if (
                 not isinstance(turn, str)
@@ -1795,7 +1797,9 @@ def _merge_length_expansion(
                 or re.search(r"https?://", turn, re.IGNORECASE)
                 or find_violations(turn)
             ):
-                return reject("turn_content", section_index=index)
+                # One unsafe turn is dropped, never merged; others may still help.
+                bad_turn = True
+                continue
             label, separator, text = turn.partition(":")
             if not separator or label not in hosts or not text.strip() or text.strip() in existing:
                 return reject("host_or_raw_duplicate", section_index=index)
@@ -1809,6 +1813,10 @@ def _merge_length_expansion(
             existing.add(text.strip())
             canonical_existing.add(canonical_turns[0].casefold())
             turn_words.append(len(canonical_turns[0].split()))
+            kept_turns.append(turn)
+        if bad_turn and not kept_turns:
+            return reject("turn_content", section_index=index)
+        turns = kept_turns
         budget = allowed[index]["add_words"] + 20
         kept, words = 0, 0
         for count in turn_words:
