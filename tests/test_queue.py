@@ -14,7 +14,7 @@ def test_rest_message_carries_authoritative_next_visible_time():
     <PopReceipt>r1</PopReceipt>
     <MessageText>body</MessageText>
     <DequeueCount>2</DequeueCount>
-    <NextVisibleTime>Tue, 22 Sep 2026 18:55:00 GMT</NextVisibleTime>
+    <TimeNextVisible>Tue, 22 Sep 2026 18:55:00 GMT</TimeNextVisible>
   </QueueMessage>
 </QueueMessagesList>"""
     )
@@ -30,7 +30,7 @@ def test_invalid_rest_next_visible_time_fails_closed():
     <PopReceipt>r1</PopReceipt>
     <MessageText>body</MessageText>
     <DequeueCount>1</DequeueCount>
-    <NextVisibleTime>not-a-timestamp</NextVisibleTime>
+    <TimeNextVisible>not-a-timestamp</TimeNextVisible>
   </QueueMessage>
 </QueueMessagesList>"""
     )

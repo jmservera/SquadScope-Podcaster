@@ -332,7 +332,9 @@ def _parse_messages(payload: bytes) -> list[QueueMessage]:
                 pop_receipt=(element.findtext("PopReceipt") or "").strip(),
                 body=(element.findtext("MessageText") or ""),
                 dequeue_count=int((element.findtext("DequeueCount") or "0").strip() or "0"),
-                next_visible_on=_parse_queue_timestamp(element.findtext("NextVisibleTime")),
+                next_visible_on=_parse_queue_timestamp(
+                    element.findtext("TimeNextVisible") or element.findtext("NextVisibleTime")
+                ),
             )
         )
     return messages
