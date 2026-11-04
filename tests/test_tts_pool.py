@@ -393,7 +393,42 @@ def test_default_transport_uses_configured_timeout(monkeypatch):
     assert seen["timeout"] == 123.0
 
 
-def test_exact_review_timeout_stops_run_without_retry_or_later_segments(caplog):
+def _exact(plan, config, transport, **pool_kw):
+    return synthesize_plan_concurrent(
+        plan,
+        config,
+        _allowed_decision(config),
+        pool=TtsPoolConfig(concurrency=1, max_retries=4, backoff_jitter=0.0, **pool_kw),
+        token_provider=lambda scope: "offline-token",
+        transport=transport,
+        sleeper=_no_sleep,
+        exact_review=True,
+        before_provider=lambda: None,
+    )
+
+
+def test_exact_review_timeout_then_success_retries_only_that_segment(caplog):
+    config, plan = _plan(3)
+    calls = []
+
+    def transport(request):
+        calls.append(request.data)
+        if len(calls) == 2:
+            raise TimeoutError("read timed out")
+        return b"audio"
+
+    with caplog.at_level("INFO"):
+        outputs = _exact(plan, config, transport)
+
+    assert outputs == [b"audio"] * 3
+    assert len(calls) == 4
+    assert calls[1] == calls[2]  # same segment resent before any later one
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert "segment=2/3 attempt=2 ok" in logged
+    assert "offline-token" not in logged
+
+
+def test_exact_review_transient_exhaustion_fails_closed_without_later_segments(caplog):
     config, plan = _plan(3)
     calls = []
 
@@ -402,20 +437,38 @@ def test_exact_review_timeout_stops_run_without_retry_or_later_segments(caplog):
         raise TimeoutError("read timed out")
 
     with caplog.at_level("INFO"), pytest.raises(TimeoutError):
-        synthesize_plan_concurrent(
-            plan,
-            config,
-            _allowed_decision(config),
-            pool=TtsPoolConfig(concurrency=1, max_retries=4, backoff_jitter=0.0),
-            token_provider=lambda scope: "offline-token",
-            transport=transport,
-            sleeper=_no_sleep,
-            exact_review=True,
-            before_provider=lambda: None,
-        )
+        _exact(plan, config, transport)
 
-    assert len(calls) == 1
+    assert len(calls) == 3  # 1 + 2 bounded retries, spend bounded
+    assert len(set(calls)) == 1  # never advanced to a later segment
     logged = " ".join(r.getMessage() for r in caplog.records)
-    assert "segment=1/3" in logged and "TimeoutError" in logged
-    assert "podcaster-openai.openai.azure.com" in logged
+    assert "segment=1/3 attempt=3 failed" in logged
     assert "offline-token" not in logged
+    for turn in plan:
+        assert turn.text not in logged
+
+
+def test_exact_review_4xx_is_not_retried():
+    config, plan = _plan(2)
+    calls = []
+
+    def transport(request):
+        calls.append(1)
+        raise _http_error(400)
+
+    with pytest.raises(HTTPError):
+        _exact(plan, config, transport)
+    assert len(calls) == 1
+
+
+def test_exact_review_job_budget_stops_retries():
+    config, plan = _plan(2)
+    calls = []
+
+    def transport(request):
+        calls.append(1)
+        raise _http_error(503)
+
+    with pytest.raises(HTTPError):
+        _exact(plan, config, transport, exact_review_job_budget_seconds=0.0)
+    assert len(calls) == 1

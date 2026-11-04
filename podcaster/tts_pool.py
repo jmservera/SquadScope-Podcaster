@@ -57,6 +57,11 @@ DEFAULT_BACKOFF_JITTER = 0.25
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 180.0
 MIN_REQUEST_TIMEOUT_SECONDS = 30.0
 MAX_REQUEST_TIMEOUT_SECONDS = 300.0
+#: Exact-review synthesis: extra attempts for ONE segment after a transient
+#: failure (read timeout / connection reset / 5xx), and the wall-clock budget
+#: for the whole job after which no further retry is started.
+EXACT_REVIEW_TRANSIENT_RETRIES = 2
+EXACT_REVIEW_JOB_BUDGET_SECONDS = 900.0
 
 #: Signature of an awaitable sleep used for backoff. Injected in tests so retry
 #: behaviour can be exercised without real delays.
@@ -75,6 +80,8 @@ class TtsPoolConfig:
     backoff_max_seconds: float = DEFAULT_BACKOFF_MAX_SECONDS
     backoff_jitter: float = DEFAULT_BACKOFF_JITTER
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
+    exact_review_transient_retries: int = EXACT_REVIEW_TRANSIENT_RETRIES
+    exact_review_job_budget_seconds: float = EXACT_REVIEW_JOB_BUDGET_SECONDS
 
     def __post_init__(self) -> None:
         if self.concurrency < 1:
@@ -190,9 +197,11 @@ def synthesize_plan_concurrent(
     total)`` as each segment finishes so callers can surface a live "recording
     N/M" counter. A failing callback never aborts synthesis.
 
-    ``exact_review`` admits segments serially, retries only explicit 429
-    rejections and checks ``before_provider`` before every attempt. Legacy
-    callers retain the configured concurrent/transient-retry policy.
+    ``exact_review`` admits segments serially, retries explicit 429 rejections
+    plus a bounded number of transient failures (read timeout, connection reset,
+    5xx) of the single failing segment within a job wall-clock budget, and checks
+    ``before_provider`` before every attempt. Legacy callers
+    retain the configured concurrent/transient-retry policy.
     """
 
     if not decision.get("allowed"):
@@ -212,7 +221,11 @@ def synthesize_plan_concurrent(
     # plain sequential loop without spinning up an event loop. When retries are
     # configured we must NOT bypass the pool, otherwise concurrency=1 would
     # silently drop the rate-limit/backoff handling the pool is meant to own.
-    if (pool.concurrency <= 1 or len(turns) <= 1) and pool.max_retries == 0:
+    if (
+        (pool.concurrency <= 1 or len(turns) <= 1)
+        and pool.max_retries == 0
+        and not (exact_review and pool.exact_review_transient_retries > 0)
+    ):
         outputs: list[bytes] = []
         for turn in turns:
             if exact_review and before_provider is not None:
@@ -289,6 +302,7 @@ async def _synthesize_all(
     semaphore = asyncio.Semaphore(pool.concurrency)
     results: list[bytes | None] = [None] * len(turns)
     completed = 0
+    deadline = time.monotonic() + pool.exact_review_job_budget_seconds
 
     async def worker(index: int, turn: VoiceTurn) -> None:
         nonlocal completed
@@ -305,6 +319,7 @@ async def _synthesize_all(
                 sleeper=sleeper,
                 exact_review=exact_review,
                 before_provider=before_provider,
+                deadline=deadline,
             )
             results[index] = audio
             # Runs on the single event-loop thread, so this counter needs no
@@ -346,8 +361,10 @@ async def _synthesize_one(
     sleeper: Sleeper,
     exact_review: bool = False,
     before_provider: Callable[[], None] | None = None,
+    deadline: float | None = None,
 ) -> bytes:
     attempt = 0
+    transient_failures = 0
     host = urlsplit(config.endpoint or "").hostname or "unknown"
     while True:
         if exact_review and before_provider is not None:
@@ -382,8 +399,19 @@ async def _synthesize_one(
                 pool.request_timeout_seconds,
             )
             attempt += 1
-            safe_retry = is_rate_limited(exc) if exact_review else is_retryable(exc)
-            if attempt > pool.max_retries or not safe_retry:
+            if exact_review:
+                if is_rate_limited(exc):
+                    safe_retry = attempt <= pool.max_retries
+                else:
+                    transient_failures += 1
+                    safe_retry = (
+                        is_retryable(exc)
+                        and transient_failures <= pool.exact_review_transient_retries
+                        and (deadline is None or time.monotonic() < deadline)
+                    )
+            else:
+                safe_retry = is_retryable(exc) and attempt <= pool.max_retries
+            if not safe_retry:
                 raise
             delay = pool.backoff_delay(attempt)
             logging.warning(
