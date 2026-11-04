@@ -2139,7 +2139,8 @@ def generate_script(
                         "even with caveats; retain attributed scoped observations instead. "
                         "Where findings name a turn lacking explicit qualification, edit only "
                         "that turn so its spoken words themselves attribute the claim (for "
-                        "example 'According to the article, ...') and leave all other turns "
+                        "example 'According to the authors, ...', never 'the article') and leave "
+                        "all other turns "
                         "unchanged. "
                         "Preserve all sections, host-turn minimums, "
                         "visual markers, disclosures and the requested spoken-word range. "
@@ -2664,6 +2665,7 @@ def generate_script(
 
 TURN_REPAIR_TEMPERATURE = 0.2
 TURN_REPAIR_MAX_TOKENS = 1500
+TURN_REPAIR_MAX_TOKENS_CAP = 8000
 TURN_REPAIR_MIN_RATIO = 0.5
 TURN_REPAIR_MAX_RATIO = 1.5
 TURN_REPAIR_MAX_EXTRA_WORDS = 5
@@ -2867,7 +2869,9 @@ def repair_turns_in_script(
         "explicitly attribute interpretations with 'According to the authors, ...' or "
         "'The authors report that ...' (never say 'the article', 'this article', 'the "
         "report' or 'the roundup'). Keep scoped observations; drop surge/never-before/"
-        "absence claims. Reply with JSON "
+        "absence claims. Several turns may fail at once: repair every one of them in "
+        "this single reply and follow each turn's repair instruction in the findings. "
+        "Reply with JSON "
         '{"replacements":[{"turn":N,"text":"..."}]} containing exactly one entry per '
         "failing turn.\n"
         f"FAILING TURNS:\n{UNTRUSTED_PROMPT_POLICY}\n{fence_json(turns)}\n"
@@ -2902,7 +2906,10 @@ def repair_turns_in_script(
             url=url,
             token=token,
             transport=transport,
-            max_tokens=TURN_REPAIR_MAX_TOKENS,
+            max_tokens=min(
+                TURN_REPAIR_MAX_TOKENS_CAP,
+                max(TURN_REPAIR_MAX_TOKENS, 300 + sum(3 * t["words"] + 40 for t in turns)),
+            ),
             generation=generation,
             stage="turn_repair",
             response_format={"type": "json_object"},

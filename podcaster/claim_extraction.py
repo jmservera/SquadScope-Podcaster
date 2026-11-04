@@ -51,7 +51,24 @@ AUDIT_SEED = 20261104
 MAX_GROUNDING_REPAIRS = 3
 # Targeted single-turn repairs are cheap (one small chat call), so allow more.
 MAX_TARGETED_REPAIRS = 8
-TARGETED_REPAIR_CLASSES = frozenset({"quote", "qualification", "unsupported"})
+TARGETED_REPAIR_CLASSES = frozenset(
+    {"quote", "qualification", "unsupported", "script_excerpt", "empirical"}
+)
+# Per-class instructions for the targeted repair prompt. Phrasing must satisfy
+# _QUALIFICATION and ownership_tone.find_violations (which bans "the article").
+REPAIR_CLASS_INSTRUCTIONS = {
+    "quote": "restate only what one contiguous source passage says, closely following its wording",
+    "qualification": (
+        "open with authors-attribution such as 'According to the authors,' or "
+        "'The authors report that'; never say 'the article'"
+    ),
+    "unsupported": "keep only claims the source states, attributed to the authors; drop the rest",
+    "script_excerpt": "rewrite as one plain utterance stating only source-backed content",
+    "empirical": (
+        "remove or soften the empirical/novelty/absence assertion (surge, unprecedented, "
+        "never before, lacks X); keep only source-supported claims, attributed to the authors"
+    ),
+}
 # A further repair only starts while enough of the 240s ingress budget remains.
 GROUNDING_REPAIR_DEADLINE_SECONDS = 170.0
 GROUNDING_REPAIRS_UNCONDITIONAL = 2
@@ -118,7 +135,7 @@ class ClaimGroundingError(ValueError):
 
     @property
     def targeted_repairable(self) -> bool:
-        """True only when every failure is a quote/qualification/unsupported turn."""
+        """True only when every failure is a turn-level class with turn text to rewrite."""
         return (
             bool(self.repair_turns)
             and set(self.failure_classes) == set(self.repair_turns)
@@ -127,6 +144,11 @@ class ClaimGroundingError(ValueError):
 
     def repair_feedback(self) -> str:
         lines = [str(self)]
+        lines.extend(
+            f"turn {index} repair ({cls}): {REPAIR_CLASS_INSTRUCTIONS[cls]}"
+            for index, cls in sorted(self.failure_classes.items())
+            if cls in REPAIR_CLASS_INSTRUCTIONS
+        )
         lines.extend(
             f"turn {index} text: {text[:240]!r}"
             for index, text in sorted(self.repair_turns.items())
@@ -661,6 +683,7 @@ def _parse_script_claims(
         if not isinstance(row, dict) or row.get("script_excerpt") != turn:
             issues.append(f"turn {index}: script_excerpt must equal the exact final utterance")
             failures[index] = "script_excerpt"
+            repair_turns[index] = turn
             continue
         status = row.get("grounding")
         quote = row.get("source_quote")
@@ -688,7 +711,7 @@ def _parse_script_claims(
             issues.append(
                 f"turn {index}: the audit found factual content in this turn not supported by "
                 "the source; rewrite the turn to state only what the article text says, "
-                "attributed ('The article reports that ...'), or drop the unsupported "
+                "attributed ('The authors report that ...'), or drop the unsupported "
                 "assertion; do not add new facts"
             )
             repair_turns[index] = turn
@@ -707,6 +730,7 @@ def _parse_script_claims(
                     f"turn {index}: empirical/novelty/absence assertions require factual evidence"
                 )
                 failures[index] = "empirical"
+                repair_turns[index] = turn
         else:
             has_quote = isinstance(quote, str) and bool(quote.strip())
             span = _exact_span_for_quote(quote, evidence) if has_quote else None
@@ -726,7 +750,7 @@ def _parse_script_claims(
             issues.append(
                 f"turn {index}: qualification must be explicit in actual spoken text; "
                 "rewrite this turn to open with an attribution such as 'According to the "
-                "article,' or 'The article reports that', keeping its cited quote unchanged"
+                "authors,' or 'The authors report that', keeping its cited quote unchanged"
             )
             repair_turns[index] = turn
             failures[index] = "qualification"
@@ -736,6 +760,7 @@ def _parse_script_claims(
                 "remove the assertion and retain scoped evidence and its evidence limit"
             )
             failures[index] = "empirical"
+            repair_turns[index] = turn
         claims.append(
             Claim(
                 claim_id=f"claim_{index:03d}",

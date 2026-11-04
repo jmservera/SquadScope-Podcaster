@@ -464,6 +464,9 @@ def run_generation_job(
                                     f"{repair_error}; exhausted {rounds - 1} grounding repair"
                                 ) from None
                             full_repairs += 1
+                            # A fresh full draft re-opens the targeted budget so later
+                            # audit failures return to cheap turn repair (deadline-bound).
+                            targeted_repairs = 0
                     if llm_script is None:
                         repair_args = (
                             {"previous_script": previous_script, "repair_feedback": repair_feedback}
