@@ -88,6 +88,14 @@ param chatDeploymentName string = 'chat'
 @description('Existing chat deployment the API and synthesis job call at runtime. Defaults to chatDeploymentName; this template never creates or changes it, so it must already exist on the account. Video job keeps chatDeploymentName.')
 param chatRuntimeDeploymentName string = chatDeploymentName
 
+@description('Grounding gate mode for the API (GROUNDING_MODE env var). Matches podcaster.grounding_gate: audit, both, or construct.')
+@allowed([
+  'audit'
+  'both'
+  'construct'
+])
+param groundingMode string = 'construct'
+
 @description('SKU tier for the chat model deployment.')
 param chatModelSkuName string = 'GlobalStandard'
 
@@ -725,6 +733,7 @@ module api 'modules/api.bicep' = if (deployApiApp) {
     ttsVoiceHostB: ttsVoiceHostB
     ttsRuntimeEnvironment: ttsRuntimeEnvironment
     chatDeploymentName: chatRuntimeDeploymentName
+    groundingMode: groundingMode
     spotifyPublishEnabled: spotifyPublishEnabled
     spotifyShowId: spotifyShowId
     spotifyClientId: spotifyClientId

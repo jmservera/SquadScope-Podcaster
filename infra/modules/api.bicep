@@ -72,6 +72,14 @@ param ttsRuntimeEnvironment array = []
 @description('Chat model deployment name for LLM script generation.')
 param chatDeploymentName string = ''
 
+@description('Grounding gate mode (GROUNDING_MODE env var).')
+@allowed([
+  'audit'
+  'both'
+  'construct'
+])
+param groundingMode string = 'construct'
+
 @description('Spotify show ID for auto-publish (#182). Empty disables publishing.')
 param spotifyShowId string = ''
 
@@ -234,6 +242,10 @@ resource apiApp 'Microsoft.App/containerApps@2025-01-01' = {
             {
               name: 'AZURE_OPENAI_CHAT_DEPLOYMENT'
               value: chatDeploymentName
+            }
+            {
+              name: 'GROUNDING_MODE'
+              value: groundingMode
             }
             {
               name: 'AZURE_OPENAI_TTS_DEPLOYMENT'
