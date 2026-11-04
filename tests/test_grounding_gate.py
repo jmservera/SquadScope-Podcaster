@@ -539,3 +539,17 @@ def test_name_exemption_respects_word_boundaries(name):
 def test_plain_host_name_still_exempt_in_chat():
     result = gate(script(GOOD[0], f"I wonder what {A} thinks about that."))
     assert result.ok, result.summary()
+
+
+def test_host_name_cannot_launder_unsupported_attribution():
+    claim = f"According to the authors, {A} released Pelican 2.0 with a new planner module."
+    assert gate(script(GOOD[0], claim)).failures == {2: "unsupported"}
+
+
+def test_host_name_in_source_sentence_resolves_via_original_text():
+    article = f"{ARTICLE}\n{A} released Pelican 3.0 with a new planner module.\n"
+    claim = f"According to the authors, {A} released Pelican 3.0 with a new planner module."
+    result = check_script(
+        script(GOOD[0], claim), article_content=article, breaking_news=NEWS, podcast_config=CFG
+    )
+    assert result.ok, result.summary()

@@ -372,23 +372,20 @@ def _check_turn(index: int, text: str, ctx: _Context) -> TurnResult:
             return TurnResult(
                 index, text, "quote", source_kind=kind, quote=span, span_ids=_ids(ctx, kind, span)
             )
-    candidates = [" ".join(core.split())]
-    if not quotes and body != plain:
-        candidates.append(" ".join(_QUALIFICATION.sub(" ", body).split()))
-    for core_text in candidates:
-        for kind, evidence in (("article", ctx.article), ("breaking_news", ctx.news)):
-            if not evidence or (quote_hits and quote_hits[0][0] != kind):
-                continue
-            span = _resolve_span_for_turn(None, core_text, evidence)
-            if span is not None:
-                return TurnResult(
-                    index,
-                    text,
-                    "fact",
-                    source_kind=kind,
-                    quote=span,
-                    span_ids=_ids(ctx, kind, span),
-                )
+    core_text = " ".join(core.split())
+    for kind, evidence in (("article", ctx.article), ("breaking_news", ctx.news)):
+        if not evidence or (quote_hits and quote_hits[0][0] != kind):
+            continue
+        span = _resolve_span_for_turn(None, core_text, evidence)
+        if span is not None:
+            return TurnResult(
+                index,
+                text,
+                "fact",
+                source_kind=kind,
+                quote=span,
+                span_ids=_ids(ctx, kind, span),
+            )
     return fail("fact", "unsupported")
 
 
