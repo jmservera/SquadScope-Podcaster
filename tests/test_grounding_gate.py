@@ -15,6 +15,7 @@ from podcaster.claim_extraction import (
     claims_to_ledger_json,
 )
 from podcaster.config import PodcastConfig, ScriptDirections
+from podcaster.episode import parse_script_segments
 from podcaster.grounding_gate import (
     _LEAD_INS,
     check_script,
@@ -553,3 +554,42 @@ def test_host_name_in_source_sentence_resolves_via_original_text():
         script(GOOD[0], claim), article_content=article, breaking_news=NEWS, podcast_config=CFG
     )
     assert result.ok, result.summary()
+
+
+def _enforce(text, **kwargs):
+    return enforce(text, article_content=ARTICLE, breaking_news=NEWS, podcast_config=CFG, **kwargs)
+
+
+def test_short_script_is_topped_up_with_verbatim_quotes_deterministically():
+    short = script(GOOD[0], GOOD[1], "What do you think about that?")
+    base = gate(short).words
+    floor = base + 40
+    first = _enforce(short, word_bounds=(floor, floor + 60))
+    assert first.result.ok and floor <= first.result.words <= floor + 60
+    added = [t for t in first.result.turns if t.kind == "quote"][2:]
+    assert added and all(t.quote in ARTICLE or t.quote in NEWS for t in added)
+    texts = spoken_turns(first.script, CFG)
+    assert texts[-1] == DISC and texts[-2] == "What do you think about that?"
+    labels = [h for h, _ in parse_script_segments(first.script, CFG)]
+    assert all(a != b for a, b in zip(labels[2:-2], labels[3:-2]))
+    assert all(
+        _enforce(short, word_bounds=(floor, floor + 60)).script == first.script for _ in range(20)
+    )
+    assert first.script.endswith("Host outro: review\n")
+
+
+def test_top_up_fails_closed_with_content_free_shortfall():
+    short = script(GOOD[0], GOOD[1])
+    with pytest.raises(ClaimGroundingError, match=r"word_range.*shortfall=\d+"):
+        _enforce(short, word_bounds=(100_000, None))
+
+
+def test_over_max_drops_trailing_chat_turns_only():
+    chat = "What do you think about that?"
+    long = script(GOOD[0], chat, GOOD[1], chat + " ")
+    words = gate(long).words
+    out = _enforce(long, word_bounds=(1, words - 3))
+    assert out.result.ok and out.result.words <= words - 3
+    assert GOOD[0] in out.script and GOOD[1] in out.script
+    with pytest.raises(ClaimGroundingError, match="excess="):
+        _enforce(long, word_bounds=(1, 5))
