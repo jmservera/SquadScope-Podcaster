@@ -555,11 +555,17 @@ def _split_body(script: str) -> tuple[str, list[str]]:
     return header + separator, body.splitlines(keepends=True)
 
 
-def _closing_start(results: tuple[TurnResult, ...]) -> int:
+def _has_disclosure(result: TurnResult, ctx: _Context) -> bool:
+    return result.kind == "disclosure" or bool(
+        ctx.disclosure and ctx.disclosure in _norm(result.text)
+    )
+
+
+def _closing_start(results: tuple[TurnResult, ...], ctx: _Context) -> int:
     """0-based index of the first closing turn: trailing disclosures plus one sign-off."""
 
     start = len(results)
-    while start > 0 and results[start - 1].kind == "disclosure":
+    while start > 0 and _has_disclosure(results[start - 1], ctx):
         start -= 1
     if 0 < start < len(results) and results[start - 1].kind == "chat":
         start -= 1
@@ -580,24 +586,24 @@ def top_up_words(script: str, *, ctx: _Context, minimum: int, maximum: int | Non
     words = _word_count(turns)
     if words >= minimum:
         return script
+    results = tuple(_check_turn(i, t, ctx) for i, t in enumerate(turns, 1))
     uses: dict[str, int] = {}
-    for turn in turns:
-        key = _norm(turn)
-        uses[key] = uses.get(key, 0) + 1
-    pool: list[tuple[str, int]] = []
+    for result in results:
+        for span_id in result.span_ids:
+            uses[span_id] = uses.get(span_id, 0) + 1
+    pool: list[tuple[str, int, str]] = []
     for span in ctx.table:
         if len(span.text) > MAX_RENDERED_QUOTE_CHARS:
             continue
         text = render_quote_turn(span, ctx.language)
         checked = _check_turn(1, text, ctx)
         if checked.ok and checked.kind == "quote":
-            pool.append((text, len(text.split())))
-    results = tuple(_check_turn(i, t, ctx) for i, t in enumerate(turns, 1))
+            pool.append((text, len(text.split()), span.span_id))
     header, lines = _split_body(script)
     positions = _spoken_positions(lines, config)
     if not positions or not pool:
         return script
-    anchor_position, anchor_label = positions[max(_closing_start(results), 1) - 1]
+    anchor_position, anchor_label = positions[max(_closing_start(results, ctx), 1) - 1]
     labels = (config.host_a.name, config.host_b.name)
     label = labels[1] if anchor_label == labels[0] else labels[0]
     added: list[str] = []
@@ -605,14 +611,14 @@ def top_up_words(script: str, *, ctx: _Context, minimum: int, maximum: int | Non
         if words >= minimum:
             break
         choices = [
-            (uses.get(_norm(text), 0), -count, text, count)
-            for text, count in pool
-            if uses.get(_norm(text), 0) < 2 and (maximum is None or words + count <= maximum)
+            (uses.get(span_id, 0), -count, text, count, span_id)
+            for text, count, span_id in pool
+            if uses.get(span_id, 0) < 2 and (maximum is None or words + count <= maximum)
         ]
         if not choices:
             return script
-        _, _, text, count = min(choices)
-        uses[_norm(text)] = uses.get(_norm(text), 0) + 1
+        _, _, text, count, span_id = min(choices)
+        uses[span_id] = uses.get(span_id, 0) + 1
         words += count
         added.append(f"{label}: {text}\n")
         label = labels[1] if label == labels[0] else labels[0]
@@ -640,6 +646,7 @@ def trim_trailing_chat(script: str, *, ctx: _Context, maximum: int, minimum: int
         if (
             words > maximum
             and result.kind == "chat"
+            and not _has_disclosure(result, ctx)
             and result.index > 1
             and words - count >= minimum
         ):

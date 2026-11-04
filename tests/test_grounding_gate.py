@@ -593,3 +593,33 @@ def test_over_max_drops_trailing_chat_turns_only():
     assert GOOD[0] in out.script and GOOD[1] in out.script
     with pytest.raises(ClaimGroundingError, match="excess="):
         _enforce(long, word_bounds=(1, 5))
+
+
+def test_top_up_counts_reuse_by_span_not_wording():
+    sentence = "The planner reduced failed runs by 12% in internal tests."
+    reported = [f'The authors report "{sentence}"', f'The authors say "{sentence}"']
+    short = script(GOOD[0], *reported)
+    floor = gate(short).words + 110
+    out = _enforce(short, word_bounds=(floor, None))
+    assert out.result.ok, out.result.summary()
+    assert sentence not in out.script.split(reported[1], 1)[1].replace(DISC, "")
+
+
+def test_top_up_inserts_before_combined_signoff_disclosure():
+    closing = f"Thanks for listening. {DISC}"
+    short = script(DISC, GOOD[0], GOOD[1], closing, with_disclosure=False)
+    floor = gate(short).words + 20
+    out = _enforce(short, word_bounds=(floor, floor + 60))
+    assert out.result.ok, out.result.summary()
+    assert spoken_turns(out.script, CFG)[-1] == closing
+
+
+def test_trim_keeps_combined_signoff_disclosure_chat_turn():
+    closing = f"Thanks. {DISC}"
+    chat = "What do you think about that?"
+    long = script(DISC, GOOD[0], chat, GOOD[1], closing, with_disclosure=False)
+    words = gate(long).words
+    out = _enforce(long, word_bounds=(1, words - 3))
+    assert out.result.ok, out.result.summary()
+    assert spoken_turns(out.script, CFG)[-1] == closing
+    assert chat not in out.script
