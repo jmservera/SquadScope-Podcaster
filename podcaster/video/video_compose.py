@@ -3691,6 +3691,9 @@ def compose_video(
     blob_name_by_path: dict[Path, str] = {
         normalized_paths[i]: f"normalized_{i:03d}.mp4" for i in range(len(segments))
     }
+    # Section-card splicing reorders ``normalized_paths``; keep each content clip's
+    # original segment index so evidence/fit-duration lookups stay aligned.
+    segment_index_by_path: dict[Path, int] = {normalized_paths[i]: i for i in range(len(segments))}
 
     # Per-segment normalize tasks.  In the blob-checkpoint path each task resolves
     # its raw recording (downloading it from blob on demand), normalizes it,
@@ -3976,7 +3979,7 @@ def compose_video(
         if path.exists():
             return
         if _intermediates_enabled and path in blob_name_by_path:
-            idx = normalized_paths.index(path)
+            idx = segment_index_by_path[path]
             source = source_evidence[idx]
             identity = (
                 {
