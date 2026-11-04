@@ -354,3 +354,68 @@ def test_synthesize_two_voice_sequential_without_pool():
     )
     assert result == [b"audio"] * 3
     assert order == [0, 1, 2]
+
+
+def test_request_timeout_env_default_bounds_and_invalid():
+    assert load_tts_pool_config({}).request_timeout_seconds == 180.0
+    assert load_tts_pool_config({"PODCASTER_TTS_TIMEOUT_S": "240"}).request_timeout_seconds == 240.0
+    assert load_tts_pool_config({"PODCASTER_TTS_TIMEOUT_S": "5"}).request_timeout_seconds == 30.0
+    assert (
+        load_tts_pool_config({"PODCASTER_TTS_TIMEOUT_S": "9999"}).request_timeout_seconds == 300.0
+    )
+    assert load_tts_pool_config({"PODCASTER_TTS_TIMEOUT_S": "abc"}).request_timeout_seconds == 180.0
+    with pytest.raises(ValueError):
+        TtsPoolConfig(request_timeout_seconds=10)
+
+
+def test_default_transport_uses_configured_timeout(monkeypatch):
+    import podcaster.tts as tts
+
+    seen = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b"x"
+
+    def fake_urlopen(request, timeout):
+        seen["timeout"] = timeout
+        return _Resp()
+
+    monkeypatch.setattr(tts, "urlopen", fake_urlopen)
+    monkeypatch.setenv("PODCASTER_TTS_TIMEOUT_S", "123")
+    assert tts._default_transport(object()) == b"x"
+    assert seen["timeout"] == 123.0
+
+
+def test_exact_review_timeout_stops_run_without_retry_or_later_segments(caplog):
+    config, plan = _plan(3)
+    calls = []
+
+    def transport(request):
+        calls.append(request.data)
+        raise TimeoutError("read timed out")
+
+    with caplog.at_level("INFO"), pytest.raises(TimeoutError):
+        synthesize_plan_concurrent(
+            plan,
+            config,
+            _allowed_decision(config),
+            pool=TtsPoolConfig(concurrency=1, max_retries=4, backoff_jitter=0.0),
+            token_provider=lambda scope: "offline-token",
+            transport=transport,
+            sleeper=_no_sleep,
+            exact_review=True,
+            before_provider=lambda: None,
+        )
+
+    assert len(calls) == 1
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert "segment=1/3" in logged and "TimeoutError" in logged
+    assert "podcaster-openai.openai.azure.com" in logged
+    assert "offline-token" not in logged

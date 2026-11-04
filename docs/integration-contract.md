@@ -383,6 +383,10 @@ Exact-review synthesis admits one segment at a time, checking the current approv
 before every attempt (including auxiliary clips). Only explicit HTTP 429 rejections
 are retried with the configured backoff; ambiguous transport/timeouts and server
 failures stop the run, mark the claim unknown and never send later segments.
+The per-request read timeout is `PODCASTER_TTS_TIMEOUT_S` (default 180s, clamped to
+30..300s, invalid values fall back to the default); it is part of `ttsRuntimePolicy`
+and the provider fingerprint. A timeout is still never retried. Segment logs carry only
+index/total, elapsed seconds and the endpoint host.
 Legacy non-exact-review callers retain their existing pool and retry behavior.
 
 Infrastructure passes the same endpoint, managed-identity auth mode, deployment,

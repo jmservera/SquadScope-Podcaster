@@ -794,7 +794,9 @@ def test_run_synthesis_does_not_log_secrets(monkeypatch, caplog):
             transport=lambda request: b"bytes",
         )
     combined = " ".join(record.getMessage() for record in caplog.records)
-    assert "openai.azure.com" not in combined  # full endpoint never logged
+    # Only the bare endpoint host is logged for diagnostics, never the URL.
+    assert "https://" not in combined
+    assert "/openai/deployments" not in combined
     assert "Bearer" not in combined
 
 

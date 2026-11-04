@@ -28,10 +28,12 @@ import asyncio
 import logging
 import random
 import socket
+import time
 from dataclasses import dataclass
 from functools import partial
 from typing import Awaitable, Callable, Mapping, Sequence
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 
 from podcaster.tts import (
     TokenProvider,
@@ -50,6 +52,11 @@ DEFAULT_MAX_RETRIES = 4
 DEFAULT_BACKOFF_BASE_SECONDS = 0.5
 DEFAULT_BACKOFF_MAX_SECONDS = 20.0
 DEFAULT_BACKOFF_JITTER = 0.25
+#: Per-request read timeout (seconds) for one TTS call. Bounded so a stalled
+#: provider cannot hang a worker forever nor be cut off too aggressively.
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 180.0
+MIN_REQUEST_TIMEOUT_SECONDS = 30.0
+MAX_REQUEST_TIMEOUT_SECONDS = 300.0
 
 #: Signature of an awaitable sleep used for backoff. Injected in tests so retry
 #: behaviour can be exercised without real delays.
@@ -67,6 +74,7 @@ class TtsPoolConfig:
     backoff_base_seconds: float = DEFAULT_BACKOFF_BASE_SECONDS
     backoff_max_seconds: float = DEFAULT_BACKOFF_MAX_SECONDS
     backoff_jitter: float = DEFAULT_BACKOFF_JITTER
+    request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
 
     def __post_init__(self) -> None:
         if self.concurrency < 1:
@@ -77,6 +85,15 @@ class TtsPoolConfig:
             raise ValueError("backoff seconds must be non-negative")
         if not 0.0 <= self.backoff_jitter <= 1.0:
             raise ValueError("backoff_jitter must be between 0 and 1")
+        if not (
+            MIN_REQUEST_TIMEOUT_SECONDS
+            <= self.request_timeout_seconds
+            <= MAX_REQUEST_TIMEOUT_SECONDS
+        ):
+            raise ValueError(
+                "request_timeout_seconds must be between "
+                f"{MIN_REQUEST_TIMEOUT_SECONDS:g} and {MAX_REQUEST_TIMEOUT_SECONDS:g}"
+            )
 
     def backoff_delay(self, attempt: int, *, rng: random.Random | None = None) -> float:
         """Exponential backoff (seconds) for the ``attempt``-th retry (1-based).
@@ -116,6 +133,13 @@ def load_tts_pool_config(env: Mapping[str, str] | None = None) -> TtsPoolConfig:
             env, "PODCASTER_TTS_BACKOFF_MAX_SECONDS", DEFAULT_BACKOFF_MAX_SECONDS
         ),
         backoff_jitter=_float_env(env, "PODCASTER_TTS_BACKOFF_JITTER", DEFAULT_BACKOFF_JITTER),
+        request_timeout_seconds=min(
+            MAX_REQUEST_TIMEOUT_SECONDS,
+            max(
+                MIN_REQUEST_TIMEOUT_SECONDS,
+                _float_env(env, "PODCASTER_TTS_TIMEOUT_S", DEFAULT_REQUEST_TIMEOUT_SECONDS),
+            ),
+        ),
     )
 
 
@@ -271,6 +295,7 @@ async def _synthesize_all(
         async with semaphore:
             audio = await _synthesize_one(
                 index,
+                len(turns),
                 turn,
                 config,
                 pool=pool,
@@ -310,6 +335,7 @@ async def _synthesize_all(
 
 async def _synthesize_one(
     index: int,
+    total: int,
     turn: VoiceTurn,
     config: TtsConfig,
     *,
@@ -322,18 +348,39 @@ async def _synthesize_one(
     before_provider: Callable[[], None] | None = None,
 ) -> bytes:
     attempt = 0
+    host = urlsplit(config.endpoint or "").hostname or "unknown"
     while True:
         if exact_review and before_provider is not None:
             before_provider()
+        started = time.monotonic()
         try:
-            return await asyncio.to_thread(
+            audio = await asyncio.to_thread(
                 synthesize,
                 turn,
                 config,
                 token_provider=token_provider,
                 transport=transport,
             )
+            logging.info(
+                "tts segment=%s/%s attempt=%s ok elapsed=%.1fs host=%s",
+                index + 1,
+                total,
+                attempt + 1,
+                time.monotonic() - started,
+                host,
+            )
+            return audio
         except Exception as exc:  # noqa: BLE001 - retry transient/rate-limit failures
+            logging.warning(
+                "tts segment=%s/%s attempt=%s failed (%s) elapsed=%.1fs host=%s limit=%.0fs",
+                index + 1,
+                total,
+                attempt + 1,
+                type(exc).__name__,
+                time.monotonic() - started,
+                host,
+                pool.request_timeout_seconds,
+            )
             attempt += 1
             safe_retry = is_rate_limited(exc) if exact_review else is_retryable(exc)
             if attempt > pool.max_retries or not safe_retry:
