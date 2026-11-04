@@ -14,6 +14,7 @@ from podcaster.article_validation import validate_article_inputs
 from podcaster.artifact_access import ACCESS_MODEL, artifact_access_metadata
 from podcaster.audio import placeholder_audio_validation
 from podcaster.claim_extraction import (
+    FULL_REGENERATION_START_DEADLINE_SECONDS,
     GROUNDING_REPAIR_DEADLINE_SECONDS,
     GROUNDING_REPAIRS_UNCONDITIONAL,
     MAX_GROUNDING_REPAIRS,
@@ -438,15 +439,26 @@ def run_generation_job(
                             )
                             if llm_script is None:
                                 logging.warning(
-                                    "targeted turn repair rejected job_id=%s; "
-                                    "falling back to full regeneration",
+                                    "targeted turn repair rejected job_id=%s "
+                                    "targeted=%d/%d; retrying targeted",
                                     job_id,
+                                    targeted_repairs,
+                                    MAX_TARGETED_REPAIRS,
                                 )
+                                if (
+                                    rounds >= GROUNDING_REPAIRS_UNCONDITIONAL
+                                    and time.monotonic() - grounding_started
+                                    > GROUNDING_REPAIR_DEADLINE_SECONDS
+                                ):
+                                    raise ClaimGroundingError(
+                                        f"{repair_error}; exhausted {rounds} grounding repair"
+                                    ) from None
+                                continue
                         if llm_script is None:
-                            if full_repairs >= MAX_GROUNDING_REPAIRS or (
-                                rounds > GROUNDING_REPAIRS_UNCONDITIONAL
-                                and time.monotonic() - grounding_started
-                                > GROUNDING_REPAIR_DEADLINE_SECONDS
+                            if (
+                                full_repairs >= MAX_GROUNDING_REPAIRS
+                                or time.monotonic() - grounding_started
+                                >= FULL_REGENERATION_START_DEADLINE_SECONDS
                             ):
                                 raise ClaimGroundingError(
                                     f"{repair_error}; exhausted {rounds - 1} grounding repair"
