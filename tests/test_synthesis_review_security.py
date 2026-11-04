@@ -85,6 +85,9 @@ def test_canonical_post_audio_review_never_authorizes_unseen_video(
         assert _distribution_human_approval(persisted) == {"approved": False}
 
 
+FROZEN_NOW = datetime(2026, 10, 29, 11, 30, tzinfo=timezone.utc)
+
+
 @pytest.fixture
 def prepared_exact_video(reviewed_stage, monkeypatch, tmp_path, request):
     """Run real approval/synthesis/preparation against private local contracts."""
@@ -94,6 +97,18 @@ def prepared_exact_video(reviewed_stage, monkeypatch, tmp_path, request):
     from podcaster.video.job_runner import run_video_generation
 
     storage, result, *_ = reviewed_stage
+    # The reviewed manifest expires at a fixed instant, while the outbox's
+    # 24h verification horizon derives from its clock; freeze that clock
+    # (including the default bound at class definition) off the wall clock.
+    from podcaster import distribution_outbox
+
+    frozen = FROZEN_NOW
+    monkeypatch.setattr(distribution_outbox, "utc_now", lambda: frozen)
+    monkeypatch.setattr(
+        DistributionOutboxRepository.__init__,
+        "__kwdefaults__",
+        {"now": lambda: frozen},
+    )
     parameters = getattr(request, "param", "youtube")
     target = parameters["target"] if isinstance(parameters, dict) else parameters
     video_bytes = b"V" * (2 * 1024 * 1024 if target == "youtube_chunked" else 2048)
@@ -763,7 +778,7 @@ def test_real_adapters_continue_pending_leg_without_replaying_finished_mutations
 
     storage, job_id, repository, document, config, _ = prepared_exact_video
     _video_decision(storage, job_id, document)
-    clock = datetime.now(timezone.utc)
+    clock = FROZEN_NOW
     repository.now = lambda: clock
     monkeypatch.setattr(
         "podcaster.distribution_worker.DistributionOutboxRepository", lambda _: repository
@@ -1157,7 +1172,7 @@ def test_negative_media_decision_keeps_existing_outbox_closed(prepared_exact_vid
     from podcaster.distribution_outbox import MediaReviewRequiredError
 
     _storage, job_id, repository, document, *_ = prepared_exact_video
-    reviewed_at = datetime.now(timezone.utc).isoformat()
+    reviewed_at = FROZEN_NOW.isoformat()
     repository.record_media_review(
         document["outbox_id"],
         accepted_job_id=job_id,
@@ -1180,7 +1195,7 @@ def test_media_review_starts_verification_budget_once_after_private_wait(prepare
     from datetime import timedelta
 
     _storage, job_id, repository, document, *_ = prepared_exact_video
-    admission = datetime.now(timezone.utc) + timedelta(days=2)
+    admission = FROZEN_NOW + timedelta(days=2)
     repository.now = lambda: admission
     arguments = {
         "accepted_job_id": job_id,
@@ -1216,9 +1231,9 @@ def test_media_decision_requires_actual_fresh_explicit_review(prepared_exact_vid
             reviewed_at=(
                 "2026-01-01T00:00:00Z"
                 if invalid == "old_time"
-                else datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+                else FROZEN_NOW.replace(tzinfo=None).isoformat()
                 if invalid == "naive_time"
-                else datetime.now(timezone.utc).isoformat()
+                else FROZEN_NOW.isoformat()
             ),
             decision="approved",
             checks_confirmed=invalid != "missing_checks",

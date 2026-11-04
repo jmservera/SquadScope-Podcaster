@@ -533,6 +533,134 @@ def downgrade_turns(
     return _replace_turn_lines(script, replacements, ctx.podcast_config)
 
 
+def _spoken_positions(lines: list[str], config: PodcastConfig) -> list[tuple[int, str]]:
+    """(line position, host label) for each spoken turn, mirroring ``spoken_turns``."""
+
+    labels = (config.host_a.name, config.host_b.name)
+    out: list[tuple[int, str]] = []
+    for position, raw_line in enumerate(lines):
+        line = raw_line.strip()
+        if not line or match_section_header(line) is not None:
+            continue
+        label = next((n for n in labels if line.startswith(n + ":")), None)
+        if label is not None and line[len(label) + 1 :].strip():
+            out.append((position, label))
+    return out
+
+
+def _split_body(script: str) -> tuple[str, list[str]]:
+    header, separator, body = script.partition("\n---")
+    if not separator:
+        return "", script.splitlines(keepends=True)
+    return header + separator, body.splitlines(keepends=True)
+
+
+def _has_disclosure(result: TurnResult, ctx: _Context) -> bool:
+    return result.kind == "disclosure" or bool(
+        ctx.disclosure and ctx.disclosure in _norm(result.text)
+    )
+
+
+def _closing_start(results: tuple[TurnResult, ...], ctx: _Context) -> int:
+    """0-based index of the first closing turn: trailing disclosures plus one sign-off."""
+
+    start = len(results)
+    while start > 0 and _has_disclosure(results[start - 1], ctx):
+        start -= 1
+    if 0 < start < len(results) and results[start - 1].kind == "chat":
+        start -= 1
+    return start
+
+
+def top_up_words(script: str, *, ctx: _Context, minimum: int, maximum: int | None) -> str:
+    """Insert verbatim quote turns until the word floor is met (pure, deterministic).
+
+    Each added turn is ``According to the authors, "<span>"`` rendered from the source span
+    table: unused spans first, longest first, no span more than twice overall, never past
+    ``maximum``. Turns go before the closing sign-off/disclosure with alternating hosts.
+    Returns the script unchanged when the pool cannot reach the floor.
+    """
+
+    config = ctx.podcast_config
+    turns = spoken_turns(script, config)
+    words = _word_count(turns)
+    if words >= minimum:
+        return script
+    results = tuple(_check_turn(i, t, ctx) for i, t in enumerate(turns, 1))
+    uses: dict[str, int] = {}
+    for result in results:
+        for span_id in result.span_ids:
+            uses[span_id] = uses.get(span_id, 0) + 1
+    pool: list[tuple[str, int, str]] = []
+    for span in ctx.table:
+        if len(span.text) > MAX_RENDERED_QUOTE_CHARS:
+            continue
+        text = render_quote_turn(span, ctx.language)
+        checked = _check_turn(1, text, ctx)
+        if checked.ok and checked.kind == "quote":
+            pool.append((text, len(text.split()), span.span_id))
+    header, lines = _split_body(script)
+    positions = _spoken_positions(lines, config)
+    if not positions or not pool:
+        return script
+    anchor_position, anchor_label = positions[max(_closing_start(results, ctx), 1) - 1]
+    labels = (config.host_a.name, config.host_b.name)
+    label = labels[1] if anchor_label == labels[0] else labels[0]
+    added: list[str] = []
+    for _ in range(2 * len(pool)):
+        if words >= minimum:
+            break
+        choices = [
+            (uses.get(span_id, 0), -count, text, count, span_id)
+            for text, count, span_id in pool
+            if uses.get(span_id, 0) < 2 and (maximum is None or words + count <= maximum)
+        ]
+        if not choices:
+            return script
+        _, _, text, count, span_id = min(choices)
+        uses[span_id] = uses.get(span_id, 0) + 1
+        words += count
+        added.append(f"{label}: {text}\n")
+        label = labels[1] if label == labels[0] else labels[0]
+    if words < minimum:
+        return script
+    anchor = lines[anchor_position]
+    if not anchor.endswith(("\n", "\r")):
+        lines[anchor_position] = anchor + "\n"
+    lines[anchor_position + 1 : anchor_position + 1] = added
+    return header + "".join(lines)
+
+
+def trim_trailing_chat(script: str, *, ctx: _Context, maximum: int, minimum: int) -> str:
+    """Drop whole chat turns, last first, until within ``maximum`` (never below ``minimum``)."""
+
+    config = ctx.podcast_config
+    turns = spoken_turns(script, config)
+    words = _word_count(turns)
+    if words <= maximum:
+        return script
+    results = tuple(_check_turn(i, t, ctx) for i, t in enumerate(turns, 1))
+    drop: list[int] = []
+    for result in reversed(results):
+        count = len(result.text.split())
+        if (
+            words > maximum
+            and result.kind == "chat"
+            and not _has_disclosure(result, ctx)
+            and result.index > 1
+            and words - count >= minimum
+        ):
+            drop.append(result.index)
+            words -= count
+    if words > maximum:
+        return script
+    header, lines = _split_body(script)
+    positions = _spoken_positions(lines, config)
+    for index in sorted(drop, reverse=True):
+        del lines[positions[index - 1][0]]
+    return header + "".join(lines)
+
+
 @dataclass
 class GateOutcome:
     script: str
@@ -585,6 +713,7 @@ def enforce(
         )
 
     result = check(script)
+    initial_words = result.words
     rounds = 0
     while (
         repairer is not None
@@ -611,15 +740,36 @@ def enforce(
         failing = {t.index: t.text for t in result.turns if t.failure}
         script = downgrade_turns(script, failing, ctx=ctx, word_bounds=word_bounds)
         result = check(script)
+    words_after_downgrade = result.words
+    if "word_range" in result.global_failures and not result.failures and word_bounds:
+        low, high = word_bounds
+        if result.words < low:
+            script = top_up_words(script, ctx=ctx, minimum=low, maximum=high)
+        elif high is not None and result.words > high:
+            script = trim_trailing_chat(script, ctx=ctx, minimum=low, maximum=high)
+        result = check(script)
     logger.info(
-        "grounding gate done ok=%s repairs=%d downgraded=%d global=%s",
+        "grounding gate done ok=%s repairs=%d downgraded=%d global=%s words_initial=%d "
+        "words_after_downgrade=%d words_final=%d min=%s max=%s",
         result.ok,
         rounds,
         len(downgraded),
         ",".join(result.global_failures) or "-",
+        initial_words,
+        words_after_downgrade,
+        result.words,
+        word_bounds[0] if word_bounds else "-",
+        word_bounds[1] if word_bounds else "-",
     )
     if not result.ok:
-        raise ClaimGroundingError(f"{result.summary()}; exhausted deterministic downgrade")
+        detail = ""
+        if word_bounds and "word_range" in result.global_failures:
+            low, high = word_bounds
+            if result.words < low:
+                detail = f" words={result.words} min={low} shortfall={low - result.words};"
+            elif high is not None:
+                detail = f" words={result.words} max={high} excess={result.words - high};"
+        raise ClaimGroundingError(f"{result.summary()};{detail} exhausted deterministic downgrade")
     return GateOutcome(script, result, rounds, downgraded)
 
 
