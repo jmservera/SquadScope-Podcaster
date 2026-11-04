@@ -47,6 +47,9 @@ logger = logging.getLogger("podcaster.claim_extraction")
 # Maximum claims to extract per article
 MAX_CLAIMS = 15
 MAX_GROUNDING_REPAIRS = 3
+# Targeted single-turn repairs are cheap (one small chat call), so allow more.
+MAX_TARGETED_REPAIRS = 5
+TARGETED_REPAIR_CLASSES = frozenset({"quote", "qualification", "unsupported"})
 # A further repair only starts while enough of the 240s ingress budget remains.
 GROUNDING_REPAIR_DEADLINE_SECONDS = 170.0
 GROUNDING_REPAIRS_UNCONDITIONAL = 2
@@ -98,9 +101,25 @@ class ClaimGroundingError(ValueError):
     repair prompt via ``repair_feedback``.
     """
 
-    def __init__(self, message: str, *, repair_turns: dict[int, str] | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        repair_turns: dict[int, str] | None = None,
+        failure_classes: dict[int, str] | None = None,
+    ) -> None:
         super().__init__(message)
         self.repair_turns = dict(repair_turns or {})
+        self.failure_classes = dict(failure_classes or {})
+
+    @property
+    def targeted_repairable(self) -> bool:
+        """True only when every failure is a quote/qualification/unsupported turn."""
+        return (
+            bool(self.repair_turns)
+            and set(self.failure_classes) == set(self.repair_turns)
+            and set(self.failure_classes.values()) <= TARGETED_REPAIR_CLASSES
+        )
 
     def repair_feedback(self) -> str:
         lines = [str(self)]
@@ -735,7 +754,9 @@ def _parse_script_claims(
             len(failures),
             json.dumps({str(k): v for k, v in sorted(failures.items())}),
         )
-        raise ClaimGroundingError("; ".join(issues), repair_turns=repair_turns)
+        raise ClaimGroundingError(
+            "; ".join(issues), repair_turns=repair_turns, failure_classes=failures
+        )
     return claims
 
 
