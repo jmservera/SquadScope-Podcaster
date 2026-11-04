@@ -185,7 +185,7 @@ typing-extensions==4.16.0
     #   pyee
     #   starlette
     #   typing-inspection
-typing-inspection==0.4.4
+typing-inspection==0.4.5
     # via
     #   fastapi
     #   pydantic
