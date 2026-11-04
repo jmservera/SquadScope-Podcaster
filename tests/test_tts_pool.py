@@ -472,3 +472,76 @@ def test_exact_review_job_budget_stops_retries():
     with pytest.raises(HTTPError):
         _exact(plan, config, transport, exact_review_job_budget_seconds=0.0)
     assert len(calls) == 1
+
+
+def test_explicit_pool_timeout_reaches_default_transport(monkeypatch):
+    import podcaster.tts as tts
+
+    seen = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b"x"
+
+    monkeypatch.setattr(tts, "urlopen", lambda request, timeout: seen.update(t=timeout) or _Resp())
+    monkeypatch.setenv("PODCASTER_TTS_TIMEOUT_S", "100")
+    config, plan = _plan(1)
+    synthesize_plan_concurrent(
+        plan,
+        config,
+        _allowed_decision(config),
+        pool=TtsPoolConfig(concurrency=1, max_retries=0, request_timeout_seconds=222.0),
+        token_provider=lambda scope: "offline-token",
+    )
+    assert seen["t"] == 222.0
+
+
+def test_exact_review_429_respects_job_budget():
+    config, plan = _plan(2)
+    calls = []
+
+    def transport(request):
+        calls.append(1)
+        raise _http_error(429)
+
+    with pytest.raises(HTTPError):
+        _exact(plan, config, transport, exact_review_job_budget_seconds=0.0)
+    assert len(calls) == 1
+
+
+def test_exact_review_no_new_request_after_budget_expires_during_backoff():
+    config, plan = _plan(1)
+    calls = []
+
+    async def slow_sleep(delay):
+        time.sleep(0.08)
+
+    def transport(request):
+        calls.append(1)
+        raise _http_error(503)
+
+    with pytest.raises(HTTPError):
+        synthesize_plan_concurrent(
+            plan,
+            config,
+            _allowed_decision(config),
+            pool=TtsPoolConfig(
+                concurrency=1,
+                max_retries=4,
+                backoff_base_seconds=0.001,
+                backoff_jitter=0.0,
+                exact_review_job_budget_seconds=0.05,
+            ),
+            token_provider=lambda scope: "offline-token",
+            transport=transport,
+            sleeper=slow_sleep,
+            exact_review=True,
+            before_provider=lambda: None,
+        )
+    assert len(calls) == 1

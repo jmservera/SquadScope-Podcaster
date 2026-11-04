@@ -276,7 +276,7 @@ def _patch_tts_network(monkeypatch) -> None:
     monkeypatch.setattr(
         tts.ManagedIdentityTokenCredential, "get_token", lambda self, *scopes: "token"
     )
-    monkeypatch.setattr(tts, "_default_transport", lambda request: b"segment-bytes")
+    monkeypatch.setattr(tts, "_default_transport", lambda request, timeout=None: b"segment-bytes")
 
 
 @pytest.mark.parametrize("failure", ["timeout", "network", "server_error"])

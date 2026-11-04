@@ -211,6 +211,11 @@ def synthesize_plan_concurrent(
         raise ValueError("voice plan is empty")
 
     pool = pool or load_tts_pool_config()
+    if transport is None and synthesize is synthesize_turn:
+        # Keep the request timeout in agreement with the pool actually in use.
+        from podcaster import tts as _tts
+
+        transport = partial(_tts._default_transport, timeout=pool.request_timeout_seconds)
     if exact_review and synthesize is synthesize_turn:
         synthesize = partial(synthesize_turn, exact_review=True, before_provider=before_provider)
     turns = list(plan)
@@ -407,13 +412,14 @@ async def _synthesize_one(
                     safe_retry = (
                         is_retryable(exc)
                         and transient_failures <= pool.exact_review_transient_retries
-                        and (deadline is None or time.monotonic() < deadline)
                     )
             else:
                 safe_retry = is_retryable(exc) and attempt <= pool.max_retries
             if not safe_retry:
                 raise
             delay = pool.backoff_delay(attempt)
+            if exact_review and deadline is not None and time.monotonic() + delay >= deadline:
+                raise
             logging.warning(
                 "tts pool segment=%s attempt=%s failed (%s%s); backing off %.2fs",
                 index,
@@ -423,6 +429,8 @@ async def _synthesize_one(
                 delay,
             )
             await sleeper(delay)
+            if exact_review and deadline is not None and time.monotonic() >= deadline:
+                raise
 
 
 def _run_coro(coro: Awaitable[list[bytes]]) -> list[bytes]:

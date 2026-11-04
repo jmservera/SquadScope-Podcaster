@@ -418,10 +418,11 @@ def synthesize_two_voice(
     return outputs
 
 
-def _default_transport(request: Request) -> bytes:
-    from podcaster.tts_pool import load_tts_pool_config
+def _default_transport(request: Request, timeout: float | None = None) -> bytes:
+    if timeout is None:
+        from podcaster.tts_pool import load_tts_pool_config
 
-    timeout = load_tts_pool_config().request_timeout_seconds
+        timeout = load_tts_pool_config().request_timeout_seconds
     with urlopen(request, timeout=timeout) as response:
         return response.read()
 
