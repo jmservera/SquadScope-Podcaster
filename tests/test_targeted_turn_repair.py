@@ -207,18 +207,46 @@ def test_targeted_repair_succeeds_without_regenerating(tmp_path, monkeypatch):
     assert storage.get_bytes(f"jobs/{build_job_id(PAYLOAD)}/script.txt") == SCRIPT_C.encode()
 
 
-def test_rejected_patch_falls_back_to_full_regeneration(tmp_path, monkeypatch):
+def test_rejected_patch_retries_targeted_not_full_regeneration(tmp_path, monkeypatch):
     generator, repairer, storage = _run(
         tmp_path,
         monkeypatch,
         audits=[_error(), _claim()],
-        repairs=[None],
+        repairs=[None, SCRIPT_B],
+        generations=[SCRIPT_A],
+    )
+    run_generation_job(PAYLOAD, storage=storage, now=NOW)
+    assert repairer.call_count == 2
+    assert repairer.call_args.args[0] == SCRIPT_A
+    assert generator.call_count == 1
+
+
+def test_rejected_patches_exhaust_targeted_budget_then_full_regeneration(tmp_path, monkeypatch):
+    budget = jobs.MAX_TARGETED_REPAIRS
+    generator, repairer, storage = _run(
+        tmp_path,
+        monkeypatch,
+        audits=[_error(), _claim()],
+        repairs=[None] * budget,
         generations=[SCRIPT_A, SCRIPT_B],
     )
     run_generation_job(PAYLOAD, storage=storage, now=NOW)
-    assert repairer.call_count == 1
+    assert repairer.call_count == budget
     assert generator.call_count == 2
-    assert generator.call_args.kwargs["previous_script"] == SCRIPT_A
+
+
+def test_full_regeneration_gated_by_remaining_time(tmp_path, monkeypatch):
+    monkeypatch.setattr(jobs, "FULL_REGENERATION_START_DEADLINE_SECONDS", -1.0)
+    generator, repairer, storage = _run(
+        tmp_path,
+        monkeypatch,
+        audits=[ClaimGroundingError("turn 1: empirical")] * 2,
+        repairs=[],
+        generations=[SCRIPT_A, SCRIPT_B],
+    )
+    with pytest.raises(ScriptGenerationFailed, match="exhausted"):
+        run_generation_job(PAYLOAD, storage=storage, now=NOW)
+    assert generator.call_count == 1
 
 
 def test_non_targetable_error_uses_full_regeneration_only(tmp_path, monkeypatch):
@@ -264,21 +292,6 @@ def test_targeted_repair_deadline_stops_new_repairs(tmp_path, monkeypatch):
     assert repairer.call_count == 2
 
 
-def test_rejected_patch_after_full_budget_fails_closed(tmp_path, monkeypatch):
-    budget = jobs.MAX_GROUNDING_REPAIRS
-    generator, repairer, storage = _run(
-        tmp_path,
-        monkeypatch,
-        audits=[ClaimGroundingError("turn 1: empirical")] * budget + [_error()],
-        repairs=[None],
-        generations=[SCRIPT_A] + [SCRIPT_B] * budget,
-    )
-    with pytest.raises(ScriptGenerationFailed, match="exhausted"):
-        run_generation_job(PAYLOAD, storage=storage, now=NOW)
-    assert repairer.call_count == 1
-    assert generator.call_count == 1 + budget
-
-
 def test_rejected_patch_with_deadline_spent_fails_closed(tmp_path, monkeypatch):
     generator, repairer, storage = _run(
         tmp_path,
@@ -310,3 +323,39 @@ def test_merge_keeps_ai_voice_disclosure_in_same_turn():
     assert merge({2: f"{GOOD} {disclosure}"}, script=script, failing=failing) is not None
     assert merge({2: GOOD}, script=script, failing=failing) is None
     assert merge({2: f"{GOOD} {disclosure}"}) is None
+
+
+SCRIPT3 = SCRIPT.replace(
+    "Customers reacted to the platform changes in many different ways.",
+    "Customers reacted to the platform changes in many different ways today.\n"
+    "Vera: Another turn about engineering tradeoffs shaped the whole discussion here.",
+)
+FAILING3 = {
+    2: FAILING[2],
+    4: "Another turn about engineering tradeoffs shaped the whole discussion here.",
+}
+
+
+def test_merge_applies_valid_and_skips_invalid(caplog):
+    with caplog.at_level("WARNING"):
+        merged = merge({2: GOOD, 4: "Too short."}, script=SCRIPT3, failing=FAILING3)
+    assert merged == SCRIPT3.replace(FAILING[2], GOOD)
+    assert "4:length_ratio" in caplog.text
+    assert "Too short" not in caplog.text
+
+
+def test_merge_none_valid_returns_none(caplog):
+    with caplog.at_level("WARNING"):
+        assert (
+            merge(
+                {2: "Too short.", 4: "see https://x.example/a ok"}, script=SCRIPT3, failing=FAILING3
+            )
+            is None
+        )
+    assert "none_valid" in caplog.text
+
+
+def test_merge_skips_duplicate_of_unchanged_turn():
+    dup = "Customers reacted to the platform changes in many different ways today."
+    merged = merge({2: GOOD, 4: dup}, script=SCRIPT3, failing=FAILING3)
+    assert merged == SCRIPT3.replace(FAILING[2], GOOD)

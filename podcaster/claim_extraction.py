@@ -55,6 +55,8 @@ TARGETED_REPAIR_CLASSES = frozenset({"quote", "qualification", "unsupported"})
 # A further repair only starts while enough of the 240s ingress budget remains.
 GROUNDING_REPAIR_DEADLINE_SECONDS = 170.0
 GROUNDING_REPAIRS_UNCONDITIONAL = 2
+# A full regeneration takes ~60s; only start one early enough to finish in budget.
+FULL_REGENERATION_START_DEADLINE_SECONDS = 100.0
 # The repo deploys gpt-4o-mini (infra/main.bicep), whose output cap is
 # 16,384 tokens. Bound total audit cost to eight such requests, without retries.
 GROUNDING_MAX_OUTPUT_TOKENS = 16_384

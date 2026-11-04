@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from dataclasses import replace as _dataclass_replace
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.error import HTTPError
 from urllib.request import Request
 from uuid import uuid4
@@ -2670,6 +2670,14 @@ TURN_REPAIR_MAX_EXTRA_WORDS = 5
 TURN_REPAIR_MAX_CHARS = 1500
 
 
+def _log_turn_repair_rejection(code: str, details: Sequence[str] = ()) -> None:
+    """Log content-free rejection reason codes (never turn text)."""
+
+    logging.warning(
+        "targeted turn repair rejection reason=%s details=%s", code, ",".join(details) or "-"
+    )
+
+
 def merge_turn_replacements(
     script: str,
     replacements: Mapping[int, str],
@@ -2678,8 +2686,10 @@ def merge_turn_replacements(
     podcast_config: PodcastConfig,
     word_range: tuple[int, int] | None,
 ) -> str | None:
-    """Replace only the named spoken turns; return None when anything is unsafe.
+    """Replace the valid named spoken turns, skipping invalid replacements.
 
+    Returns None when no replacement is valid, an index is bad, or the merged
+    script fails its checks. Skipped turns stay unchanged for a later round.
     Indices are 1-based positions in ``spoken_turns(script, podcast_config)``.
     Every other line of the script stays byte-identical.
     """
@@ -2689,12 +2699,14 @@ def merge_turn_replacements(
         type(index) is not int or index not in failing_turns or not 1 <= index <= len(turns)
         for index in replacements
     ):
+        _log_turn_repair_rejection("index")
         return None
-    folded_others = {
-        turn.casefold() for number, turn in enumerate(turns, 1) if number not in replacements
-    }
-    seen: set[str] = set()
-    for index, text in replacements.items():
+    disclosure = " ".join(podcast_config.ai_voice_disclosure.casefold().split())
+
+    def has_disclosure(text: str) -> bool:
+        return bool(disclosure) and disclosure in " ".join(text.casefold().split())
+
+    def intrinsic_reason(index: int, text: object) -> str | None:
         if (
             not isinstance(text, str)
             or text != text.strip()
@@ -2703,20 +2715,55 @@ def merge_turn_replacements(
             or any(ord(char) < 32 or ord(char) == 127 for char in text)
             or len(text.splitlines()) != 1
             or re.search(r"https?://|www\.", text, re.IGNORECASE)
-            or find_violations(f"{podcast_config.host_a.name}: {text}")
         ):
-            return None
-        folded = text.casefold()
-        if folded in folded_others or folded in seen:
-            return None
-        seen.add(folded)
-        original_words = len(turns[index - 1].split())
+            return "url_or_control"
+        if find_violations(f"{podcast_config.host_a.name}: {text}"):
+            return "violation"
+        original = turns[index - 1]
+        original_words = len(original.split())
         words = len(text.split())
         if words < int(original_words * TURN_REPAIR_MIN_RATIO) or words > max(
             -(-original_words * 3 // 2),
             original_words + TURN_REPAIR_MAX_EXTRA_WORDS,
         ):
-            return None
+            return "length_ratio"
+        if disclosure and has_disclosure(original) != has_disclosure(text):
+            return "disclosure"
+        return None
+
+    valid: dict[int, str] = {}
+    reasons: list[str] = []
+    for index, text in replacements.items():
+        reason = intrinsic_reason(index, text)
+        if reason is None:
+            valid[index] = text
+        else:
+            reasons.append(f"{index}:{reason}")
+    # Duplicate checks run against every turn that will remain unchanged, so
+    # dropping a replacement can only add constraints; iterate to a fixed point.
+    while True:
+        folded_others = {
+            turn.casefold() for number, turn in enumerate(turns, 1) if number not in valid
+        }
+        seen: set[str] = set()
+        dropped = []
+        for index, text in valid.items():
+            folded = text.casefold()
+            if folded in folded_others or folded in seen:
+                dropped.append(index)
+            else:
+                seen.add(folded)
+        if not dropped:
+            break
+        for index in dropped:
+            del valid[index]
+            reasons.append(f"{index}:duplicate")
+    if reasons:
+        _log_turn_repair_rejection("replacements_skipped", reasons)
+    if not valid:
+        _log_turn_repair_rejection("none_valid")
+        return None
+    replacements = valid
 
     host_a, host_b = podcast_config.host_a.name, podcast_config.host_b.name
     header, separator, body = script.partition("\n---")
@@ -2740,13 +2787,10 @@ def merge_turn_replacements(
 
     patched = spoken_turns(merged, podcast_config)
     if len(patched) != len(turns) or len(merged) > MAX_SCRIPT_CHARS + 4000:
+        _log_turn_repair_rejection("merged_shape")
         return None
-    disclosure = " ".join(podcast_config.ai_voice_disclosure.casefold().split())
-    if disclosure and any(
-        (disclosure in " ".join(a.casefold().split()))
-        != (disclosure in " ".join(b.casefold().split()))
-        for a, b in zip(turns, patched)
-    ):
+    if disclosure and any(has_disclosure(a) != has_disclosure(b) for a, b in zip(turns, patched)):
+        _log_turn_repair_rejection("disclosure")
         return None
     if any(
         (patched[number - 1] != replacements[number])
@@ -2754,10 +2798,12 @@ def merge_turn_replacements(
         else (patched[number - 1] != turns[number - 1])
         for number in range(1, len(turns) + 1)
     ):
+        _log_turn_repair_rejection("merged_shape")
         return None
     if word_range is not None:
         total = sum(len(turn.split()) for turn in patched)
         if not word_range[0] <= total <= word_range[1]:
+            _log_turn_repair_rejection("range")
             return None
     return merged
 
@@ -2780,7 +2826,7 @@ def repair_turns_in_script(
     """Rewrite only the failing spoken turns with one small chat call.
 
     Returns the merged script, or None when the model's patch is rejected (the
-    caller then falls back to full regeneration). Provider throttling and filter
+    caller then retries targeted repair while the budget allows). Provider throttling and filter
     failures propagate exactly as in ``generate_script``.
     """
 
@@ -2863,13 +2909,16 @@ def repair_turns_in_script(
             temperature=TURN_REPAIR_TEMPERATURE,
         )
     except ScriptQualityError:
+        _log_turn_repair_rejection("request")
         return None
     try:
         data = json.loads(content)
     except ValueError:
+        _log_turn_repair_rejection("envelope")
         return None
     items = data.get("replacements") if isinstance(data, dict) else None
     if not isinstance(items, list) or len(items) != len(failing_turns):
+        _log_turn_repair_rejection("envelope")
         return None
     replacements: dict[int, str] = {}
     for item in items:
@@ -2879,9 +2928,11 @@ def repair_turns_in_script(
             or type(item["turn"]) is not int
             or item["turn"] in replacements
         ):
+            _log_turn_repair_rejection("envelope")
             return None
         replacements[item["turn"]] = item["text"]
     if set(replacements) != set(failing_turns):
+        _log_turn_repair_rejection("index")
         return None
     return merge_turn_replacements(
         script,
