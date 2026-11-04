@@ -139,6 +139,13 @@ def test_targeted_repairable_requires_only_repairable_classes():
     assert ClaimGroundingError(
         "x", repair_turns=turns, failure_classes={1: "quote"}
     ).targeted_repairable
+    mixed = {1: "quote", 2: "empirical", 3: "qualification", 4: "script_excerpt"}
+    assert ClaimGroundingError(
+        "x", repair_turns={i: "t" for i in mixed}, failure_classes=mixed
+    ).targeted_repairable
+    assert not ClaimGroundingError(
+        "x", repair_turns=turns, failure_classes={1: "quote", 2: "provenance"}
+    ).targeted_repairable
     assert not ClaimGroundingError(
         "x", repair_turns=turns, failure_classes={1: "quote", 2: "empirical"}
     ).targeted_repairable
@@ -253,7 +260,7 @@ def test_non_targetable_error_uses_full_regeneration_only(tmp_path, monkeypatch)
     generator, repairer, storage = _run(
         tmp_path,
         monkeypatch,
-        audits=[ClaimGroundingError("turn 1: empirical"), _claim()],
+        audits=[ClaimGroundingError("turn 1: provenance"), _claim()],
         repairs=[],
         generations=[SCRIPT_A, SCRIPT_B],
     )
@@ -267,14 +274,57 @@ def test_targeted_repairs_exhausted_fail_closed(tmp_path, monkeypatch):
     generator, repairer, storage = _run(
         tmp_path,
         monkeypatch,
-        audits=[_error()] * (budget + 1 + jobs.MAX_GROUNDING_REPAIRS),
-        repairs=[SCRIPT_B] * budget,
+        audits=[_error()] * ((budget + 1) * (1 + jobs.MAX_GROUNDING_REPAIRS)),
+        repairs=[SCRIPT_B] * (budget * (1 + jobs.MAX_GROUNDING_REPAIRS)),
         generations=[SCRIPT_A] + [SCRIPT_C] * jobs.MAX_GROUNDING_REPAIRS,
     )
     with pytest.raises(ScriptGenerationFailed, match="exhausted"):
         run_generation_job(PAYLOAD, storage=storage, now=NOW)
-    assert repairer.call_count == budget
+    assert repairer.call_count == budget * (1 + jobs.MAX_GROUNDING_REPAIRS)
     assert generator.call_count == 1 + jobs.MAX_GROUNDING_REPAIRS
+
+
+def test_failed_full_regeneration_returns_to_targeted_repair(tmp_path, monkeypatch):
+    budget = jobs.MAX_TARGETED_REPAIRS
+    generator, repairer, storage = _run(
+        tmp_path,
+        monkeypatch,
+        audits=[_error(1, "empirical")] * (budget + 1) + [_error(2, "empirical"), _claim()],
+        repairs=[SCRIPT_B] * budget + [SCRIPT_C],
+        generations=[SCRIPT_A, SCRIPT_B],
+    )
+    run_generation_job(PAYLOAD, storage=storage, now=NOW)
+    assert generator.call_count == 2
+    assert repairer.call_count == budget + 1
+
+
+def test_many_failing_turns_repair_in_one_patch_and_per_class_feedback():
+    classes = {2: "empirical", 3: "qualification", 5: "qualification"}
+    error = ClaimGroundingError(
+        "x", repair_turns={i: f"text {i}" for i in classes}, failure_classes=classes
+    )
+    feedback = error.repair_feedback()
+    assert "turn 2 repair (empirical): remove or soften" in feedback
+    assert "According to the authors," in feedback
+    assert "the article'" in feedback and "According to the article" not in feedback
+    long = {i: " ".join(["word"] * 120) for i in range(1, 10)}
+    seen = []
+    assert (
+        repair_turns_in_script(
+            SCRIPT,
+            failing_turns=long,
+            findings="f",
+            week="2026-W44",
+            article_title="Title",
+            article_content=VALID_ARTICLE_CONTENT,
+            config=_mock_config(),
+            podcast_config=CONFIG,
+            token_provider=_fake_token_provider,
+            transport=_transport("{}", seen),
+        )
+        is None
+    )
+    assert seen[0]["max_tokens"] > script_gen.TURN_REPAIR_MAX_TOKENS
 
 
 def test_targeted_repair_deadline_stops_new_repairs(tmp_path, monkeypatch):

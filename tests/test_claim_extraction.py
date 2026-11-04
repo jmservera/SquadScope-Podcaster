@@ -282,7 +282,8 @@ class TestCanonicalGrounding:
         with pytest.raises(claim_extraction.ClaimGroundingError) as exc:
             self._extract(rows, turns=[turn])
         assert "turn 1" in str(exc.value)
-        assert "According to the article," in str(exc.value)
+        assert "According to the authors," in str(exc.value)
+        assert "According to the article" not in str(exc.value)
         assert turn not in str(exc.value)
         assert turn in exc.value.repair_feedback()
 
