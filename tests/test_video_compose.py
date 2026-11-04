@@ -3626,6 +3626,32 @@ class TestComposeVideoCheckpointResume:
         assert any(str(logo_b) in command for command in commands)
         assert any("overlay=" in " ".join(command) for command in commands)
 
+    def test_section_cards_keep_segment_evidence_aligned_on_fetch(self, tmp_path):
+        store = self._store(tmp_path)
+        segs = []
+        for i in range(3):
+            clip = tmp_path / f"seg{i}.webm"
+            clip.write_bytes(b"\x00" * 2048)
+            segs.append(_make_recorded_segment(duration=10.0, video_path=clip))
+        card = tmp_path / "card.mp4"
+        card.write_bytes(b"\x00" * 2048)
+
+        def probe(_path, _timeout):
+            return vc.ProbeEvidence(format_name="mov,mp4", duration_seconds=10.0)
+
+        # A leading card shifts every spliced index; fetching content clips back
+        # from blob must still resolve their original segment evidence.
+        result = compose_video(
+            segments=segs,
+            output_dir=tmp_path / "out",
+            runner=_touch_output_runner(),
+            intermediates=store,
+            budget=_RenderClock().budget(),
+            media_probe=probe,
+            section_cards=[_Insert(0, card, 2.5, name="Intro")],
+        )
+        assert result.segment_count == 3
+
     def test_resumes_normalized_segment(self, tmp_path):
         store = self._store(tmp_path)
         # Pre-seed a normalized clip checkpoint.
