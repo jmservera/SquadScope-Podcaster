@@ -119,6 +119,7 @@ param ttsRuntimePolicy object = {
   backoffBaseSeconds: '0.5'
   backoffMaxSeconds: '20.0'
   backoffJitter: '0.25'
+  requestTimeoutSeconds: '180'
 }
 
 var ttsRuntimeEnvironment = [
@@ -157,6 +158,10 @@ var ttsRuntimeEnvironment = [
   {
     name: 'PODCASTER_TTS_BACKOFF_JITTER'
     value: string(ttsRuntimePolicy.backoffJitter)
+  }
+  {
+    name: 'PODCASTER_TTS_TIMEOUT_S'
+    value: string(ttsRuntimePolicy.requestTimeoutSeconds)
   }
 ]
 

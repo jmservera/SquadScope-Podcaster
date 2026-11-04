@@ -380,9 +380,22 @@ duplicate queue delivery cannot duplicate TTS. A started or ambiguous provider a
 is consumed permanently pending operator reconciliation, even if audio/result
 persistence failed. Existing cost gates and explicit provider/rights blockers remain.
 Exact-review synthesis admits one segment at a time, checking the current approval
-before every attempt (including auxiliary clips). Only explicit HTTP 429 rejections
-are retried with the configured backoff; ambiguous transport/timeouts and server
-failures stop the run, mark the claim unknown and never send later segments.
+before every attempt (including auxiliary clips). Explicit HTTP 429 rejections are
+retried with the configured backoff. Amended by owner-delegated decision
+2026-11-04T19:01Z: a transient failure (read timeout, connection reset, 5xx) must not
+poison the job, so the single failing segment is retried up to 2 extra times with
+backoff, each attempt bounded by `PODCASTER_TTS_TIMEOUT_S`, and no retry starts after a
+job-wide wall-clock budget (900s) is spent. Later segments are never sent before the
+failing one succeeds, so output stays ordered and a duplicate request for the same
+index merely overwrites it; spend is at most 3 requests for that segment. Logs are
+content-free (`segment i/N attempt k`). When retries or the budget are exhausted the run
+stops fail-closed: `synthesis_failed`, claim `unknown`, no later segments. Non-retryable
+4xx errors still stop immediately. Resume from stored segments is intentionally not
+implemented (a retried job needs operator reconciliation of the consumed claim).
+The per-request read timeout is `PODCASTER_TTS_TIMEOUT_S` (default 180s, clamped to
+30..300s, invalid values fall back to the default); it is part of `ttsRuntimePolicy`
+and the provider fingerprint. Segment logs carry only
+index/total, elapsed seconds and the endpoint host.
 Legacy non-exact-review callers retain their existing pool and retry behavior.
 
 Infrastructure passes the same endpoint, managed-identity auth mode, deployment,

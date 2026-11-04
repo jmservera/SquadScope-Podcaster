@@ -28,10 +28,12 @@ import asyncio
 import logging
 import random
 import socket
+import time
 from dataclasses import dataclass
 from functools import partial
 from typing import Awaitable, Callable, Mapping, Sequence
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 
 from podcaster.tts import (
     TokenProvider,
@@ -50,6 +52,16 @@ DEFAULT_MAX_RETRIES = 4
 DEFAULT_BACKOFF_BASE_SECONDS = 0.5
 DEFAULT_BACKOFF_MAX_SECONDS = 20.0
 DEFAULT_BACKOFF_JITTER = 0.25
+#: Per-request read timeout (seconds) for one TTS call. Bounded so a stalled
+#: provider cannot hang a worker forever nor be cut off too aggressively.
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 180.0
+MIN_REQUEST_TIMEOUT_SECONDS = 30.0
+MAX_REQUEST_TIMEOUT_SECONDS = 300.0
+#: Exact-review synthesis: extra attempts for ONE segment after a transient
+#: failure (read timeout / connection reset / 5xx), and the wall-clock budget
+#: for the whole job after which no further retry is started.
+EXACT_REVIEW_TRANSIENT_RETRIES = 2
+EXACT_REVIEW_JOB_BUDGET_SECONDS = 900.0
 
 #: Signature of an awaitable sleep used for backoff. Injected in tests so retry
 #: behaviour can be exercised without real delays.
@@ -67,6 +79,9 @@ class TtsPoolConfig:
     backoff_base_seconds: float = DEFAULT_BACKOFF_BASE_SECONDS
     backoff_max_seconds: float = DEFAULT_BACKOFF_MAX_SECONDS
     backoff_jitter: float = DEFAULT_BACKOFF_JITTER
+    request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
+    exact_review_transient_retries: int = EXACT_REVIEW_TRANSIENT_RETRIES
+    exact_review_job_budget_seconds: float = EXACT_REVIEW_JOB_BUDGET_SECONDS
 
     def __post_init__(self) -> None:
         if self.concurrency < 1:
@@ -77,6 +92,15 @@ class TtsPoolConfig:
             raise ValueError("backoff seconds must be non-negative")
         if not 0.0 <= self.backoff_jitter <= 1.0:
             raise ValueError("backoff_jitter must be between 0 and 1")
+        if not (
+            MIN_REQUEST_TIMEOUT_SECONDS
+            <= self.request_timeout_seconds
+            <= MAX_REQUEST_TIMEOUT_SECONDS
+        ):
+            raise ValueError(
+                "request_timeout_seconds must be between "
+                f"{MIN_REQUEST_TIMEOUT_SECONDS:g} and {MAX_REQUEST_TIMEOUT_SECONDS:g}"
+            )
 
     def backoff_delay(self, attempt: int, *, rng: random.Random | None = None) -> float:
         """Exponential backoff (seconds) for the ``attempt``-th retry (1-based).
@@ -116,6 +140,13 @@ def load_tts_pool_config(env: Mapping[str, str] | None = None) -> TtsPoolConfig:
             env, "PODCASTER_TTS_BACKOFF_MAX_SECONDS", DEFAULT_BACKOFF_MAX_SECONDS
         ),
         backoff_jitter=_float_env(env, "PODCASTER_TTS_BACKOFF_JITTER", DEFAULT_BACKOFF_JITTER),
+        request_timeout_seconds=min(
+            MAX_REQUEST_TIMEOUT_SECONDS,
+            max(
+                MIN_REQUEST_TIMEOUT_SECONDS,
+                _float_env(env, "PODCASTER_TTS_TIMEOUT_S", DEFAULT_REQUEST_TIMEOUT_SECONDS),
+            ),
+        ),
     )
 
 
@@ -166,9 +197,11 @@ def synthesize_plan_concurrent(
     total)`` as each segment finishes so callers can surface a live "recording
     N/M" counter. A failing callback never aborts synthesis.
 
-    ``exact_review`` admits segments serially, retries only explicit 429
-    rejections and checks ``before_provider`` before every attempt. Legacy
-    callers retain the configured concurrent/transient-retry policy.
+    ``exact_review`` admits segments serially, retries explicit 429 rejections
+    plus a bounded number of transient failures (read timeout, connection reset,
+    5xx) of the single failing segment within a job wall-clock budget, and checks
+    ``before_provider`` before every attempt. Legacy callers
+    retain the configured concurrent/transient-retry policy.
     """
 
     if not decision.get("allowed"):
@@ -178,6 +211,11 @@ def synthesize_plan_concurrent(
         raise ValueError("voice plan is empty")
 
     pool = pool or load_tts_pool_config()
+    if transport is None and synthesize is synthesize_turn:
+        # Keep the request timeout in agreement with the pool actually in use.
+        from podcaster import tts as _tts
+
+        transport = partial(_tts._default_transport, timeout=pool.request_timeout_seconds)
     if exact_review and synthesize is synthesize_turn:
         synthesize = partial(synthesize_turn, exact_review=True, before_provider=before_provider)
     turns = list(plan)
@@ -188,7 +226,11 @@ def synthesize_plan_concurrent(
     # plain sequential loop without spinning up an event loop. When retries are
     # configured we must NOT bypass the pool, otherwise concurrency=1 would
     # silently drop the rate-limit/backoff handling the pool is meant to own.
-    if (pool.concurrency <= 1 or len(turns) <= 1) and pool.max_retries == 0:
+    if (
+        (pool.concurrency <= 1 or len(turns) <= 1)
+        and pool.max_retries == 0
+        and not (exact_review and pool.exact_review_transient_retries > 0)
+    ):
         outputs: list[bytes] = []
         for turn in turns:
             if exact_review and before_provider is not None:
@@ -265,12 +307,14 @@ async def _synthesize_all(
     semaphore = asyncio.Semaphore(pool.concurrency)
     results: list[bytes | None] = [None] * len(turns)
     completed = 0
+    deadline = time.monotonic() + pool.exact_review_job_budget_seconds
 
     async def worker(index: int, turn: VoiceTurn) -> None:
         nonlocal completed
         async with semaphore:
             audio = await _synthesize_one(
                 index,
+                len(turns),
                 turn,
                 config,
                 pool=pool,
@@ -280,6 +324,7 @@ async def _synthesize_all(
                 sleeper=sleeper,
                 exact_review=exact_review,
                 before_provider=before_provider,
+                deadline=deadline,
             )
             results[index] = audio
             # Runs on the single event-loop thread, so this counter needs no
@@ -310,6 +355,7 @@ async def _synthesize_all(
 
 async def _synthesize_one(
     index: int,
+    total: int,
     turn: VoiceTurn,
     config: TtsConfig,
     *,
@@ -320,25 +366,60 @@ async def _synthesize_one(
     sleeper: Sleeper,
     exact_review: bool = False,
     before_provider: Callable[[], None] | None = None,
+    deadline: float | None = None,
 ) -> bytes:
     attempt = 0
+    transient_failures = 0
+    host = urlsplit(config.endpoint or "").hostname or "unknown"
     while True:
         if exact_review and before_provider is not None:
             before_provider()
+        started = time.monotonic()
         try:
-            return await asyncio.to_thread(
+            audio = await asyncio.to_thread(
                 synthesize,
                 turn,
                 config,
                 token_provider=token_provider,
                 transport=transport,
             )
+            logging.info(
+                "tts segment=%s/%s attempt=%s ok elapsed=%.1fs host=%s",
+                index + 1,
+                total,
+                attempt + 1,
+                time.monotonic() - started,
+                host,
+            )
+            return audio
         except Exception as exc:  # noqa: BLE001 - retry transient/rate-limit failures
+            logging.warning(
+                "tts segment=%s/%s attempt=%s failed (%s) elapsed=%.1fs host=%s limit=%.0fs",
+                index + 1,
+                total,
+                attempt + 1,
+                type(exc).__name__,
+                time.monotonic() - started,
+                host,
+                pool.request_timeout_seconds,
+            )
             attempt += 1
-            safe_retry = is_rate_limited(exc) if exact_review else is_retryable(exc)
-            if attempt > pool.max_retries or not safe_retry:
+            if exact_review:
+                if is_rate_limited(exc):
+                    safe_retry = attempt <= pool.max_retries
+                else:
+                    transient_failures += 1
+                    safe_retry = (
+                        is_retryable(exc)
+                        and transient_failures <= pool.exact_review_transient_retries
+                    )
+            else:
+                safe_retry = is_retryable(exc) and attempt <= pool.max_retries
+            if not safe_retry:
                 raise
             delay = pool.backoff_delay(attempt)
+            if exact_review and deadline is not None and time.monotonic() + delay >= deadline:
+                raise
             logging.warning(
                 "tts pool segment=%s attempt=%s failed (%s%s); backing off %.2fs",
                 index,
@@ -348,6 +429,8 @@ async def _synthesize_one(
                 delay,
             )
             await sleeper(delay)
+            if exact_review and deadline is not None and time.monotonic() >= deadline:
+                raise
 
 
 def _run_coro(coro: Awaitable[list[bytes]]) -> list[bytes]:
