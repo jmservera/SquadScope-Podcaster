@@ -1771,6 +1771,8 @@ def _merge_length_expansion(
         return reject("insertions_list")
     allowed = {item["section_index"]: item for item in plan}
     additions = {}
+    seen_indices: set[int] = set()
+    dropped_sections: list[int] = []
     hosts = (generation.podcast_config.host_a.name, generation.podcast_config.host_b.name)
     existing = {text.strip() for text in spoken_turns(dialogue, generation.podcast_config)}
     canonical_existing = {
@@ -1782,13 +1784,13 @@ def _merge_length_expansion(
         if not isinstance(insertion, dict) or set(insertion) != {"section_index", "turns"}:
             return reject("insertion_keys")
         index, turns = insertion["section_index"], insertion["turns"]
-        if type(index) is not int or index not in allowed or index in additions:
+        if type(index) is not int or index not in allowed or index in seen_indices:
             return reject("section_index", section_index=_observed_integer(index))
+        seen_indices.add(index)
         if not isinstance(turns, list) or not turns:
             return reject("turns_list", section_index=index)
         turn_words: list[int] = []
         kept_turns: list[str] = []
-        bad_turn = False
         for turn in turns:
             if (
                 not isinstance(turn, str)
@@ -1798,7 +1800,6 @@ def _merge_length_expansion(
                 or find_violations(turn)
             ):
                 # One unsafe turn is dropped, never merged; others may still help.
-                bad_turn = True
                 continue
             label, separator, text = turn.partition(":")
             if not separator or label not in hosts or not text.strip() or text.strip() in existing:
@@ -1814,8 +1815,9 @@ def _merge_length_expansion(
             canonical_existing.add(canonical_turns[0].casefold())
             turn_words.append(len(canonical_turns[0].split()))
             kept_turns.append(turn)
-        if bad_turn and not kept_turns:
-            return reject("turn_content", section_index=index)
+        if not kept_turns:
+            dropped_sections.append(index)
+            continue
         turns = kept_turns
         budget = allowed[index]["add_words"] + 20
         kept, words = 0, 0
@@ -1832,6 +1834,10 @@ def _merge_length_expansion(
             )
         # Overshoot trims trailing whole turns instead of discarding every insertion.
         additions[index] = "\n".join(turns[:kept]) + "\n"
+    if not additions:
+        return reject(
+            "turn_content", section_index=dropped_sections[0] if dropped_sections else None
+        )
     lines = dialogue.splitlines(keepends=True)
     for index in sorted(additions, key=lambda key: allowed[key]["before_line"], reverse=True):
         lines.insert(allowed[index]["before_line"], additions[index])

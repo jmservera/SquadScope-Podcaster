@@ -3240,3 +3240,37 @@ def test_length_expansion_drops_unsafe_turn_but_keeps_safe_ones():
         dialogue, json.dumps({"insertions": [{"section_index": 1, "turns": [bad]}]}), plan, gen
     )
     assert only_bad is None and gen.last_rejection == "turn_content"
+
+
+def test_length_expansion_keeps_safe_section_when_another_is_all_unsafe():
+    config = PodcastConfig()
+    hosts = (config.host_a.name, config.host_b.name)
+    gen = script_gen._GenerationDiagnostics(
+        podcast_config=config,
+        canonicalize=lambda text: text,
+        word_range=(1, 100),
+        targets=(("A", 50), ("B", 50)),
+        deployment=None,
+        api_version=None,
+    )
+    dialogue = (
+        f"## Section: A\n{hosts[0]}: First existing line.\n"
+        f"## Section: B\n{hosts[1]}: Second existing line.\n"
+    )
+    plan = [
+        {"section_index": 1, "add_words": 30, "before_line": 2},
+        {"section_index": 2, "add_words": 30, "before_line": 4},
+    ]
+    good = f"{hosts[1]}: A brand new grounded remark about evidence."
+    bad = f"{hosts[0]}: See https://example.com/x for more."
+    response = {
+        "insertions": [
+            {"section_index": 1, "turns": [good]},
+            {"section_index": 2, "turns": [bad]},
+        ]
+    }
+    merged = script_gen._merge_length_expansion(dialogue, json.dumps(response), plan, gen)
+    assert merged is not None and good in merged and "https://" not in merged
+    repeated = {"insertions": [{"section_index": 1, "turns": [bad]}] * 2}
+    assert script_gen._merge_length_expansion(dialogue, json.dumps(repeated), plan, gen) is None
+    assert gen.last_rejection == "section_index"
