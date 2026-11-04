@@ -1441,6 +1441,7 @@ def _request_dialogue(
     generation: _GenerationDiagnostics | None = None,
     stage: str = "draft",
     response_format: Mapping[str, str] | None = None,
+    temperature: float = 0.8,
 ) -> str:
     """Post a chat-completion request and return the stripped assistant content.
 
@@ -1482,7 +1483,7 @@ def _request_dialogue(
         generation.calls_used += 1
     payload = {
         "messages": messages,
-        "temperature": 0.8,
+        "temperature": temperature,
         "max_tokens": max_tokens,
         "top_p": 0.95,
     }
@@ -2661,6 +2662,7 @@ def generate_script(
     return script
 
 
+TURN_REPAIR_TEMPERATURE = 0.2
 TURN_REPAIR_MAX_TOKENS = 1500
 TURN_REPAIR_MIN_RATIO = 0.5
 TURN_REPAIR_MAX_RATIO = 1.5
@@ -2858,6 +2860,7 @@ def repair_turns_in_script(
             generation=generation,
             stage="turn_repair",
             response_format={"type": "json_object"},
+            temperature=TURN_REPAIR_TEMPERATURE,
         )
     except ScriptQualityError:
         return None

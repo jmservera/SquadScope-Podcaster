@@ -356,6 +356,28 @@ class TestCanonicalGrounding:
         with pytest.raises(claim_extraction.ClaimGroundingError, match="actual spoken text"):
             self._extract(rows)
 
+    def test_audit_request_is_deterministic(self):
+        seen = []
+        real = _make_transport(json.dumps({"claims": []}))
+
+        def transport(request):
+            seen.append(json.loads(request.data))
+            return real(request)
+
+        try:
+            extract_claims(
+                article_content=self.source,
+                article_url="https://example.com/trusted",
+                config=_mock_config(),
+                script="Theo: " + self.turns[0],
+                token_provider=_fake_token_provider,
+                transport=transport,
+            )
+        except Exception:
+            pass
+        assert seen
+        assert all(p["temperature"] == 0 and p["seed"] == 20261104 for p in seen)
+
     @pytest.mark.parametrize("source_kind", ["article", "breaking_news"])
     def test_prompt_round_trip_preserves_complete_turns_and_exact_bounded_evidence(
         self, source_kind

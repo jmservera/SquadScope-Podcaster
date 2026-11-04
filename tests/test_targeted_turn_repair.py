@@ -106,6 +106,18 @@ def test_repair_turns_in_script_one_json_call_and_fenced_article():
     assert len(seen) == 1
     assert seen[0]["response_format"] == {"type": "json_object"}
     assert script_gen.FENCE_OPEN in seen[0]["messages"][1]["content"]
+    assert seen[0]["temperature"] == 0.2
+
+
+def test_default_dialogue_request_keeps_drafting_temperature():
+    seen = []
+    script_gen._request_dialogue(
+        [{"role": "user", "content": "x"}],
+        url="https://example.com/",
+        token="t",
+        transport=_transport("hello", seen),
+    )
+    assert seen[0]["temperature"] == 0.8
 
 
 @pytest.mark.parametrize(
