@@ -276,11 +276,11 @@ def _patch_tts_network(monkeypatch) -> None:
     monkeypatch.setattr(
         tts.ManagedIdentityTokenCredential, "get_token", lambda self, *scopes: "token"
     )
-    monkeypatch.setattr(tts, "_default_transport", lambda request: b"segment-bytes")
+    monkeypatch.setattr(tts, "_default_transport", lambda request, timeout=None: b"segment-bytes")
 
 
 @pytest.mark.parametrize("failure", ["timeout", "network", "server_error"])
-def test_exact_review_transport_ambiguity_is_not_retried_or_followed_by_later_turns(
+def test_exact_review_transient_failure_retries_bounded_then_fails_closed(
     reviewed_stage, monkeypatch, failure
 ):
     storage, result, _generator, producer, _script = reviewed_stage
@@ -312,7 +312,8 @@ def test_exact_review_transport_ambiguity_is_not_retried_or_followed_by_later_tu
             token_provider=lambda scope: "offline-token",
             transport=transport,
         )
-    assert len(calls) == 1
+    assert len(calls) == 3  # 1 + 2 bounded retries of the same segment
+    assert len(set(calls)) == 1  # no later segment was sent
     first_claim = load_manifest(storage, job_id)["generation"]["synthesis_claim"].copy()
     outcome = job_runner.run_synthesis(
         job_id,
@@ -322,7 +323,7 @@ def test_exact_review_transport_ambiguity_is_not_retried_or_followed_by_later_tu
         transport=transport,
     )
     assert outcome.status == job_runner.STATUS_SKIPPED
-    assert len(calls) == 1
+    assert len(calls) == 3
     assert load_manifest(storage, job_id)["generation"]["synthesis_claim"] == first_claim
     assert len(producer.sent) == 1
 
@@ -794,7 +795,9 @@ def test_run_synthesis_does_not_log_secrets(monkeypatch, caplog):
             transport=lambda request: b"bytes",
         )
     combined = " ".join(record.getMessage() for record in caplog.records)
-    assert "openai.azure.com" not in combined  # full endpoint never logged
+    # Only the bare endpoint host is logged for diagnostics, never the URL.
+    assert "https://" not in combined
+    assert "/openai/deployments" not in combined
     assert "Bearer" not in combined
 
 
