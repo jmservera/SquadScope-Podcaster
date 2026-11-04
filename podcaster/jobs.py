@@ -34,6 +34,19 @@ from podcaster.costs import (
     update_monthly_ledger,
 )
 from podcaster.generation import checksum, generate_artifacts, manifest_bytes
+from podcaster.grounding_gate import (
+    MODE_AUDIT,
+    MODE_BOTH,
+    MODE_CONSTRUCT,
+    apply_gate_provenance,
+    check_script,
+    claims_from_result,
+    enforce,
+    grounding_mode,
+    requested_word_bounds,
+    run_advisory,
+    to_grounding_error,
+)
 from podcaster.prior_episodes import fetch_prior_episode_themes
 from podcaster.provider_filter import FilterSafetyError
 from podcaster.publication_state import canonical_identity_requested
@@ -48,6 +61,7 @@ from podcaster.script_gen import (
     ScriptQualityError,
     generate_script,
     repair_turns_in_script,
+    spoken_turns,
 )
 from podcaster.sections import SectionValidationError, parse_script_sections, sections_to_metadata
 from podcaster.storage import StorageBackend, StoredArtifact, create_storage_backend
@@ -380,6 +394,7 @@ def run_generation_job(
     llm_script: str | None = None
     llm_sections_json: str | None = None
     llm_claims_json: str | None = None
+    grounding_info: dict[str, Any] = {"mode": MODE_AUDIT}
     llm_generation_engine = "local-deterministic-placeholder"
     script_directions = ScriptDirections.from_payload(payload)
     historical_context: HistoricalContext | None = (
@@ -416,7 +431,95 @@ def run_generation_job(
                 rounds = 0
                 targeted_repairs = 0
                 grounding_started = time.monotonic()
-                while True:
+                gate_mode = grounding_mode()
+                grounding_info["mode"] = gate_mode
+                gate_language = str(payload.get("language") or "en")
+                gate_bounds = requested_word_bounds(script_directions)
+                logging.info(
+                    "grounding mode=%s word_bounds=%s",
+                    gate_mode,
+                    "none"
+                    if gate_bounds is None
+                    else "min_only"
+                    if gate_bounds[1] is None
+                    else "range",
+                )
+
+                def _draft(**extra: Any) -> str:
+                    return generate_script(
+                        week=str(payload["week"]),
+                        article_title=str(payload.get("article_title") or ""),
+                        article_url=str(payload["article_url"]),
+                        article_content=payload["article_content"],
+                        article_sha256=str(payload.get("article_sha256") or ""),
+                        config=script_config,
+                        podcast_config=podcast_config,
+                        script_directions=script_directions,
+                        historical_context=historical_context,
+                        breaking_news=payload.get("breaking_news") or None,
+                        generated_at=current,
+                        **extra,
+                    )
+
+                construct_done = False
+                if gate_mode == MODE_CONSTRUCT:
+                    # The deterministic gate decides; the LLM audit is advisory only.
+                    llm_script = _draft()
+
+                    def _repair(script: str, failing: dict[int, str], findings: str) -> str | None:
+                        return repair_turns_in_script(
+                            script,
+                            failing_turns=failing,
+                            findings=findings,
+                            week=str(payload["week"]),
+                            article_title=str(payload.get("article_title") or ""),
+                            article_content=payload["article_content"],
+                            config=script_config,
+                            podcast_config=podcast_config,
+                            script_directions=script_directions,
+                            breaking_news=payload.get("breaking_news") or None,
+                        )
+
+                    outcome = enforce(
+                        llm_script,
+                        article_content=payload["article_content"],
+                        breaking_news=payload.get("breaking_news") or None,
+                        podcast_config=podcast_config,
+                        language=gate_language,
+                        week=str(payload["week"]),
+                        word_bounds=gate_bounds,
+                        repairer=_repair,
+                        started=grounding_started,
+                    )
+                    llm_script = outcome.script
+                    gate_claims = claims_from_result(
+                        outcome.result, str(payload["article_url"]), gate_mode
+                    )
+                    if len(gate_claims) != len(spoken_turns(llm_script, podcast_config)):
+                        raise ClaimGroundingError("ledger rows do not match spoken segments")
+                    llm_claims_json = claims_to_ledger_json(gate_claims)
+                    grounding_info.update(
+                        repair_rounds=outcome.repair_rounds,
+                        downgraded_turns=len(outcome.downgraded),
+                    )
+                    advisory = run_advisory(
+                        lambda audit_transport: extract_claims(
+                            article_content=payload["article_content"],
+                            article_url=str(payload["article_url"]),
+                            config=script_config,
+                            transport=audit_transport,
+                            script=llm_script,
+                            podcast_config=podcast_config,
+                            breaking_news=payload.get("breaking_news") or None,
+                        )
+                    )
+                    grounding_info["advisory_audit"] = {
+                        "status": advisory.status,
+                        "gating": False,
+                        **advisory.detail,
+                    }
+                    construct_done = True
+                while not construct_done:
                     llm_script = None
                     if previous_script is not None and repair_error is not None:
                         rounds += 1
@@ -473,20 +576,7 @@ def run_generation_job(
                             if previous_script is not None
                             else {}
                         )
-                        llm_script = generate_script(
-                            week=str(payload["week"]),
-                            article_title=str(payload.get("article_title") or ""),
-                            article_url=str(payload["article_url"]),
-                            article_content=payload["article_content"],
-                            article_sha256=str(payload.get("article_sha256") or ""),
-                            config=script_config,
-                            podcast_config=podcast_config,
-                            script_directions=script_directions,
-                            historical_context=historical_context,
-                            breaking_news=payload.get("breaking_news") or None,
-                            generated_at=current,
-                            **repair_args,
-                        )
+                        llm_script = _draft(**repair_args)
                     try:
                         claims = extract_claims(
                             article_content=payload["article_content"],
@@ -499,6 +589,22 @@ def run_generation_job(
                         if not claims:
                             raise ClaimGroundingError(
                                 "canonical script grounding returned no claims"
+                            )
+                        if gate_mode == MODE_BOTH:
+                            # Both gates must pass; gate failures reuse the targeted repair loop.
+                            gate = check_script(
+                                llm_script,
+                                article_content=payload["article_content"],
+                                breaking_news=payload.get("breaking_news") or None,
+                                podcast_config=podcast_config,
+                                language=gate_language,
+                                week=str(payload["week"]),
+                                word_bounds=gate_bounds,
+                            )
+                            if not gate.ok:
+                                raise to_grounding_error(gate)
+                            claims = apply_gate_provenance(
+                                claims, gate, str(payload["article_url"]), gate_mode
                             )
                         llm_claims_json = claims_to_ledger_json(claims)
                         break
@@ -693,6 +799,8 @@ def run_generation_job(
         "cost_ledger": cost_ledger,
         "generation": {
             "engine": llm_generation_engine,
+            "grounding_mode": grounding_info["mode"],
+            "grounding": grounding_info,
             "deterministic": llm_script is None,
             "audio_mode": "placeholder",
             "tts_provider": None,
