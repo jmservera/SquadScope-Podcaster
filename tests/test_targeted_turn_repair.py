@@ -284,3 +284,17 @@ def test_rejected_patch_with_deadline_spent_fails_closed(tmp_path, monkeypatch):
         run_generation_job(PAYLOAD, storage=storage, now=NOW)
     assert repairer.call_count == 1
     assert generator.call_count == 3
+
+
+def test_merge_scans_whole_replacement_for_banned_attribution():
+    text = "According to the article: teams saw a fast rollout of the product launch."
+    assert merge({2: text}) is None
+
+
+def test_merge_keeps_ai_voice_disclosure_in_same_turn():
+    disclosure = CONFIG.ai_voice_disclosure
+    script = SCRIPT.replace(FAILING[2], f"{FAILING[2]} {disclosure}")
+    failing = {2: f"{FAILING[2]} {disclosure}"}
+    assert merge({2: f"{GOOD} {disclosure}"}, script=script, failing=failing) is not None
+    assert merge({2: GOOD}, script=script, failing=failing) is None
+    assert merge({2: f"{GOOD} {disclosure}"}) is None

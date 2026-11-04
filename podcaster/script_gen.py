@@ -2701,7 +2701,7 @@ def merge_turn_replacements(
             or any(ord(char) < 32 or ord(char) == 127 for char in text)
             or len(text.splitlines()) != 1
             or re.search(r"https?://|www\.", text, re.IGNORECASE)
-            or find_violations(text)
+            or find_violations(f"{podcast_config.host_a.name}: {text}")
         ):
             return None
         folded = text.casefold()
@@ -2738,6 +2738,13 @@ def merge_turn_replacements(
 
     patched = spoken_turns(merged, podcast_config)
     if len(patched) != len(turns) or len(merged) > MAX_SCRIPT_CHARS + 4000:
+        return None
+    disclosure = " ".join(podcast_config.ai_voice_disclosure.casefold().split())
+    if disclosure and any(
+        (disclosure in " ".join(a.casefold().split()))
+        != (disclosure in " ".join(b.casefold().split()))
+        for a, b in zip(turns, patched)
+    ):
         return None
     if any(
         (patched[number - 1] != replacements[number])
