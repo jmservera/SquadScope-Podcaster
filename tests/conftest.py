@@ -140,3 +140,11 @@ def reviewed_stage(tmp_path, monkeypatch):
         now=datetime(2026, 10, 29, 11, tzinfo=timezone.utc),
     )
     return storage, result, generator, producer, script.encode("utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _no_filter_retry_sleep(monkeypatch):
+    """Filter-evaluation retries must not slow the suite."""
+    from podcaster import provider_filter
+
+    monkeypatch.setattr(provider_filter, "_sleep", lambda seconds: None)

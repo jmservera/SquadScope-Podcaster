@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import re
+import time
+from collections.abc import Callable
 from typing import Any
 from urllib.error import HTTPError
 
@@ -41,15 +45,32 @@ _DETAIL_FIELDS = frozenset(
 )
 
 
+logger = logging.getLogger(__name__)
+
+# The provider could not *evaluate* the content (an error key, nothing flagged). Only
+# such responses may be re-requested; every retry must still return a fully clean,
+# evaluated response before anything is accepted, so no safety check is relaxed.
+MAX_FILTER_EVALUATION_RETRIES = 2
+FILTER_EVALUATION_RETRY_SECONDS = 2.0
+_FILTER_ERROR_MESSAGE = "chat completion reported a filter error"
+_sleep: Callable[[float], None] = time.sleep
+
+
 class FilterSafetyError(ValueError):
     """A provider filtering failure must not produce a publishable artifact."""
 
     def __init__(
-        self, message: str, *, request_id: str | None = None, path: str | None = None
+        self,
+        message: str,
+        *,
+        request_id: str | None = None,
+        path: str | None = None,
+        evaluation_error: bool = False,
     ) -> None:
         super().__init__(message)
         self.request_id = _safe_id(request_id)
         self.path = path
+        self.evaluation_error = evaluation_error
 
     @property
     def reason(self) -> str:
@@ -116,6 +137,54 @@ def _is_error_key(key: Any) -> bool:
     )
 
 
+def _decision_reported(value: Any) -> bool:
+    """True when anything in the response is a positive or non-boolean filter decision."""
+
+    if isinstance(value, dict):
+        for key, field in value.items():
+            if key in ("filtered", "detected") and (not isinstance(field, bool) or field):
+                return True
+            if key == "finish_reason" and field in ("content_filter", "filtered", "filter_error"):
+                return True
+            if _decision_reported(field):
+                return True
+    elif isinstance(value, list):
+        return any(_decision_reported(item) for item in value)
+    return False
+
+
+def request_with_filter_retry(transport: Callable[[Any], bytes], request: Any) -> bytes:
+    """Send ``request``; re-send only when the provider filter errored without a decision.
+
+    Bounded by ``MAX_FILTER_EVALUATION_RETRIES``. Flagged, filtered, malformed and
+    persistent-error responses are returned for the caller's own validation to raise
+    ``FilterSafetyError``, so the fail-closed contract is unchanged.
+    """
+
+    attempt = 0
+    while True:
+        raw = transport(request)
+        try:
+            response = json.loads(raw.decode("utf-8"))
+        except (ValueError, AttributeError):
+            return raw
+        try:
+            validate_chat_filter_response(response)
+            return raw
+        except FilterSafetyError as error:
+            if not error.evaluation_error or attempt >= MAX_FILTER_EVALUATION_RETRIES:
+                return raw
+            attempt += 1
+            logger.warning(
+                "chat filter evaluation error request_id=%s path=%s; re-requesting %d/%d",
+                error.request_id,
+                error.path,
+                attempt,
+                MAX_FILTER_EVALUATION_RETRIES,
+            )
+            _sleep(FILTER_EVALUATION_RETRY_SECONDS * attempt)
+
+
 def validate_chat_filter_response(response: Any) -> None:
     """Inspect reported annotations without requiring optional annotations to exist.
 
@@ -127,7 +196,12 @@ def validate_chat_filter_response(response: Any) -> None:
     request_id = _safe_id(response.get("id"))
 
     def reject(message: str, path: tuple[Any, ...] = ()) -> None:
-        raise FilterSafetyError(message, request_id=request_id, path=_format_path(path) or None)
+        raise FilterSafetyError(
+            message,
+            request_id=request_id,
+            path=_format_path(path) or None,
+            evaluation_error=message == _FILTER_ERROR_MESSAGE and not _decision_reported(response),
+        )
 
     def scan_unknown(value: Any, path: tuple[Any, ...]) -> None:
         if isinstance(value, dict):
