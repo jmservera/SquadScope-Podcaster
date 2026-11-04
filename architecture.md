@@ -98,7 +98,7 @@ Config-driven podcast generation engine. Receives article content and editorial 
    human decisions can revoke queued approval without rearming dispatch, but
    cannot retract provider calls already accepted.
 8. audio.py stitches segments + mixes intro/outro music (ffmpeg, eval=frame volume expressions)
-9. Validation pass (duration, file size, format checks)
+9. Validation pass (duration, bitrate, loudness, format checks)
 10. Artifacts stored to Azure Blob Storage
 11. Validated audio remains staged and is never published by synthesis
 12. Existing nonsnapshot post-audio approval/manual orchestration can run
