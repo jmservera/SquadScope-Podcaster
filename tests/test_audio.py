@@ -36,6 +36,42 @@ def test_valid_audio_metadata_passes() -> None:
     assert result.to_manifest()["metadata"]["duration_seconds"] == 599.0
 
 
+def _mp3(duration: float, size: int) -> AudioMetadata:
+    return AudioMetadata(
+        duration_seconds=duration,
+        loudness_lufs=-16.0,
+        sample_rate_hz=44100,
+        bitrate_bps=192000,
+        channels=1,
+        content_type="audio/mpeg",
+        byte_length=size,
+        sha256="d" * 64,
+    )
+
+
+def test_w45_489_seconds_at_192kbps_passes_size_cap() -> None:
+    result = validate_audio_metadata(_mp3(489.5, 11_749_502))
+
+    assert result.ready is True
+    assert result.errors == []
+
+
+def test_mp3_size_cap_covers_max_duration_at_target_bitrate() -> None:
+    full_length = 600 * 192_000 // 8
+    assert validate_audio_metadata(_mp3(600.0, full_length)).ready is True
+    assert validate_audio_metadata(_mp3(600.0, MAX_FILE_SIZE_BYTES_MP3)).ready is True
+    over = validate_audio_metadata(_mp3(600.0, MAX_FILE_SIZE_BYTES_MP3 + 1))
+    assert over.ready is False
+    assert any("file size must be under" in e for e in over.errors)
+
+
+def test_over_duration_still_fails_even_if_size_fits() -> None:
+    result = validate_audio_metadata(_mp3(601.0, 11_749_502))
+
+    assert result.ready is False
+    assert "audio duration must not exceed 10 minutes without manual override" in result.errors
+
+
 def test_overlong_oversized_audio_fails_without_override() -> None:
     result = validate_audio_metadata(
         AudioMetadata(
@@ -53,7 +89,7 @@ def test_overlong_oversized_audio_fails_without_override() -> None:
     assert result.ready is False
     assert result.status == "failed"
     assert "audio duration must not exceed 10 minutes without manual override" in result.errors
-    assert "audio file size must be under 10 MB" in result.errors
+    assert "audio file size must be under 13.8 MB" in result.errors
 
 
 def test_overlong_audio_with_override_records_warning() -> None:
