@@ -84,8 +84,8 @@ def test_dedicated_identity_latest_secret_and_attributes(configured):
     ):
         transport.return_value.__enter__.return_value = transport.return_value
         client.return_value.get_secret.return_value = secret
-        value, lifetime = recovery._fetch_secret(URI.split("/secrets/")[0], CLIENT_ID)
-        assert value == OLD_SECRET and lifetime == 60
+        value, deadline = recovery._fetch_secret(URI.split("/secrets/")[0], CLIENT_ID)
+        assert value == OLD_SECRET and 0 < deadline - time.monotonic() <= 60
         assert credential.call_args.kwargs["client_id"] == CLIENT_ID
         assert client.call_args.kwargs["vault_url"] == URI.split("/secrets/")[0]
         client.return_value.get_secret.assert_called_once_with("video-recovery-operator-key")
@@ -106,6 +106,9 @@ def test_dedicated_identity_latest_secret_and_attributes(configured):
             with pytest.raises(recovery.RecoveryKeyUnavailable):
                 recovery._fetch_secret(URI.split("/secrets/")[0], CLIENT_ID)
         secret.properties = SimpleNamespace(enabled=True, not_before=None, expires_on=None)
+        secret.value = "non-ascii-☂"
+        with pytest.raises(recovery.RecoveryKeyUnavailable):
+            recovery._fetch_secret(URI.split("/secrets/")[0], CLIENT_ID)
         secret.value = ""
         with pytest.raises(recovery.RecoveryKeyUnavailable):
             recovery._fetch_secret(URI.split("/secrets/")[0], CLIENT_ID)
@@ -121,12 +124,12 @@ def test_single_flight_rotation_and_failure_clear(configured, provider, monkeypa
     def first(_vault, _client):
         started.set()
         assert release.wait(2)
-        return OLD_SECRET, 60
+        return OLD_SECRET, clock[0] + 60
 
     calls = iter(
         (
             first,
-            lambda *_: (NEW_SECRET, 60),
+            lambda *_: (NEW_SECRET, clock[0] + 60),
             lambda *_: (_ for _ in ()).throw(RuntimeError(OLD_SECRET)),
         )
     )
@@ -151,10 +154,21 @@ def test_expiry_never_outlives_secret(configured, provider, monkeypatch):
     clock = [100.0]
     monkeypatch.setattr(recovery.time, "monotonic", lambda: clock[0])
     with patch.object(
-        recovery, "_fetch_secret", side_effect=[(OLD_SECRET, 0.01), (NEW_SECRET, 60)]
+        recovery, "_fetch_secret", side_effect=[(OLD_SECRET, 100.01), (NEW_SECRET, 160.02)]
     ):
         assert provider.get() == OLD_SECRET
         clock[0] += 0.02
+        assert provider.get() == NEW_SECRET
+
+
+def test_expired_result_rejected_before_authorization(configured, provider, monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(recovery.time, "monotonic", lambda: clock[0])
+    with patch.object(
+        recovery, "_fetch_secret", side_effect=[(OLD_SECRET, 99.99), (NEW_SECRET, 160)]
+    ):
+        with pytest.raises(recovery.RecoveryKeyUnavailable):
+            provider.get()
         assert provider.get() == NEW_SECRET
 
 
@@ -166,9 +180,9 @@ def test_timed_out_fetch_never_authorizes_late_old_value(configured, provider, m
     def late(_vault, _client):
         started.set()
         assert release.wait(2)
-        return OLD_SECRET, 60
+        return OLD_SECRET, time.monotonic() + 60
 
-    results = iter((late, lambda *_: (NEW_SECRET, 60)))
+    results = iter((late, lambda *_: (NEW_SECRET, time.monotonic() + 60)))
     with patch.object(recovery, "_fetch_secret", side_effect=lambda *args: next(results)(*args)):
         with pytest.raises(recovery.RecoveryKeyUnavailable):
             provider.get()
@@ -224,6 +238,8 @@ def test_guard_rejects_drift_partial_and_unsafe_network(monkeypatch):
                 }
             ]
         if args[:3] == ("role", "assignment", "list"):
+            assert "--scope" in args
+            assert "--all" not in args
             return [
                 {
                     "scope": "/id/podrv123456789abcd/secrets/video-recovery-operator-key",
@@ -237,6 +253,10 @@ def test_guard_rejects_drift_partial_and_unsafe_network(monkeypatch):
     assert guard.live_state("rg") == "inactive"
     with pytest.raises(ValueError, match="existing VNet"):
         guard.check("rg", "inactive", "inactive", "false", ("", "", ""), "false")
+    with pytest.raises(ValueError, match="existing VNet"):
+        guard.check("rg", "inactive", "inactive", "false", ("", "", ""), "FALSE")
+    with pytest.raises(ValueError, match="Invalid deployVnet"):
+        guard.check("rg", "inactive", "inactive", "false", ("", "", ""), "no")
     with pytest.raises(ValueError, match="differs"):
         guard.check("rg", "active", "active", "false", ("", "", ""), "true")
     with pytest.raises(ValueError, match="pinned"):
@@ -249,6 +269,8 @@ def test_guard_rejects_drift_partial_and_unsafe_network(monkeypatch):
         {"name": guard.RECOVERY_CLIENT, "value": CLIENT_ID},
     ]
     assert guard.live_state("rg") == "active"
+    with pytest.raises(ValueError, match="pinned image digests"):
+        guard.check("rg", "active", "active", "false", ("latest", "latest", "latest"), "true")
     inactive["properties"]["template"]["containers"][0]["env"][0]["value"] = URI + "/old-version"
     with pytest.raises(ValueError, match="dedicated private vault"):
         guard.live_state("rg")

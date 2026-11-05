@@ -72,6 +72,7 @@ def _fetch_secret(vault_url: str, client_id: str) -> tuple[str, float]:
             if (
                 not isinstance(secret.value, str)
                 or not secret.value
+                or not all(0x21 <= ord(char) <= 0x7E for char in secret.value)
                 or attributes.enabled is not True
                 or (attributes.not_before is not None and attributes.not_before > now)
                 or (attributes.expires_on is not None and attributes.expires_on <= now)
@@ -80,7 +81,7 @@ def _fetch_secret(vault_url: str, client_id: str) -> tuple[str, float]:
             lifetime = _TTL_SECONDS
             if attributes.expires_on is not None:
                 lifetime = min(lifetime, (attributes.expires_on - now).total_seconds())
-            return secret.value, lifetime
+            return secret.value, time.monotonic() + lifetime
         finally:
             credential.close()
 
@@ -106,6 +107,7 @@ class RecoveryOperatorKey:
         return True
 
     def get(self) -> str:
+        request_deadline = time.monotonic() + _FETCH_TIMEOUT_SECONDS
         try:
             config = _configuration()
         except RecoveryKeyUnavailable:
@@ -114,7 +116,7 @@ class RecoveryOperatorKey:
         if config is None:
             self.clear()
             raise RecoveryKeyUnavailable
-        if not self._lock.acquire(timeout=_FETCH_TIMEOUT_SECONDS):
+        if not self._lock.acquire(timeout=max(0, request_deadline - time.monotonic())):
             raise RecoveryKeyUnavailable
         try:
             if config != self._config:
@@ -132,11 +134,11 @@ class RecoveryOperatorKey:
             future = self._executor.submit(_fetch_secret, *config)
             self._pending = future
             try:
-                value, lifetime = future.result(timeout=_FETCH_TIMEOUT_SECONDS)
-                if not value or lifetime <= 0:
+                value, deadline = future.result(timeout=max(0, request_deadline - time.monotonic()))
+                if not value or deadline <= time.monotonic():
                     raise RecoveryKeyUnavailable
                 self._value = value
-                self._deadline = time.monotonic() + min(lifetime, _TTL_SECONDS)
+                self._deadline = deadline
                 self._pending = None
                 return value
             except Exception:

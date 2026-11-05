@@ -55,7 +55,6 @@ def _recovery_resources(resource_group: str, api_name: str) -> tuple[str, str, s
         identity["principalId"],
         "--scope",
         secret_scope,
-        "--all",
     )
     if not any(
         role.get("scope", "").lower() == secret_scope.lower()
@@ -124,6 +123,8 @@ def check(
     live = live_state(resource_group)
     if live != expected and not (live == "absent" and expected == "inactive"):
         raise ValueError("Recovery API live state differs from protected expected-live state")
+    if desired == "active" and not all(_DIGEST.fullmatch(image) for image in images):
+        raise ValueError("Active recovery deployment requires pinned image digests")
     if desired != expected:
         if transition_approved != "true" or not all(_DIGEST.fullmatch(image) for image in images):
             raise ValueError("Recovery transition requires separate approval and pinned images")
@@ -134,7 +135,9 @@ def check(
         if name is None:
             raise ValueError("Recovery activation requires an existing API")
         _recovery_resources(resource_group, name)
-    if deploy_vnet == "false":
+    if deploy_vnet.lower() not in {"true", "false"}:
+        raise ValueError("Invalid deployVnet state")
+    if deploy_vnet.lower() == "false":
         vnets = _az("network", "vnet", "list", "-g", resource_group)
         if vnets:
             raise ValueError("Refusing full-stack deployment without the existing VNet")

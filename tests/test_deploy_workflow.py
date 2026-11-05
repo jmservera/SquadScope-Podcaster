@@ -131,6 +131,15 @@ def _workflow_text() -> str:
     return WORKFLOW.read_text(encoding="utf-8")
 
 
+def test_manual_recovery_transition_forwards_reviewed_image_digests():
+    manual = (ROOT / ".github/workflows/deploy-azure.yml").read_text(encoding="utf-8")
+    for image in ("synthesis_image", "api_image", "ui_image"):
+        assert f"      {image}:" in manual
+        assert f"{image}: ${{{{ inputs.{image} }}}}" in manual
+    assert "deploy_vnet: ${{ inputs.deploy_vnet }}" in manual
+    assert "RECOVERY_OPERATOR_STATE" in REUSABLE_WORKFLOW.read_text(encoding="utf-8")
+
+
 def test_api_youtube_status_credentials_are_optional_secret_refs_without_mutation_flags():
     main = BICEP.read_text()
     api = (ROOT / "infra/modules/api.bicep").read_text()

@@ -1136,7 +1136,7 @@ def _require_video_recovery_operator(key: str | None) -> None:
         raise HTTPException(
             status_code=503, detail="Recovery operator boundary unavailable"
         ) from None
-    if not key or not hmac.compare_digest(key, configured):
+    if not key or not key.isascii() or not hmac.compare_digest(key, configured):
         raise HTTPException(status_code=403, detail="Recovery operator authorization required")
 
 

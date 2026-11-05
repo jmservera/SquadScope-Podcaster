@@ -646,6 +646,16 @@ class TestEnqueueVideo:
 
 
 class TestPrivateVideoRecoveryBoundary:
+    def test_non_ascii_header_is_denied_not_server_error(self):
+        from fastapi import HTTPException
+
+        from podcaster.monitoring import _require_video_recovery_operator
+
+        with patch("podcaster.monitoring.recovery_operator_key.get", return_value="valid"):
+            with pytest.raises(HTTPException) as failure:
+                _require_video_recovery_operator("non-ascii-☂")
+        assert failure.value.status_code == 403
+
     def test_api_auth_remains_first_on_both_routes(self, client, monkeypatch):
         monkeypatch.setenv("PODCASTER_API_KEY", "existing-api-key")
         for route in ("", "/epoch/dispatch"):
