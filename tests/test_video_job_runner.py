@@ -658,6 +658,278 @@ def test_final_provider_adapters_refuse_lost_epoch_and_manifest_marker(storage, 
     assert result.details["retry_blocked"] is True
 
 
+@pytest.mark.parametrize("manifest_state", ["missing", "unmarked", "cleared"])
+def test_candidate_without_recovery_record_never_reaches_provider(
+    storage, dry_config, manifest_state
+):
+    from podcaster.publish import upload_video_to_episode
+    from podcaster.video.distribution import upload_to_youtube
+
+    job_id = "podcast-2026-W44-00bc06dfb6e2"
+    if manifest_state != "missing":
+        storage.set_manifest(
+            job_id,
+            {
+                "job_id": job_id,
+                "generation": (
+                    {"video_recovery_epoch_id": None} if manifest_state == "cleared" else {}
+                ),
+            },
+        )
+    youtube_transport = MagicMock()
+    with pytest.raises(recovery.RecoveryError, match="disappeared"):
+        upload_to_youtube(
+            Path("not-created.mp4"),
+            "Private episode",
+            "Private only",
+            dry_config,
+            transport=youtube_transport,
+            recovery_storage=storage,
+            recovery_job_id=job_id,
+        )
+    with patch("podcaster.publish._resolve_publish_media_path") as spotify_media:
+        result = upload_video_to_episode(
+            Path("not-created.mp4"),
+            publication_storage=storage,
+            publication_identity_context=PublicationIdentity(
+                job_id, "2026-W44", "40269058395", "a" * 64, "b" * 64
+            ),
+        )
+    spotify_media.assert_not_called()
+    assert result.status == "failed"
+    assert result.details["retry_blocked"] is True
+    youtube_transport.assert_not_called()
+
+    document = {
+        "publication_identity": {"accepted_job_id": job_id},
+        "media_review": {"status": "approved"},
+        "providers": {"youtube": {"context": {}}, "spotify": {"context": {}}},
+    }
+    repository = MagicMock(storage=storage)
+    with pytest.raises(DistributionOutboxError, match="disappeared"):
+        dispatch_reviewed_video(repository, MagicMock(), document)
+    repository.authorize_dispatch.assert_not_called()
+
+
+def test_cleared_manifest_marker_with_record_still_blocks_worker_and_adapters(storage, dry_config):
+    from podcaster.publish import upload_video_to_episode
+    from podcaster.video.distribution import upload_to_youtube
+
+    job_id = "podcast-2026-W45-9798e93edc06"
+    epoch_id = "a" * 32
+    storage.set_manifest(job_id, {"job_id": job_id, "generation": {}})
+    recovery._update(
+        storage,
+        job_id,
+        lambda document: document["epochs"].append({"epoch_id": epoch_id, "state": "completed"}),
+    )
+    youtube_transport = MagicMock()
+    with pytest.raises(recovery.RecoveryError, match="recovery provider upload"):
+        upload_to_youtube(
+            Path("not-created.mp4"),
+            "Private episode",
+            "Private only",
+            dry_config,
+            transport=youtube_transport,
+            recovery_storage=storage,
+            recovery_job_id=job_id,
+        )
+    with patch("podcaster.publish._resolve_publish_media_path") as spotify_media:
+        result = upload_video_to_episode(
+            Path("not-created.mp4"),
+            publication_storage=storage,
+            publication_identity_context=PublicationIdentity(
+                job_id, "2026-W45", "41395629030", "a" * 64, "b" * 64
+            ),
+        )
+    assert result.status == "failed"
+    youtube_transport.assert_not_called()
+    spotify_media.assert_not_called()
+    document = {
+        "publication_identity": {"accepted_job_id": job_id},
+        "media_review": {"status": "approved"},
+        "providers": {"youtube": {"context": {}}, "spotify": {"context": {}}},
+    }
+    repository = MagicMock(storage=storage)
+    with pytest.raises(DistributionOutboxError, match="recovery provider upload"):
+        dispatch_reviewed_video(repository, MagicMock(), document)
+    repository.authorize_dispatch.assert_not_called()
+
+
+def test_historical_budget_terminalizer_cannot_replace_interleaved_recovery_completion(
+    storage, monkeypatch
+):
+    from podcaster.video.job_runner import _terminalize_expired_video_budget
+
+    job_id = "podcast-2026-W44-00bc06dfb6e2"
+    now = datetime.now(timezone.utc)
+    _stage_recovery(storage, job_id, now)
+    budget = VideoStageBudget.start(now_utc=now - timedelta(seconds=5400))
+    original_update = storage.update_bytes
+    completed = {
+        "status": "completed",
+        "distribution": {"outbox_id": "b" * 64},
+    }
+
+    def interleave(path, content_type, update):
+        if path == manifest_path(job_id):
+            recovery._update(
+                storage,
+                job_id,
+                lambda document: document["epochs"].append(
+                    {"epoch_id": "a" * 32, "state": "completed"}
+                ),
+            )
+            storage.set_manifest(
+                job_id,
+                {
+                    "job_id": job_id,
+                    "generation": {
+                        "video_recovery_epoch_id": "a" * 32,
+                        "video_runner": completed,
+                    },
+                },
+            )
+            monkeypatch.setattr(storage, "update_bytes", original_update)
+        return original_update(path, content_type, update)
+
+    monkeypatch.setattr(storage, "update_bytes", interleave)
+    with pytest.raises(recovery.RecoveryError, match="completed"):
+        _terminalize_expired_video_budget(storage, job_id, budget)
+    assert (
+        json.loads(storage.get_bytes(manifest_path(job_id)))["generation"]["video_runner"]
+        == completed
+    )
+
+
+@pytest.mark.parametrize("reason", ["RuntimeError", "watermark_unavailable", "watermark_transient"])
+def test_reclaimed_worker_error_cannot_replace_successor_completion(storage, reason):
+    from podcaster.video.job_runner import _record_video_state
+
+    job_id = "podcast-2026-W45-9798e93edc06"
+    epoch_id = "a" * 32
+    completed = {"status": "completed", "distribution": {"outbox_id": "b" * 64}}
+    storage.set_manifest(
+        job_id,
+        {
+            "job_id": job_id,
+            "generation": {"video_recovery_epoch_id": epoch_id, "video_runner": completed},
+        },
+    )
+    recovery._update(
+        storage,
+        job_id,
+        lambda document: document["epochs"].append(
+            {"epoch_id": epoch_id, "state": "completed", "owner": "new-worker"}
+        ),
+    )
+    with pytest.raises(recovery.RecoveryError, match="completed"):
+        _record_video_state(
+            storage,
+            job_id,
+            {"status": "failed", "reason": reason},
+            recovery_epoch_id=epoch_id,
+            recovery_owner="old-worker",
+        )
+    assert (
+        json.loads(storage.get_bytes(manifest_path(job_id)))["generation"]["video_runner"]
+        == completed
+    )
+
+
+def test_owned_completion_can_resume_evidence_without_replacing_completed_runner(storage):
+    from podcaster.video.budget import TimingEvidenceKind, VideoStage
+    from podcaster.video.job_runner import _append_video_timing_evidence, _record_video_state
+
+    job_id = "podcast-2026-W44-00bc06dfb6e2"
+    epoch_id = "a" * 32
+    owner = "recovery-worker"
+    now = datetime.now(timezone.utc)
+    completed = {"status": "completed", "distribution": {"outbox_id": "b" * 64}}
+    storage.set_manifest(
+        job_id,
+        {
+            "job_id": job_id,
+            "generation": {"video_recovery_epoch_id": epoch_id, "video_runner": completed},
+        },
+    )
+    recovery._update(
+        storage,
+        job_id,
+        lambda document: document["epochs"].append(
+            {
+                "epoch_id": epoch_id,
+                "state": "running",
+                "owner": owner,
+                "lease_expires_at": (now + timedelta(seconds=900)).isoformat(),
+            }
+        ),
+    )
+    _append_video_timing_evidence(
+        storage,
+        job_id,
+        VideoStageBudget.start(now_utc=now),
+        kind=TimingEvidenceKind.ATTEMPT,
+        stage=VideoStage.PREFLIGHT,
+        recovery_epoch_id=epoch_id,
+        recovery_owner=owner,
+    )
+    with pytest.raises(recovery.RecoveryError, match="completed"):
+        _record_video_state(
+            storage,
+            job_id,
+            {"status": "failed", "reason": "generic"},
+            recovery_epoch_id=epoch_id,
+            recovery_owner=owner,
+        )
+    assert (
+        json.loads(storage.get_bytes(manifest_path(job_id)))["generation"]["video_runner"]
+        == completed
+    )
+
+
+def test_reclaimed_worker_error_cannot_overwrite_new_owner_before_completion(storage):
+    from podcaster.video.job_runner import _record_video_state
+
+    job_id = "podcast-2026-W45-9798e93edc06"
+    epoch_id = "a" * 32
+    now = datetime.now(timezone.utc)
+    runner = {"status": "running", "owner": "new-worker"}
+    storage.set_manifest(
+        job_id,
+        {
+            "job_id": job_id,
+            "generation": {
+                "video_recovery_epoch_id": epoch_id,
+                "video_runner": runner,
+            },
+        },
+    )
+    recovery._update(
+        storage,
+        job_id,
+        lambda document: document["epochs"].append(
+            {
+                "epoch_id": epoch_id,
+                "state": "running",
+                "owner": "new-worker",
+                "lease_expires_at": (now + timedelta(seconds=900)).isoformat(),
+            }
+        ),
+    )
+    with pytest.raises(recovery.RecoveryError, match="stale"):
+        _record_video_state(
+            storage,
+            job_id,
+            {"status": "failed", "reason": "ffmpeg_error"},
+            recovery_epoch_id=epoch_id,
+            recovery_owner="old-worker",
+        )
+    assert (
+        json.loads(storage.get_bytes(manifest_path(job_id)))["generation"]["video_runner"] == runner
+    )
+
+
 def test_video_publication_signal_failure_preserves_provider_outcome(monkeypatch, caplog):
     from podcaster.video import job_runner
 

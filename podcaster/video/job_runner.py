@@ -90,6 +90,7 @@ from podcaster.video.perf import PipelineTimings
 from podcaster.video.process import MediaValidationError, ensure_ffprobe_available
 from podcaster.video.recovery import (
     RecoveryError,
+    assert_manifest_writer,
     bind_private_media,
     current_epoch,
     expire_epoch,
@@ -123,6 +124,26 @@ from podcaster.video.youtube_reconcile import IDENTITY_SCHEME as YOUTUBE_IDENTIT
 from podcaster.video.youtube_reconcile import youtube_identity_tag
 
 logger = logging.getLogger("podcaster.video.job_runner")
+
+
+def _fence_manifest(
+    storage: StorageBackend,
+    job_id: str,
+    generation: dict[str, Any],
+    epoch_id: str | None,
+    owner: str | None,
+    *,
+    replace_runner: bool = False,
+) -> None:
+    assert_manifest_writer(
+        storage,
+        job_id,
+        generation,
+        epoch_id=epoch_id,
+        owner=owner,
+        replace_runner=replace_runner,
+    )
+
 
 VIDEO_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-video-queue-v1"
 
@@ -561,6 +582,8 @@ def _record_video_state(
     *,
     authorize=None,
     fail_closed: bool = False,
+    recovery_epoch_id: str | None = None,
+    recovery_owner: str | None = None,
 ) -> None:
     """Record video runner state in the manifest."""
     from podcaster.generation import manifest_bytes
@@ -572,13 +595,21 @@ def _record_video_state(
         if not isinstance(doc, dict):
             doc = {}
         generation = doc.setdefault("generation", {})
+        _fence_manifest(
+            storage,
+            job_id,
+            generation,
+            recovery_epoch_id,
+            recovery_owner,
+            replace_runner=True,
+        )
         generation["video_runner"] = state
         return manifest_bytes(doc)
 
     try:
         storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
-    except Exception:
-        if fail_closed:
+    except Exception as exc:
+        if fail_closed or isinstance(exc, RecoveryError):
             raise
         logger.warning("failed to record video state for job_id=%s", job_id, exc_info=True)
 
@@ -592,6 +623,8 @@ def _append_video_timing_evidence(
     stage: VideoStage,
     reason: str | None = None,
     details: dict[str, Any] | None = None,
+    recovery_epoch_id: str | None = None,
+    recovery_owner: str | None = None,
 ) -> None:
     """Append bounded timing evidence to the staged manifest."""
     from podcaster.generation import manifest_bytes
@@ -616,6 +649,7 @@ def _append_video_timing_evidence(
         if not isinstance(generation, dict):
             generation = {}
             document["generation"] = generation
+        _fence_manifest(storage, job_id, generation, recovery_epoch_id, recovery_owner)
         evidence = generation.setdefault(
             "video_timing_evidence",
             {"schema_version": 1, "max_events": 256, "events": [], "dropped": 0},
@@ -635,6 +669,8 @@ def _append_video_timing_evidence(
 
     try:
         storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
+    except RecoveryError:
+        raise
     except TransientVideoError:
         raise
     except Exception:
@@ -688,6 +724,9 @@ def _persist_video_budget_in_manifest(
     storage: StorageBackend,
     job_id: str,
     budget: VideoStageBudget,
+    *,
+    recovery_epoch_id: str | None = None,
+    recovery_owner: str | None = None,
 ) -> None:
     """Mirror the authoritative lifecycle budget into a valid staged manifest."""
     from podcaster.generation import manifest_bytes
@@ -701,6 +740,7 @@ def _persist_video_budget_in_manifest(
         generation = document.setdefault("generation", {})
         if not isinstance(generation, dict):
             raise TransientVideoError(f"generation state for job_id={job_id} is not a dict")
+        _fence_manifest(storage, job_id, generation, recovery_epoch_id, recovery_owner)
         generation["video_budget"] = budget.to_dict()
         return manifest_bytes(document)
 
@@ -714,6 +754,8 @@ def _persist_video_budget_in_manifest(
         raise
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise TransientVideoError(f"invalid manifest for job_id={job_id}") from exc
+    except RecoveryError:
+        raise
     except Exception as exc:
         raise TransientVideoError(f"could not persist video budget for job_id={job_id}") from exc
 
@@ -729,6 +771,7 @@ def _terminalize_expired_video_budget(
             raise TransientVideoError(f"no manifest for job_id={job_id}")
         document = json.loads(content)
         generation = document["generation"]
+        _fence_manifest(storage, job_id, generation, None, None)
         history = generation.setdefault("video_attempt_history", [])
         if not isinstance(history, list):
             raise TransientVideoError(f"invalid video attempt history for job_id={job_id}")
@@ -752,6 +795,8 @@ def _terminalize_expired_video_budget(
 
     try:
         storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
+    except RecoveryError:
+        raise
     except Exception as exc:
         raise TransientVideoError(
             f"could not terminalize spent video budget for job_id={job_id}"
@@ -777,6 +822,7 @@ def _record_video_publish(
         if not isinstance(doc, dict):
             doc = {}
         generation = doc.setdefault("generation", {})
+        _fence_manifest(storage, job_id, generation, None, None)
         video_publish = generation.setdefault("video_publish", {})
         if not isinstance(video_publish, dict):
             video_publish = {}
@@ -786,8 +832,8 @@ def _record_video_publish(
 
     try:
         storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
-    except Exception:
-        if fail_closed:
+    except Exception as exc:
+        if fail_closed or isinstance(exc, RecoveryError):
             raise
         logger.warning(
             "failed to record video publish state for job_id=%s platform=%s",
@@ -797,7 +843,13 @@ def _record_video_publish(
         )
 
 
-def _ensure_video_publish_run(storage: StorageBackend, job_id: str) -> str:
+def _ensure_video_publish_run(
+    storage: StorageBackend,
+    job_id: str,
+    *,
+    recovery_epoch_id: str | None = None,
+    recovery_owner: str | None = None,
+) -> str:
     from podcaster.generation import manifest_bytes
 
     captured: dict[str, str] = {}
@@ -807,6 +859,7 @@ def _ensure_video_publish_run(storage: StorageBackend, job_id: str) -> str:
             raise TransientVideoError(f"no staged manifest for job_id={job_id}")
         document = json.loads(content.decode("utf-8"))
         generation = document.setdefault("generation", {})
+        _fence_manifest(storage, job_id, generation, recovery_epoch_id, recovery_owner)
         existing = generation.get("video_publish_run_id")
         request = document.get("request")
         request_run_id = request.get("publish_run_id") if isinstance(request, dict) else None
@@ -1244,7 +1297,13 @@ def run_video_generation(
         on_budget_resolved(stage_budget)
     if _already_processed(manifest):
         if owns_budget:
-            _persist_video_budget_in_manifest(storage, job_id, stage_budget)
+            _persist_video_budget_in_manifest(
+                storage,
+                job_id,
+                stage_budget,
+                recovery_epoch_id=recovery_epoch_id,
+                recovery_owner=recovery_owner,
+            )
         _append_video_timing_evidence(
             storage,
             job_id,
@@ -1252,6 +1311,8 @@ def run_video_generation(
             kind=TimingEvidenceKind.ATTEMPT,
             stage=VideoStage.PREFLIGHT,
             reason="attempt",
+            recovery_epoch_id=recovery_epoch_id,
+            recovery_owner=recovery_owner,
         )
         logger.info("video skipped job_id=%s reason=%s", job_id, REASON_ALREADY_PROCESSED)
         return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_ALREADY_PROCESSED)
@@ -1306,7 +1367,13 @@ def run_video_generation(
         return min(remaining)
 
     if owns_budget:
-        _persist_video_budget_in_manifest(storage, job_id, stage_budget)
+        _persist_video_budget_in_manifest(
+            storage,
+            job_id,
+            stage_budget,
+            recovery_epoch_id=recovery_epoch_id,
+            recovery_owner=recovery_owner,
+        )
     _append_video_timing_evidence(
         storage,
         job_id,
@@ -1314,6 +1381,8 @@ def run_video_generation(
         kind=TimingEvidenceKind.ATTEMPT,
         stage=VideoStage.PREFLIGHT,
         reason="attempt",
+        recovery_epoch_id=recovery_epoch_id,
+        recovery_owner=recovery_owner,
     )
 
     # Claim pipeline lock — prevent concurrent audio synthesis on same job
@@ -1482,6 +1551,8 @@ def run_video_generation(
                         "reason": REASON_INVALID_PLAN,
                         "at": _iso(current),
                     },
+                    recovery_epoch_id=recovery_epoch_id,
+                    recovery_owner=recovery_owner,
                 )
                 _release_editor_lease(scratch, scratch_job_id, run_id)
                 return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_INVALID_PLAN)
@@ -1727,7 +1798,12 @@ def run_video_generation(
             published = None
             if isinstance(generation, dict) and isinstance(generation.get("video_publish"), dict):
                 published = generation["video_publish"]
-            publish_run_id = _ensure_video_publish_run(storage, job_id)
+            publish_run_id = _ensure_video_publish_run(
+                storage,
+                job_id,
+                recovery_epoch_id=recovery_epoch_id,
+                recovery_owner=recovery_owner,
+            )
             try:
                 publication_context = publication_identity(manifest, job_id, publish_run_id)
             except PublicationStateError as exc:
@@ -2144,6 +2220,8 @@ def run_video_generation(
                     },
                     authorize=lambda: ownership_guard.assert_permit(failure_permit),
                     fail_closed=True,
+                    recovery_epoch_id=recovery_epoch_id,
+                    recovery_owner=recovery_owner,
                 )
                 ownership_guard.complete(failure_permit, target=manifest_path(job_id))
                 message = (
@@ -2200,6 +2278,8 @@ def run_video_generation(
                 },
                 authorize=lambda: ownership_guard.assert_permit(success_permit),
                 fail_closed=True,
+                recovery_epoch_id=recovery_epoch_id,
+                recovery_owner=recovery_owner,
             )
             ownership_guard.complete(success_permit, target=manifest_path(job_id))
 
@@ -2258,6 +2338,8 @@ def run_video_generation(
                 "failure_family": REASON_WATERMARK_TRANSIENT,
                 "at": _iso(current),
             },
+            recovery_epoch_id=recovery_epoch_id,
+            recovery_owner=recovery_owner,
         )
         _release_editor_lease(scratch, scratch_job_id, run_id)
         raise TransientVideoError(str(exc)) from exc
@@ -2286,6 +2368,8 @@ def run_video_generation(
                 "error": str(exc),
                 "at": _iso(current),
             },
+            recovery_epoch_id=recovery_epoch_id,
+            recovery_owner=recovery_owner,
         )
         _release_editor_lease(scratch, scratch_job_id, run_id)
         raise PermanentVideoError(
@@ -2297,6 +2381,8 @@ def run_video_generation(
                 **exc.details,
             },
         ) from exc
+    except RecoveryError:
+        raise
     except Exception as exc:
         # ffmpeg/ffprobe failures surface as CalledProcessError whose stderr
         # carries the real cause (e.g. "No space left on device").  The default
@@ -2325,6 +2411,8 @@ def run_video_generation(
                 "reason": type(exc).__name__,
                 "at": _iso(current),
             },
+            recovery_epoch_id=recovery_epoch_id,
+            recovery_owner=recovery_owner,
         )
         _release_editor_lease(scratch, scratch_job_id, run_id)
         raise TransientVideoError(f"video generation failed for job_id={job_id}") from exc
@@ -2576,6 +2664,10 @@ def process_message(
             recovery_epoch_id=recovery_epoch_id,
             recovery_owner=recovery_owner if recovery_epoch_id is not None else None,
         )
+    except RecoveryError as exc:
+        logger.warning("video attempt fenced job_id=%s reason=%s", job_id, exc)
+        queue.delete_message(message)
+        return VideoOutcome(job_id, STATUS_FAILED, reason="recovery_fenced")
     except PermanentVideoError as exc:
         logger.error("terminal video failure job_id=%s reason=%s", job_id, exc.reason)
         details: dict[str, Any] = {"job_id": job_id, "reason": exc.reason}

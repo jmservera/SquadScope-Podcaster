@@ -163,7 +163,7 @@ def assert_private_hold(
         return
     entry = current_epoch(storage, job_id)
     if entry is None:
-        if epoch_id is not None:
+        if is_candidate(job_id) or epoch_id is not None:
             raise RecoveryError("recovery metadata disappeared")
         return
     if epoch_id is not None and entry.get("epoch_id") != epoch_id:
@@ -179,14 +179,53 @@ def assert_provider_write_allowed(
     """Re-read both durable recovery fences at the irreversible adapter edge."""
     assert_private_hold(storage, job_id, epoch_id=epoch_id)
     raw = storage.get_bytes(f"jobs/{job_id}/manifest.json")
-    if raw is not None:
-        try:
-            manifest = json.loads(raw)
-            marker = manifest.get("generation", {}).get("video_recovery_epoch_id")
-        except (ValueError, AttributeError, TypeError) as exc:
-            raise RecoveryError("provider-write manifest cannot be verified") from exc
-        if marker is not None:
-            raise RecoveryError("recovery provider upload is not authorized in this release")
+    if raw is None:
+        if is_candidate(job_id) or epoch_id is not None:
+            raise RecoveryError("provider-write manifest is missing")
+        return
+    try:
+        manifest = json.loads(raw)
+        marker = manifest.get("generation", {}).get("video_recovery_epoch_id")
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise RecoveryError("provider-write manifest cannot be verified") from exc
+    if marker is not None:
+        raise RecoveryError("recovery provider upload is not authorized in this release")
+
+
+def assert_manifest_writer(
+    storage: Any,
+    job_id: str,
+    generation: dict[str, Any],
+    *,
+    epoch_id: str | None,
+    owner: str | None,
+    replace_runner: bool = False,
+) -> None:
+    """Fence a video attempt against the current epoch and CAS manifest image."""
+    if not is_candidate(job_id) and epoch_id is None:
+        return
+    entry = current_epoch(storage, job_id)
+    marker = generation.get("video_recovery_epoch_id")
+    runner = generation.get("video_runner")
+    if (
+        isinstance(runner, dict)
+        and runner.get("status") == "completed"
+        and (epoch_id is None or replace_runner)
+    ):
+        raise RecoveryError("completed video runner cannot be replaced")
+    if epoch_id is None:
+        if entry is not None or marker is not None:
+            raise RecoveryError("historical video attempt is fenced by recovery")
+        return
+    if (
+        entry is None
+        or entry.get("epoch_id") != epoch_id
+        or entry.get("state") != "running"
+        or entry.get("owner") != owner
+        or marker != epoch_id
+    ):
+        raise RecoveryError("recovery manifest writer is stale")
+    assert_owner(storage, job_id, epoch_id, owner)
 
 
 def assert_reserved_inputs(

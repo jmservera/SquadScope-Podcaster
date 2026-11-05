@@ -443,8 +443,13 @@ Recovered video can be privately rendered and archived to a held, media-bound
 outbox only. The original job and epoch are persisted with its provider legs;
 the asynchronous distribution worker re-checks the durable hold before and
 during dispatch to both YouTube and Spotify, even if a generic media review
-record exists. This release has **no transition that permits recovered provider
-uploads**. Do not invoke production recovery while provider inventory remains
+record exists. Both final adapters also deny either candidate if its recovery
+record is missing, even when the manifest marker is absent or cleared; missing
+metadata never proves a non-recovery identity. Every video-runner manifest CAS
+rechecks the epoch and owner, and an older or reclaimed attempt cannot replace
+a completed private recovery runner or its held-outbox reference. This release
+has **no transition that permits recovered provider uploads**. Do not invoke
+production recovery while provider inventory remains
 incomplete; no provider draft/unlisted upload, public promotion, or Spotify
 auto-live is authorized by script approval or by deploying the code.
 The legacy Spotify video path can live-publish independently of outbox approval;
