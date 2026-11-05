@@ -1005,6 +1005,56 @@ class TestRunVideoGeneration:
         assert {"recording", "composition", "distribution"} <= phase_names
         assert perf["total_wall_seconds"] >= 0.0
 
+    @patch("podcaster.video.job_runner._probe_audio_duration", return_value=60.0)
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_ordinary_spotify_runner_passes_typed_identity_to_real_adapter(
+        self, mock_compose, mock_record, _probe, storage, monkeypatch
+    ):
+        from podcaster.video import distribution
+
+        job_id = "video-ordinary-spotify"
+        storage.set_manifest(
+            job_id,
+            {
+                "job_id": job_id,
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {
+                    "article_title": "Ordinary draft",
+                    "week": "2026-W37",
+                    "publish_run_id": "123",
+                    "article_sha256": "a" * 64,
+                    "manifest_sha256": "b" * 64,
+                },
+                "lifecycle": {"transitions": [{"to": "accepted"}]},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        mock_record.return_value = MagicMock(recorded=[])
+
+        def compose(*args, output_path, **kwargs):
+            output_path.write_bytes(b"V" * 2048)
+            return MagicMock(duration_seconds=60.0, segment_count=2, has_audio=False)
+
+        mock_compose.side_effect = compose
+        monkeypatch.delenv("DISTRIBUTION_OUTBOX_ENABLED", raising=False)
+        adapter = MagicMock(wraps=distribution.upload_to_spotify_episode)
+        monkeypatch.setattr(distribution, "upload_to_spotify_episode", adapter)
+        result = run_video_generation(
+            job_id,
+            storage,
+            config=VideoDistributionConfig(
+                spotify_upload_enabled=True, blob_archive_enabled=False, dry_run=True
+            ),
+        )
+        assert result.status == STATUS_COMPLETED
+        assert result.distribution.spotify_upload_updated is True
+        adapter.assert_called_once()
+        assert adapter.call_args.kwargs["publication_identity_context"] == PublicationIdentity(
+            job_id, "2026-W37", "123", "a" * 64, "b" * 64
+        )
+        assert adapter.call_args.kwargs["publication_storage"] is storage
+
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
     def test_pre_mutation_evidence_failure_cannot_complete_spotify_delivery(

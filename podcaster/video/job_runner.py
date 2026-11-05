@@ -1260,6 +1260,7 @@ def run_video_generation(
             raise
         raise TransientVideoError(f"invalid manifest for job_id={job_id}") from exc
     from podcaster.video.recovery import (
+        PrivateSelectionUnverified,
         RecoveryDenied,
         _proof,
         _state,
@@ -2170,6 +2171,8 @@ def run_video_generation(
                         language=job_language,
                         published=published_for_attempt,
                         publish_run_id=publish_run_id,
+                        publication_storage=storage,
+                        publication_identity_context=publication_context,
                         on_published=record_publication,
                         before_mutation=lambda _provider, _operation: ownership_guard.assert_permit(
                             provider_permit
@@ -2416,6 +2419,9 @@ def run_video_generation(
                 **exc.details,
             },
         ) from exc
+    except PrivateSelectionUnverified:
+        _release_editor_lease(scratch, clip_job_id, run_id)
+        raise
     except Exception as exc:
         # ffmpeg/ffprobe failures surface as CalledProcessError whose stderr
         # carries the real cause (e.g. "No space left on device").  The default
@@ -2624,6 +2630,7 @@ def process_message(
 ) -> VideoOutcome:
     """Process one video queue message: generate, then delete on terminal outcome."""
     from podcaster.video.recovery import (
+        PrivateSelectionUnverified,
         RecoveryDenied,
         claim_epoch,
         message_epoch,
@@ -2652,10 +2659,20 @@ def process_message(
         message.dequeue_count,
     )
 
+    def unverified_selection() -> bool:
+        try:
+            document = json.loads(storage.get_bytes(manifest_path(job_id)))
+            state = document["generation"].get("video_recovery", {})
+            return not isinstance(state, dict) or state.get("selected_private_output") is not None
+        except (TypeError, ValueError, KeyError):
+            return True
+
     if epoch_id is None and private_original(job_id):
         try:
             selected = read_selected(storage, job_id)
         except RecoveryDenied:
+            if unverified_selection():
+                return VideoOutcome(job_id, STATUS_FAILED, reason="private_selection_unverified")
             selected = None
         if selected is not None and selected["epoch_id"] is None:
             queue.delete_message(message)
@@ -2685,6 +2702,10 @@ def process_message(
             try:
                 selected = read_selected(storage, job_id)
             except RecoveryDenied:
+                if unverified_selection():
+                    return VideoOutcome(
+                        job_id, STATUS_FAILED, reason="private_selection_unverified"
+                    )
                 selected = None
             if selected is not None and selected["epoch_id"] == epoch_id:
                 queue.delete_message(message)
@@ -2750,6 +2771,8 @@ def process_message(
         )
         queue.delete_message(lease.message if lease is not None else message)
         return VideoOutcome(job_id, STATUS_FAILED, reason=exc.reason)
+    except PrivateSelectionUnverified:
+        return VideoOutcome(job_id, STATUS_FAILED, reason="private_selection_unverified")
     except RecoveryDenied:
         if lease is not None and lease.error is not None:
             return VideoOutcome(job_id, STATUS_FAILED, reason="transient")

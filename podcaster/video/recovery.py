@@ -36,6 +36,10 @@ class RecoveryDenied(ValueError):
     """Authority, exact media, or immutable identity is unavailable."""
 
 
+class PrivateSelectionUnverified(RecoveryDenied):
+    """A selection write may have committed, but its durable proof is unavailable."""
+
+
 @dataclass(frozen=True)
 class RecoveryClaim:
     job_id: str
@@ -177,13 +181,26 @@ def _assert_provider_quiet(
     ):
         raise RecoveryDenied("prior provider result requires identity-wide reconciliation")
     runner = generation.get("video_runner")
+    if runner is not None and not isinstance(runner, dict):
+        raise RecoveryDenied("prior runner state is malformed")
     distribution = runner.get("distribution") if isinstance(runner, dict) else None
+    if distribution is not None and not isinstance(distribution, dict):
+        raise RecoveryDenied("prior runner distribution is malformed")
     if isinstance(distribution, dict) and (
         distribution.get("outbox_id")
         or distribution.get("youtube_id")
         or distribution.get("spotify_upload_updated")
     ):
         raise RecoveryDenied("prior distribution attempt requires identity-wide reconciliation")
+    if isinstance(distribution, dict) and (
+        ("provider_outcomes" in distribution and distribution["provider_outcomes"] != {})
+        or ("provider_records" in distribution and distribution["provider_records"] != {})
+        or (
+            "spotify_rss_updated" in distribution
+            and distribution["spotify_rss_updated"] is not False
+        )
+    ):
+        raise RecoveryDenied("prior or ambiguous runner provider state requires reconciliation")
     evidence = read_evidence(storage, job_id)
     if evidence is not None:
         records = evidence.get("records")
@@ -707,7 +724,13 @@ def select_private_output(
     storage.update_bytes(f"jobs/{job_id}/manifest.json", CONTENT_TYPE, choose)
     if not selected:
         raise RecoveryDenied("candidate was not selected")
-    return selected
+    try:
+        committed = read_selected(storage, job_id)
+        if committed != candidate:
+            raise RecoveryDenied("selected private candidate changed after commit")
+    except Exception as exc:
+        raise PrivateSelectionUnverified("selected private candidate readback failed") from exc
+    return committed
 
 
 def read_selected(storage: StorageBackend, job_id: str) -> dict[str, Any]:

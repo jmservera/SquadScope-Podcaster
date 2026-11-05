@@ -1111,6 +1111,136 @@ def test_private_candidate_selection_losers_and_readback_fail_closed(recovery_or
         read_selected(storage, job_id)
 
 
+@pytest.mark.parametrize("damage", ["lost_commit", "changed_pointer", "held_outbox", "archive"])
+def test_first_private_selection_requires_durable_readback(
+    recovery_original, tmp_path, monkeypatch, damage
+):
+    from podcaster.generation import manifest_bytes
+    from podcaster.video.recovery import RecoveryDenied, _proof, select_private_output
+
+    storage, job_id, _, _, at = recovery_original
+    path = f"jobs/{job_id}/manifest.json"
+    proof = _proof(load_manifest(storage, job_id), storage, job_id)[1]
+    source = tmp_path / "candidate.mp4"
+    source.write_bytes(b"V" * 2048)
+    original_update = storage.update_bytes
+
+    def ambiguous_update(blob, content_type, callback):
+        if blob != path:
+            return original_update(blob, content_type, callback)
+
+        def intervene(raw):
+            written = callback(raw)
+            document = json.loads(written)
+            candidate = (
+                document["generation"].get("video_recovery", {}).get("selected_private_output")
+            )
+            if candidate is None:
+                return written
+            if damage == "lost_commit":
+                return raw
+            if damage == "changed_pointer":
+                document["generation"]["video_recovery"]["selected_private_output"][
+                    "attempt_id"
+                ] = "different"
+                return manifest_bytes(document)
+            if damage == "held_outbox":
+                storage.put_bytes(candidate["outbox_path"], b"{}", "application/json")
+            if damage == "archive":
+                storage.put_bytes(candidate["archive_path"], b"X" * 2048, "video/mp4")
+            return written
+
+        return original_update(blob, content_type, intervene)
+
+    monkeypatch.setattr(storage, "update_bytes", ambiguous_update)
+    with pytest.raises(RecoveryDenied):
+        select_private_output(
+            storage,
+            job_id,
+            source,
+            attempt_id="first",
+            claim=None,
+            expected_proof_sha256=proof,
+            now=lambda: at,
+        )
+
+
+def test_unverified_private_selection_keeps_queue_message(recovery_original, monkeypatch):
+    from podcaster.queue import QueueMessage, encode_video_message
+    from podcaster.video import job_runner, recovery
+
+    storage, job_id, _, _, at = recovery_original
+    message = QueueMessage(
+        message_id="unverified",
+        pop_receipt="receipt",
+        body=encode_video_message(job_id),
+        dequeue_count=job_runner.MAX_DEQUEUE_COUNT,
+        next_visible_on=at + timedelta(seconds=900),
+    )
+    queue = Mock()
+    monkeypatch.setattr(
+        job_runner,
+        "run_video_generation",
+        Mock(side_effect=recovery.PrivateSelectionUnverified("readback failed")),
+    )
+    outcome = job_runner.process_message(message, storage=storage, queue=queue, now=at)
+    assert outcome.status == "failed"
+    queue.delete_message.assert_not_called()
+
+
+@pytest.mark.parametrize("recovery_epoch", [False, True])
+def test_tampered_selected_output_replay_does_not_ack(recovery_original, tmp_path, recovery_epoch):
+    from podcaster.queue import QueueMessage, encode_video_message
+    from podcaster.video import job_runner, recovery
+
+    storage, job_id, identity, mp3_sha, at = recovery_original
+    claim = None
+    if recovery_epoch:
+        epoch = recovery.reserve_epoch(
+            storage,
+            job_id,
+            expected_identity=identity,
+            expected_audio_sha256=mp3_sha,
+            inventory_reference="readback",
+            now=lambda: at,
+        )
+        claim = recovery.claim_epoch(
+            storage,
+            job_id,
+            epoch,
+            "owner",
+            now=lambda: at,
+            visibility_expires_at=at + timedelta(seconds=5400),
+        )
+    source = tmp_path / "candidate.mp4"
+    source.write_bytes(b"V" * 2048)
+    selected = recovery.select_private_output(
+        storage,
+        job_id,
+        source,
+        attempt_id="first",
+        claim=claim,
+        expected_proof_sha256=recovery._proof(load_manifest(storage, job_id), storage, job_id)[1],
+        now=lambda: at,
+    )
+    storage.put_bytes(selected["outbox_path"], b"{}", "application/json")
+    queue = Mock()
+    message = QueueMessage(
+        message_id="tampered",
+        pop_receipt="receipt",
+        body=(
+            recovery.message(job_id, claim.epoch_id)
+            if claim is not None
+            else encode_video_message(job_id)
+        ),
+        dequeue_count=job_runner.MAX_DEQUEUE_COUNT,
+        next_visible_on=at + timedelta(seconds=900),
+    )
+    outcome = job_runner.process_message(message, storage=storage, queue=queue, now=at)
+    assert outcome.status == "failed"
+    queue.delete_message.assert_not_called()
+
+
 def test_selected_completion_survives_commit_then_raise_and_failed_or_skipped_updates(
     recovery_original, tmp_path, monkeypatch
 ):
@@ -1366,6 +1496,100 @@ def test_identity_wide_prior_provider_state_blocks_recovery_reservation(
 
 
 @pytest.mark.parametrize(
+    "distribution",
+    [
+        {"provider_outcomes": {"spotify_upload": "publication_unknown"}},
+        {"provider_outcomes": {"spotify": "pending_provider"}},
+        {"provider_outcomes": {"unknown": "unknown"}},
+        {"provider_outcomes": "invalid"},
+        {"provider_records": {"spotify": {"status": "unknown"}}},
+        {"provider_records": ["invalid"]},
+        {"spotify_rss_updated": True},
+        {"spotify_rss_updated": "unknown"},
+        "invalid",
+    ],
+)
+@pytest.mark.parametrize("phase", ["reservation", "selection"])
+def test_runner_only_provider_state_blocks_private_recovery(
+    recovery_original, tmp_path, distribution, phase
+):
+    from podcaster.generation import manifest_bytes
+    from podcaster.video import recovery
+
+    storage, job_id, identity, mp3_sha, at = recovery_original
+    if phase == "selection":
+        epoch = recovery.reserve_epoch(
+            storage,
+            job_id,
+            expected_identity=identity,
+            expected_audio_sha256=mp3_sha,
+            inventory_reference="readback",
+            now=lambda: at,
+        )
+        claim = recovery.claim_epoch(
+            storage,
+            job_id,
+            epoch,
+            "owner",
+            now=lambda: at,
+            visibility_expires_at=at + timedelta(seconds=5400),
+        )
+    manifest = load_manifest(storage, job_id)
+    manifest["generation"]["video_runner"] = {"distribution": distribution}
+    storage.put_bytes(f"jobs/{job_id}/manifest.json", manifest_bytes(manifest), "application/json")
+    source = tmp_path / "candidate.mp4"
+    source.write_bytes(b"V" * 2048)
+    with pytest.raises(recovery.RecoveryDenied):
+        if phase == "reservation":
+            recovery.reserve_epoch(
+                storage,
+                job_id,
+                expected_identity=identity,
+                expected_audio_sha256=mp3_sha,
+                inventory_reference="readback",
+                now=lambda: at,
+            )
+        else:
+            recovery.select_private_output(
+                storage,
+                job_id,
+                source,
+                attempt_id="first",
+                claim=claim,
+                expected_proof_sha256=recovery._proof(manifest, storage, job_id)[1],
+                now=lambda: at,
+            )
+    state = load_manifest(storage, job_id)["generation"].get("video_recovery", {})
+    assert state.get("selected_private_output") is None
+    if phase == "reservation":
+        assert not state.get("epochs")
+
+
+def test_empty_runner_provider_state_remains_quiet_for_recovery(recovery_original):
+    from podcaster.generation import manifest_bytes
+    from podcaster.video.recovery import reserve_epoch
+
+    storage, job_id, identity, mp3_sha, at = recovery_original
+    manifest = load_manifest(storage, job_id)
+    manifest["generation"]["video_runner"] = {
+        "distribution": {
+            "provider_outcomes": {},
+            "provider_records": {},
+            "spotify_rss_updated": False,
+        }
+    }
+    storage.put_bytes(f"jobs/{job_id}/manifest.json", manifest_bytes(manifest), "application/json")
+    assert reserve_epoch(
+        storage,
+        job_id,
+        expected_identity=identity,
+        expected_audio_sha256=mp3_sha,
+        inventory_reference="readback",
+        now=lambda: at,
+    )
+
+
+@pytest.mark.parametrize(
     "platform,kind,allowed",
     [
         ("youtube", None, False),
@@ -1575,6 +1799,16 @@ def test_private_original_cannot_reach_distribution_or_final_adapters(tmp_path):
         ("job-1", PublicationIdentity("other", "2026-W44", "1", "a" * 64, "b" * 64)),
         ("job-1", PublicationIdentity("job-1", "bad-week", "1", "a" * 64, "b" * 64)),
         ("job-1", PublicationIdentity("job-1", "2026-W44", "", "a" * 64, "b" * 64)),
+        (
+            "podcast-2026-W44-00bc06dfb6e2",
+            PublicationIdentity(
+                "podcast-2026-W44-00bc06dfb6e2",
+                "2026-W44",
+                "1",
+                "a" * 64,
+                "b" * 64,
+            ),
+        ),
     ],
 )
 def test_spotify_video_boundaries_require_coherent_identity_before_dry_run_or_session(
