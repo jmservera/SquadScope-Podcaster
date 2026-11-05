@@ -140,6 +140,23 @@ def test_manual_recovery_transition_forwards_reviewed_image_digests():
     assert "RECOVERY_OPERATOR_STATE" in REUSABLE_WORKFLOW.read_text(encoding="utf-8")
 
 
+def test_image_input_is_validated_before_github_environment_write():
+    workflow = yaml.safe_load(REUSABLE_WORKFLOW.read_text(encoding="utf-8"))
+    step = next(
+        item
+        for item in workflow["jobs"]["deploy"]["steps"]
+        if item.get("name") == "Resolve image tags to SHA-pinned references"
+    )
+    script = step["run"]
+    assert "^[A-Za-z0-9._:/@-]+$" in script
+    for image in ("SYNTHESIS_IMAGE", "API_IMAGE", "UI_IMAGE"):
+        assert script.index(f'validate_image_ref "${image}"') < script.index(
+            f'echo "{image}=$resolved_'
+        )
+    for image in ("resolved_synth", "resolved_api", "resolved_ui"):
+        assert script.index(f'validate_image_ref "${image}"') < script.index('>> "$GITHUB_ENV"')
+
+
 def test_api_youtube_status_credentials_are_optional_secret_refs_without_mutation_flags():
     main = BICEP.read_text()
     api = (ROOT / "infra/modules/api.bicep").read_text()

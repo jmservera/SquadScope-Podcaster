@@ -339,4 +339,5 @@ def test_compiled_bicep_has_conditional_api_only_boundary():
         if item["type"] == "Microsoft.Authorization/roleAssignments"
     )
     assert "vaults/secrets" in role["scope"]
+    assert role["properties"]["principalId"] == "[parameters('recoveryPrincipalId')]"
     assert "4633458b-17de-408a-b874-0445c86b69e6" in str(rbac["variables"])

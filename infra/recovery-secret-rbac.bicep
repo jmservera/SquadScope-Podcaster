@@ -10,9 +10,6 @@ param activation string
 @description('Existing dedicated recovery vault name, from recovery-bootstrap.bicep.')
 param vaultName string = 'podrv${uniqueString(resourceGroup().id, 'recovery')}'
 
-@description('Existing API-only recovery identity name, from recovery-bootstrap.bicep.')
-param recoveryIdentityName string = 'podcaster-${uniqueString(resourceGroup().id)}-api-recovery-id'
-
 @description('Exact principal ID from recovery-bootstrap output; verify against the existing API recovery identity before deployment.')
 param recoveryPrincipalId string
 
@@ -25,10 +22,6 @@ resource operatorSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing 
   name: 'video-recovery-operator-key'
 }
 
-resource recoveryIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
-  name: recoveryIdentityName
-}
-
 var secretsUserRole = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
 
 resource exactSecretReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (activation == 'post-owner-secret') {
@@ -36,7 +29,7 @@ resource exactSecretReader 'Microsoft.Authorization/roleAssignments@2022-04-01' 
   name: guid(operatorSecret.id, recoveryPrincipalId, secretsUserRole)
   properties: {
     roleDefinitionId: secretsUserRole
-    principalId: recoveryIdentity.properties.principalId
+    principalId: recoveryPrincipalId
     principalType: 'ServicePrincipal'
   }
 }

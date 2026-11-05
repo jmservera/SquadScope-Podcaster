@@ -271,6 +271,16 @@ jobs:
       - name: Resolve image tags to SHA-pinned references
         run: |
           set -euo pipefail
+          # Only single-line image references may cross the GITHUB_ENV boundary.
+          validate_image_ref() {
+            if [[ ! "$1" =~ ^[A-Za-z0-9._:/@-]+$ ]]; then
+              echo "::error::Image reference contains invalid characters."
+              exit 1
+            fi
+          }
+          validate_image_ref "$SYNTHESIS_IMAGE"
+          validate_image_ref "$API_IMAGE"
+          validate_image_ref "$UI_IMAGE"
           # ACA does not re-pull :latest when the image ref is unchanged between
           # revisions, leading to stale containers (#166). Resolve :latest to the
           # most recent commit-SHA tag so each deploy gets a unique image reference.
@@ -301,6 +311,9 @@ jobs:
           resolved_synth=$(resolve_latest "$SYNTHESIS_IMAGE")
           resolved_api=$(resolve_latest "$API_IMAGE")
           resolved_ui=$(resolve_latest "$UI_IMAGE")
+          validate_image_ref "$resolved_synth"
+          validate_image_ref "$resolved_api"
+          validate_image_ref "$resolved_ui"
 
           echo "SYNTHESIS_IMAGE=$resolved_synth" >> "$GITHUB_ENV"
           echo "API_IMAGE=$resolved_api" >> "$GITHUB_ENV"
