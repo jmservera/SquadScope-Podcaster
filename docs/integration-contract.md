@@ -445,9 +445,16 @@ the asynchronous distribution worker re-checks the durable hold before and
 during dispatch to both YouTube and Spotify, even if a generic media review
 record exists. Both final adapters also deny either candidate if its recovery
 record is missing, even when the manifest marker is absent or cleared; missing
-metadata never proves a non-recovery identity. Every video-runner manifest CAS
-rechecks the epoch and owner, and an older or reclaimed attempt cannot replace
-a completed private recovery runner or its held-outbox reference. This release
+metadata never proves a non-recovery identity. Each successful worker claim
+installs a fresh, per-delivery owner token and lease in the manifest under the
+same blob CAS used for runner-state writes. The recovery-epochs record retains
+the dispatch and audit history, but its separately updated owner field alone
+never authorizes a manifest write: an interrupted claim must finish installing
+its manifest fence before the worker can write. Every runner-state CAS compares
+the manifest token; a reclaim racing between callback and commit changes that
+same blob's ETag, forcing the old callback to retry and refuse the stale token.
+An older or reclaimed attempt cannot replace a completed private recovery
+runner or its held-outbox reference. This release
 has **no transition that permits recovered provider uploads**. Do not invoke
 production recovery while provider inventory remains
 incomplete; no provider draft/unlisted upload, public promotion, or Spotify

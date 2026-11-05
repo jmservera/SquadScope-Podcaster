@@ -284,6 +284,13 @@ def test_recovery_completed_manifest_replay_finishes_epoch(prepared_exact_video,
         return json.dumps(state).encode()
 
     storage.update_bytes(recovery.recovery_path(job_id), "application/json", expire_old_lease)
+
+    def expire_manifest_lease(raw):
+        manifest = json.loads(raw)
+        manifest["generation"]["video_recovery_lease_expires_at"] = "2026-01-01T00:00:00Z"
+        return json.dumps(manifest).encode()
+
+    storage.update_bytes(f"jobs/{job_id}/manifest.json", "application/json", expire_manifest_lease)
     monkeypatch.setattr(
         "podcaster.video.job_runner.run_video_generation",
         lambda *_args, **_kwargs: VideoOutcome(

@@ -266,6 +266,15 @@ def test_private_recovery_reservation_reconciles_send_and_fences_second_owner(st
     recovery.claim(
         storage, job_id, entry["epoch_id"], "worker-a", now + timedelta(seconds=60), now=now
     )
+    with pytest.raises(recovery.RecoveryError, match="fresh owner token"):
+        recovery.claim(
+            storage,
+            job_id,
+            entry["epoch_id"],
+            "worker-a",
+            now + timedelta(seconds=80),
+            now=now + timedelta(seconds=1),
+        )
     with pytest.raises(recovery.RecoveryError, match="another worker"):
         recovery.claim(
             storage,
@@ -550,7 +559,13 @@ def test_changed_review_proof_terminalizes_epoch_before_private_preparation(stor
     now = datetime.now(timezone.utc)
     storage.set_manifest(
         job_id,
-        {"job_id": job_id, "generation": {"video_recovery_epoch_id": epoch_id}},
+        {
+            "job_id": job_id,
+            "generation": {
+                "video_recovery_epoch_id": epoch_id,
+                "video_recovery_fence": owner,
+            },
+        },
     )
     recovery._update(
         storage,
@@ -833,7 +848,11 @@ def test_reclaimed_worker_error_cannot_replace_successor_completion(storage, rea
         job_id,
         {
             "job_id": job_id,
-            "generation": {"video_recovery_epoch_id": epoch_id, "video_runner": completed},
+            "generation": {
+                "video_recovery_epoch_id": epoch_id,
+                "video_recovery_fence": "new-worker",
+                "video_runner": completed,
+            },
         },
     )
     recovery._update(
@@ -870,7 +889,11 @@ def test_owned_completion_can_resume_evidence_without_replacing_completed_runner
         job_id,
         {
             "job_id": job_id,
-            "generation": {"video_recovery_epoch_id": epoch_id, "video_runner": completed},
+            "generation": {
+                "video_recovery_epoch_id": epoch_id,
+                "video_recovery_fence": owner,
+                "video_runner": completed,
+            },
         },
     )
     recovery._update(
@@ -948,6 +971,91 @@ def test_reclaimed_worker_error_cannot_overwrite_new_owner_before_completion(sto
     assert (
         json.loads(storage.get_bytes(manifest_path(job_id)))["generation"]["video_runner"] == runner
     )
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"status": "failed", "reason": "RuntimeError"},
+        {"status": "failed", "reason": "watermark_transient"},
+        {"status": "failed", "reason": "watermark_unavailable"},
+        {"status": "completed", "distribution": {"outbox_id": "held"}},
+    ],
+)
+def test_reclaim_between_manifest_callback_and_commit_fences_old_writer(
+    storage, monkeypatch, state
+):
+    from podcaster.video.job_runner import _record_video_state
+
+    job_id = "podcast-2026-W44-00bc06dfb6e2"
+    epoch_id = "a" * 32
+    now = datetime.now(timezone.utc)
+    old_lease = now + timedelta(minutes=5)
+    successor_lease = now + timedelta(minutes=12)
+    proof_path = script_path(job_id)
+    proof = b"immutable original proof"
+    storage.put_bytes(proof_path, proof, "text/plain")
+    storage.set_manifest(
+        job_id,
+        {
+            "job_id": job_id,
+            "generation": {
+                "video_recovery_epoch_id": epoch_id,
+                "video_recovery_fence": "old-worker",
+                "video_recovery_lease_expires_at": old_lease.isoformat(),
+                "video_runner": {"status": "running"},
+            },
+        },
+    )
+    recovery._update(
+        storage,
+        job_id,
+        lambda document: document["epochs"].append(
+            {
+                "epoch_id": epoch_id,
+                "state": "running",
+                "owner": "old-worker",
+                "lease_expires_at": old_lease.isoformat(),
+                "budget": {"deadline_at_utc": (now + timedelta(minutes=20)).isoformat()},
+            }
+        ),
+    )
+    original_update = storage.update_bytes
+    interleaved = False
+
+    def cas_interleave(path, content_type, update):
+        nonlocal interleaved
+        if path == manifest_path(job_id) and not interleaved:
+            interleaved = True
+            old_image = storage.get_bytes(path)
+            update(old_image)
+            recovery.claim(
+                storage,
+                job_id,
+                epoch_id,
+                "successor",
+                successor_lease,
+                now=now + timedelta(minutes=6),
+            )
+            assert storage.get_bytes(path) != old_image
+            return original_update(path, content_type, update)
+        return original_update(path, content_type, update)
+
+    monkeypatch.setattr(storage, "update_bytes", cas_interleave)
+    with pytest.raises(recovery.RecoveryError, match="stale"):
+        _record_video_state(
+            storage,
+            job_id,
+            state,
+            recovery_epoch_id=epoch_id,
+            recovery_owner="old-worker",
+        )
+    assert interleaved
+    generation = json.loads(storage.get_bytes(manifest_path(job_id)))["generation"]
+    assert generation["video_recovery_fence"] == "successor"
+    assert generation["video_runner"] == {"status": "running"}
+    assert storage.get_bytes(proof_path) == proof
+    assert all(path != video_artifact_path(job_id) for path, _, _ in storage.puts)
 
 
 def test_video_publication_signal_failure_preserves_provider_outcome(monkeypatch, caplog):

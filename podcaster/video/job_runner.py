@@ -2609,6 +2609,8 @@ def process_message(
 
     recovery_owner = f"{message.message_id}:{message.pop_receipt}"
     if recovery_epoch_id is not None:
+        recovery_owner = f"{recovery_owner}:{uuid.uuid4().hex}"
+    if recovery_epoch_id is not None:
         if message.next_visible_on is None or lifecycle_deadline_monotonic == float("-inf"):
             logger.error("recovery message has no authoritative queue visibility job_id=%s", job_id)
             try:

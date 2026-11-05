@@ -228,6 +228,7 @@ def assert_manifest_writer(
         or entry.get("state") != "running"
         or entry.get("owner") != owner
         or marker != epoch_id
+        or generation.get("video_recovery_fence") != owner
     ):
         raise RecoveryError("recovery manifest writer is stale")
     assert_owner(storage, job_id, epoch_id, owner)
@@ -463,6 +464,9 @@ def reserve(
             raise RecoveryError("recovery marker conflicts with reserved epoch")
         generation["video_recovery_epoch_sequence"] = entry["sequence"]
         generation["video_recovery_epoch_id"] = entry["epoch_id"]
+        if previous_sequence != entry["sequence"]:
+            generation.pop("video_recovery_fence", None)
+            generation.pop("video_recovery_lease_expires_at", None)
         from podcaster.generation import manifest_bytes
 
         return manifest_bytes(document)
@@ -571,6 +575,8 @@ def claim(
         if lease <= current + timedelta(seconds=5):
             raise RecoveryError("recovery lease or queue visibility is insufficient")
         previous = entry.get("lease_expires_at")
+        if entry["state"] == "running" and entry.get("owner") == owner:
+            raise RecoveryError("recovery claim requires a fresh owner token")
         if (
             entry["state"] == "running"
             and previous is not None
@@ -586,17 +592,51 @@ def claim(
     result = _update(storage, job_id, change)
     if result["state"] == "expired":
         raise RecoveryError("recovery epoch has expired")
+
+    def fence_manifest(raw: bytes | None) -> bytes:
+        if raw is None:
+            raise RecoveryError("recovery manifest is missing")
+        document = json.loads(raw)
+        generation = document.get("generation")
+        if (
+            not isinstance(generation, dict)
+            or generation.get("video_recovery_epoch_id") != epoch_id
+        ):
+            raise RecoveryError("recovery manifest epoch is stale")
+        current_owner = generation.get("video_recovery_fence")
+        previous_lease = generation.get("video_recovery_lease_expires_at")
+        if current_owner == owner:
+            raise RecoveryError("recovery claim requires a fresh owner token")
+        if current_owner is not None:
+            if previous_lease is None or _parse(previous_lease) > current:
+                raise RecoveryError("recovery manifest is owned by another worker")
+        if current_epoch(storage, job_id).get("owner") != owner:
+            raise RecoveryError("recovery claim was superseded")
+        generation["video_recovery_fence"] = owner
+        generation["video_recovery_lease_expires_at"] = result["lease_expires_at"]
+        from podcaster.generation import manifest_bytes
+
+        return manifest_bytes(document)
+
+    storage.update_bytes(f"jobs/{job_id}/manifest.json", _CONTENT_TYPE, fence_manifest)
     return result
 
 
 def assert_owner(storage: Any, job_id: str, epoch_id: str, owner: str) -> None:
     entry = current_epoch(storage, job_id)
+    raw = storage.get_bytes(f"jobs/{job_id}/manifest.json")
+    try:
+        generation = json.loads(raw)["generation"] if raw is not None else {}
+    except (ValueError, KeyError, TypeError) as exc:
+        raise RecoveryError("recovery manifest fence is invalid") from exc
     if (
         entry is None
         or entry.get("epoch_id") != epoch_id
         or entry.get("state") != "running"
         or entry.get("owner") != owner
         or _parse(entry.get("lease_expires_at")) <= datetime.now(timezone.utc)
+        or generation.get("video_recovery_epoch_id") != epoch_id
+        or generation.get("video_recovery_fence") != owner
     ):
         raise RecoveryError("recovery owner or deadline is stale")
 
