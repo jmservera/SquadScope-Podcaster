@@ -3022,6 +3022,17 @@ def upload_video_to_episode(
     Returns a PublishResult; ``anchor_episode_id`` is the NEW video episode id,
     status is "draft"/"scheduled"/"published" on success and "failed" otherwise.
     """
+    if publication_identity_context is not None and publication_storage is None:
+        from podcaster.video.recovery import is_candidate
+
+        if is_candidate(publication_identity_context.accepted_job_id):
+            return PublishResult(
+                status="failed",
+                error="Video provider mutation blocked: recovery authority unavailable.",
+                outcome=PUBLICATION_UNKNOWN,
+                publish_run_id=publication_identity_context.publish_run_id,
+                details={"retry_blocked": True},
+            )
     if publication_storage is not None and publication_identity_context is not None:
         try:
             from podcaster.video.recovery import assert_provider_write_allowed

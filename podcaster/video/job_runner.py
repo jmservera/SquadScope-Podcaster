@@ -1180,6 +1180,23 @@ def run_video_generation(
                     storage, job_id, recovery_epoch_id, recovery_owner, "media_proof_changed"
                 )
             return VideoOutcome(job_id, STATUS_SKIPPED, reason="completed_media_review_required")
+    if recovery_epoch_id is not None:
+        from podcaster.video.recovery import assert_reserved_inputs
+
+        try:
+            assert_reserved_inputs(latest_epoch, manifest, job_id, reviewed_audio)
+        except RecoveryError as exc:
+            fail_epoch(
+                storage, job_id, recovery_epoch_id, recovery_owner, "reserved_inputs_changed"
+            )
+            raise PermanentVideoError(
+                "recovery inputs differ from operator authorization",
+                reason="recovery_reserved_inputs_changed",
+            ) from exc
+
+    if recovery_epoch_id is None and _already_processed(manifest):
+        logger.info("video skipped job_id=%s reason=%s", job_id, REASON_ALREADY_PROCESSED)
+        return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_ALREADY_PROCESSED)
 
     # Imported here (not at module scope) to match the existing lazy
     # ``video_compose`` import policy in this module, while still binding the
@@ -2203,7 +2220,7 @@ def run_video_generation(
                 distribution=dist_result,
             )
 
-    except OwnershipError:
+    except (OwnershipError, RecoveryError):
         _release_editor_lease(scratch, scratch_job_id, run_id)
         raise
     except TransientVideoError:

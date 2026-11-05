@@ -100,3 +100,19 @@ restart generation or renew the expired budget. A focused late-redelivery
 test exercises this real ordering. Updated focused suite: **359 passed**;
 Ruff check/format and diff whitespace passed. The previous concurrently
 running full suite was stopped after this correction changed its source.
+
+## PR review revision
+
+The committed `f2d89bb` source passed complete `pytest tests/ -q`:
+**6016 passed, 4 skipped, 2 deselected** (25 warnings, 883.69 seconds).
+All 13 PR checks were green on that SHA. Copilot PR review then exposed
+additional pre-acceptance failures: reserved-proof rebinding, completed-job
+expired duplicate protection, stale-owner non-mutating exit, idempotent retry
+after a private outbox, incomplete adapter identity, Spotify direct adapter
+without storage, stale manifest marker overwrite and corrupt provider
+evidence. The current review revision addresses these with immutable
+reserved-input checks, monotonic manifest epoch sequence, source-matched
+outbox retry, explicit corrupt-evidence rejection, and fail-closed adapter
+inputs. These are local corrections within the approved private-only scope,
+not operational approval or a test waiver. Updated source requires a new
+full test/CI result and independent re-review before merge eligibility.

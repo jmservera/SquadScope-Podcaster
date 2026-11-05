@@ -839,6 +839,10 @@ def upload_to_youtube(
     Raises RuntimeError on auth failures; returns None on upload failures
     after retries so distribution continues to other targets.
     """
+    if recovery_epoch_id is not None and recovery_job_id is None:
+        from podcaster.video.recovery import RecoveryError
+
+        raise RecoveryError("recovery provider job identity is required")
     if recovery_job_id is not None:
         from podcaster.video.recovery import (
             RecoveryError,

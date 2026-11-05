@@ -214,7 +214,7 @@ def test_private_recovery_reservation_reconciles_send_and_fences_second_owner(st
     job_id = "podcast-2026-W44-00bc06dfb6e2"
     now = datetime.now(timezone.utc)
     _stage_recovery(storage, job_id, now)
-    monkeypatch.setattr(recovery, "_verify_original", lambda *_args: {})
+    monkeypatch.setattr(recovery, "_verify_original", lambda *_args, **_kwargs: {})
     identity = dict(
         zip(
             ("week", "publish_run_id", "article_sha256", "manifest_sha256"),
@@ -309,7 +309,7 @@ def test_recovery_worker_can_claim_before_sender_ack(storage, monkeypatch):
     job_id = "podcast-2026-W44-00bc06dfb6e2"
     now = datetime.now(timezone.utc)
     _stage_recovery(storage, job_id, now)
-    monkeypatch.setattr(recovery, "_verify_original", lambda *_args: {})
+    monkeypatch.setattr(recovery, "_verify_original", lambda *_args, **_kwargs: {})
     identity = dict(
         zip(
             ("week", "publish_run_id", "article_sha256", "manifest_sha256"),
@@ -350,6 +350,65 @@ def test_recovery_worker_can_claim_before_sender_ack(storage, monkeypatch):
     )
     assert dispatched["state"] == "running"
     assert dispatched["owner"] == "first-worker"
+
+
+def test_older_reservation_cannot_replace_newer_manifest_marker(storage, monkeypatch):
+    job_id = "podcast-2026-W44-00bc06dfb6e2"
+    now = datetime.now(timezone.utc)
+    _stage_recovery(storage, job_id, now)
+    monkeypatch.setattr(recovery, "_verify_original", lambda *_args, **_kwargs: {})
+    identity = dict(
+        zip(
+            ("week", "publish_run_id", "article_sha256", "manifest_sha256"),
+            recovery._CANDIDATES[job_id][:4],
+            strict=True,
+        )
+    )
+    request = dict(
+        identity=identity,
+        script_sha256="a" * 64,
+        mp3_sha256="b" * 64,
+        operator="owner",
+        now=now,
+    )
+    original_update = storage.update_bytes
+    newer_id = None
+    interleaved = False
+
+    def interleave(path, content_type, update):
+        nonlocal newer_id, interleaved
+        if path == f"jobs/{job_id}/manifest.json" and not interleaved:
+            interleaved = True
+            recovery._update(
+                storage,
+                job_id,
+                lambda document: document["epochs"][-1].update(state="dispatch_failed"),
+            )
+            newer = recovery.reserve(
+                storage,
+                job_id,
+                **request,
+                request_id=str(uuid.uuid4()),
+                inventory_reference="inventory-2",
+            )
+            newer_id = newer["epoch_id"]
+        return original_update(path, content_type, update)
+
+    monkeypatch.setattr(storage, "update_bytes", interleave)
+    with pytest.raises(recovery.RecoveryError, match="newer recovery epoch"):
+        recovery.reserve(
+            storage,
+            job_id,
+            **request,
+            request_id=str(uuid.uuid4()),
+            inventory_reference="inventory-1",
+        )
+    assert (
+        json.loads(storage.get_bytes(f"jobs/{job_id}/manifest.json"))["generation"][
+            "video_recovery_epoch_id"
+        ]
+        == newer_id
+    )
 
 
 def test_private_recovery_rejects_unproven_media_before_reservation(storage):
@@ -2627,6 +2686,27 @@ class TestProcessMessage:
         assert result.status == STATUS_SKIPPED
         assert result.reason == REASON_ALREADY_PROCESSED
         assert json.loads(storage.get_bytes(video_budget_path(job_id))) == original_budget
+
+    def test_expired_duplicate_preserves_completed_video_state(self, storage, queue, dry_config):
+        job_id = "completed-video"
+        started = datetime.now(timezone.utc) - timedelta(seconds=5400)
+        original_budget = VideoStageBudget.start(now_utc=started).to_dict()
+        completed = {"status": "completed", "distribution": {"outbox_id": "original"}}
+        storage.set_manifest(job_id, {"generation": {"video_runner": completed}})
+        storage.put_bytes(
+            video_budget_path(job_id), json.dumps(original_budget).encode(), "application/json"
+        )
+        result = process_message(
+            _make_message(job_id, dequeue_count=2),
+            storage=storage,
+            queue=queue,
+            config=dry_config,
+            now=started + timedelta(seconds=5400),
+        )
+        assert result.reason == REASON_ALREADY_PROCESSED
+        manifest = json.loads(storage.get_bytes(manifest_path(job_id)))
+        assert manifest["generation"]["video_runner"] == completed
+        assert "video_attempt_history" not in manifest["generation"]
 
     def test_malformed_message_deleted(self, storage, queue):
         msg = QueueMessage(

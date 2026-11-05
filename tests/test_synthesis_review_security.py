@@ -337,6 +337,7 @@ def test_recovery_expired_queue_redelivery_only_settles_proven_private_media(
 def test_recovery_adapters_deny_missing_storage_and_direct_distribution(
     prepared_exact_video, monkeypatch, tmp_path
 ):
+    from podcaster.publish import upload_video_to_episode as final_spotify_adapter
     from podcaster.video import distribution, recovery
 
     _storage, job_id, _repository, _document, config, _composer = prepared_exact_video
@@ -350,11 +351,64 @@ def test_recovery_adapters_deny_missing_storage_and_direct_distribution(
         distribution.distribute_video(mp4, job_id, "title", "description", 1.0, config)
     with pytest.raises(recovery.RecoveryError, match="storage is required"):
         distribution.upload_to_youtube(mp4, "title", "description", config, recovery_job_id=job_id)
+    with pytest.raises(recovery.RecoveryError, match="job identity is required"):
+        distribution.upload_to_youtube(
+            mp4,
+            "title",
+            "description",
+            config,
+            recovery_epoch_id=recovery.current_epoch(_storage, job_id)["epoch_id"],
+        )
     with pytest.raises(recovery.RecoveryError, match="storage is required"):
         distribution.upload_to_spotify_episode(
             mp4, None, config, title="title", description="description", job_id=job_id
         )
+    identity = recovery.current_epoch(_storage, job_id)["identity"]
+    result = final_spotify_adapter(
+        mp4,
+        publication_identity_context=PublicationIdentity(
+            job_id,
+            identity["week"],
+            identity["publish_run_id"],
+            identity["article_sha256"],
+            identity["manifest_sha256"],
+        ),
+    )
+    assert result.status == "failed"
+    assert result.details["retry_blocked"] is True
     provider.assert_not_called()
+
+
+@pytest.mark.parametrize("prepared_exact_video", [{"target": "recovery"}], indirect=True)
+def test_recovery_retry_uses_its_own_private_outbox_and_rejects_corrupt_prior_evidence(
+    prepared_exact_video, monkeypatch
+):
+    from podcaster.review import validate_private_media_inputs
+    from podcaster.video import recovery
+
+    storage, job_id, _repository, document, _config, _composer = prepared_exact_video
+    epoch = recovery.current_epoch(storage, job_id)
+    manifest = load_manifest(storage, job_id)
+    values = dict(
+        identity=epoch["identity"],
+        script_sha256=epoch["script_sha256"],
+        mp3_sha256=epoch["audio_sha256"],
+        request_id=epoch["request_id"],
+        operator=epoch["operator"],
+        inventory_reference=epoch["inventory_reference"],
+    )
+    assert recovery.reserve(storage, job_id, **values)["epoch_id"] == epoch["epoch_id"]
+    assert recovery.current_epoch(storage, job_id)["media_sha256"] == document["artifact"]["sha256"]
+
+    media = validate_private_media_inputs(manifest, storage, job_id)
+    recovery.assert_reserved_inputs(epoch, manifest, job_id, media)
+    with pytest.raises(recovery.RecoveryError, match="changed after reservation"):
+        recovery.assert_reserved_inputs(
+            {**epoch, "audio_sha256": "0" * 64}, manifest, job_id, media
+        )
+    monkeypatch.setattr(recovery, "read_evidence", lambda *_args: {"corrupt": True, "records": []})
+    with pytest.raises(recovery.RecoveryError, match="evidence is corrupt"):
+        recovery.reserve(storage, job_id, **values)
 
 
 def _video_decision(storage, job_id, document, **overrides):

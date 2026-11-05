@@ -189,8 +189,35 @@ def assert_provider_write_allowed(
             raise RecoveryError("recovery provider upload is not authorized in this release")
 
 
+def assert_reserved_inputs(
+    entry: dict[str, Any], manifest: dict[str, Any], job_id: str, media: Any
+) -> None:
+    """Rebind current immutable inputs to the operator's original reservation."""
+    identity = entry["identity"]
+    try:
+        if (
+            any(manifest["request"].get(key) != value for key, value in identity.items())
+            or publication_identity(manifest, job_id, identity["publish_run_id"]).week
+            != identity["week"]
+            or manifest["review"]["snapshot"]["script_sha256"] != entry["script_sha256"]
+            or len(media.content) != _CANDIDATES[job_id][4]
+            or hashlib.sha256(media.content).hexdigest() != entry["audio_sha256"]
+        ):
+            raise RecoveryError("recovery inputs changed after reservation")
+    except (KeyError, TypeError, AttributeError, ValueError) as exc:
+        if isinstance(exc, RecoveryError):
+            raise
+        raise RecoveryError("recovery inputs cannot be bound to reservation") from exc
+
+
 def _verify_original(
-    storage: Any, job_id: str, identity: dict[str, str], script_sha256: str, mp3_sha256: str
+    storage: Any,
+    job_id: str,
+    identity: dict[str, str],
+    script_sha256: str,
+    mp3_sha256: str,
+    *,
+    existing_epoch: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     candidate = _CANDIDATES.get(job_id)
     if candidate is None:
@@ -228,8 +255,32 @@ def _verify_original(
         if not isinstance(video_runner, dict):
             video_runner = {}
         if video_runner.get("distribution"):
-            raise RecoveryError("prior video distribution requires reconciliation")
+            outbox_id = video_runner["distribution"].get("outbox_id")
+            if (
+                existing_epoch is None
+                or manifest["generation"].get("video_recovery_epoch_id")
+                != existing_epoch["epoch_id"]
+                or not isinstance(outbox_id, str)
+            ):
+                raise RecoveryError("prior video distribution requires reconciliation")
+            from podcaster.distribution_outbox import DistributionOutboxRepository
+
+            outbox = DistributionOutboxRepository(storage).read(outbox_id)
+            if (
+                not isinstance(outbox, dict)
+                or outbox.get("publication_identity", {}).get("accepted_job_id") != job_id
+                or outbox.get("artifact", {}).get("sha256") != existing_epoch.get("media_sha256")
+                or outbox.get("media_review", {}).get("status") not in {"pending", "approved"}
+                or not any(
+                    leg.get("context", {}).get("private_recovery_epoch_id")
+                    == existing_epoch["epoch_id"]
+                    for leg in outbox.get("providers", {}).values()
+                )
+            ):
+                raise RecoveryError("prior video distribution requires reconciliation")
         evidence = read_evidence(storage, job_id)
+        if evidence and evidence.get("corrupt"):
+            raise RecoveryError("prior video provider evidence is corrupt")
         if evidence and evidence.get("records"):
             if any(
                 item.get("media_kind") == "video"
@@ -273,7 +324,18 @@ def reserve(
         or any(ord(char) < 32 for char in inventory_reference)
     ):
         raise RecoveryError("named operator and provider inventory reference are required")
-    original_manifest = _verify_original(storage, job_id, identity, script_sha256, mp3_sha256)
+    previous = current_epoch(storage, job_id)
+    existing_epoch = (
+        previous if previous is not None and previous.get("request_id") == request_id else None
+    )
+    original_manifest = _verify_original(
+        storage,
+        job_id,
+        identity,
+        script_sha256,
+        mp3_sha256,
+        existing_epoch=existing_epoch,
+    )
     old_raw = storage.get_bytes(f"jobs/{job_id}/video-budget.json")
     if old_raw is None:
         raise RecoveryError("historical video attempt budget is missing")
@@ -318,6 +380,7 @@ def reserve(
                 raise RecoveryError("a further epoch requires fresh provider reconciliation")
         entry = {
             "epoch_id": epoch_id,
+            "sequence": len(existing) + 1,
             "request_id": request_id,
             "operator": operator,
             "identity": identity,
@@ -346,6 +409,15 @@ def reserve(
         if document.get("job_id") != job_id:
             raise RecoveryError("original manifest changed during reservation")
         generation = document["generation"]
+        previous_sequence = generation.get("video_recovery_epoch_sequence", 0)
+        if not isinstance(previous_sequence, int) or previous_sequence > entry["sequence"]:
+            raise RecoveryError("newer recovery epoch already marked the manifest")
+        if (
+            previous_sequence == entry["sequence"]
+            and generation.get("video_recovery_epoch_id") != entry["epoch_id"]
+        ):
+            raise RecoveryError("recovery marker conflicts with reserved epoch")
+        generation["video_recovery_epoch_sequence"] = entry["sequence"]
         generation["video_recovery_epoch_id"] = entry["epoch_id"]
         from podcaster.generation import manifest_bytes
 
