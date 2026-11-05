@@ -12,9 +12,12 @@ anyio==4.16.0
 azure-core==1.41.0
     # via
     #   azure-identity
+    #   azure-keyvault-secrets
     #   azure-storage-blob
     #   azure-storage-queue
 azure-identity==1.27.0
+    # via squadscope-podcaster (pyproject.toml)
+azure-keyvault-secrets==4.12.0
     # via squadscope-podcaster (pyproject.toml)
 azure-storage-blob==12.31.1
     # via squadscope-podcaster (pyproject.toml)
@@ -67,6 +70,7 @@ iniconfig==2.3.1
     # via pytest
 isodate==0.7.2
     # via
+    #   azure-keyvault-secrets
     #   azure-storage-blob
     #   azure-storage-queue
 jinja2==3.1.6
@@ -175,6 +179,7 @@ typing-extensions==4.16.0
     #   anyio
     #   azure-core
     #   azure-identity
+    #   azure-keyvault-secrets
     #   azure-storage-blob
     #   azure-storage-queue
     #   fastapi
