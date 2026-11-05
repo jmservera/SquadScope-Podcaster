@@ -300,6 +300,13 @@ class FakeQueue:
     def delete_message(self, message: QueueMessage):
         self.deleted.append(message)
 
+    def update_message(self, message: QueueMessage, *, visibility_timeout: int):
+        return replace(
+            message,
+            pop_receipt=f"{message.pop_receipt}-renewed",
+            next_visible_on=datetime.now(timezone.utc) + timedelta(seconds=visibility_timeout),
+        )
+
 
 def _make_message(job_id: str, dequeue_count: int = 1) -> QueueMessage:
     import base64
@@ -639,6 +646,107 @@ class TestAlreadyProcessed:
 
 
 class TestRunVideoGeneration:
+    def test_completed_attempt_stays_skipped_after_its_original_deadline(
+        self, storage, dry_config, monkeypatch
+    ):
+        from podcaster.video import job_runner as runner
+        from podcaster.video.budget import VideoStageBudget
+
+        job_id = "already-complete"
+        started = datetime(2026, 11, 1, tzinfo=timezone.utc)
+        original = VideoStageBudget.start(now_utc=started, utcnow=lambda: started).to_dict()
+        storage.set_manifest(job_id, {"generation": {"video_runner": {"status": "completed"}}})
+        storage.put_bytes(
+            runner.video_budget_path(job_id), json.dumps(original).encode(), "application/json"
+        )
+        forbidden = MagicMock(side_effect=AssertionError("completed job replayed"))
+        monkeypatch.setattr(runner, "create_intermediate_store", forbidden)
+        result = run_video_generation(
+            job_id,
+            storage,
+            config=dry_config,
+            now=started + timedelta(seconds=5400),
+        )
+        assert result.status == STATUS_SKIPPED
+        assert result.reason == REASON_ALREADY_PROCESSED
+        assert storage.get_bytes(runner.video_budget_path(job_id)) == json.dumps(original).encode()
+        assert (
+            "video_attempt_terminal"
+            not in json.loads(storage.get_bytes(manifest_path(job_id)))["generation"]
+        )
+        forbidden.assert_not_called()
+
+    def test_short_retry_reuses_original_budget(self, storage, dry_config, monkeypatch):
+        from podcaster.video import job_runner as runner
+
+        job_id = "unexpired-attempt"
+        started = datetime(2026, 11, 1, tzinfo=timezone.utc)
+        storage.set_manifest(job_id, {"generation": {"validation": {"duration_seconds": 60}}})
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        monkeypatch.setattr(
+            "podcaster.video.video_gen.record_episode",
+            MagicMock(side_effect=RuntimeError("transient recording failure")),
+        )
+        observed = []
+        for at in (started, started + timedelta(seconds=60)):
+            with pytest.raises(TransientVideoError):
+                run_video_generation(
+                    job_id,
+                    storage,
+                    config=dry_config,
+                    now=at,
+                    on_budget_resolved=lambda value: observed.append(value.to_dict()),
+                )
+        assert observed[0] == observed[1]
+        assert json.loads(storage.get_bytes(runner.video_budget_path(job_id))) == observed[0]
+        assert (
+            json.loads(storage.get_bytes(manifest_path(job_id)))["generation"].get(
+                "video_attempt_terminal"
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize("redelivery_seconds", [5400, 10800])
+    def test_expired_attempt_is_terminal_before_any_video_side_effect(
+        self, storage, dry_config, monkeypatch, redelivery_seconds
+    ):
+        from podcaster.video import job_runner as runner
+        from podcaster.video.budget import VideoStageBudget
+
+        job_id = "spent-attempt"
+        started = datetime(2026, 11, 1, tzinfo=timezone.utc)
+        storage.set_manifest(
+            job_id,
+            {"generation": {"video_runner": {"status": "failed", "reason": "first_error"}}},
+        )
+        original = VideoStageBudget.start(now_utc=started, utcnow=lambda: started).to_dict()
+        storage.put_bytes(
+            runner.video_budget_path(job_id), json.dumps(original).encode(), "application/json"
+        )
+        for boundary in (
+            "create_intermediate_store",
+            "create_scratch_storage_backend",
+            "create_clip_queue_backend",
+            "claim_pipeline",
+            "commit_immutable_artifact",
+            "distribute_video",
+        ):
+            monkeypatch.setattr(
+                runner, boundary, MagicMock(side_effect=AssertionError(f"crossed {boundary}"))
+            )
+        redelivery = started + timedelta(seconds=redelivery_seconds)
+        outcome = run_video_generation(job_id, storage, config=dry_config, now=redelivery)
+
+        assert outcome.status == STATUS_FAILED
+        assert outcome.reason == runner.REASON_ATTEMPT_EXPIRED
+        assert json.loads(storage.get_bytes(runner.video_budget_path(job_id))) == original
+        generation = json.loads(storage.get_bytes(manifest_path(job_id)))["generation"]
+        assert generation["video_runner"] == {"status": "failed", "reason": "first_error"}
+        assert generation["video_budget"] == original
+        assert (
+            generation["video_attempt_terminal"]["deadline_at_utc"] == original["deadline_at_utc"]
+        )
+
     def test_no_manifest_raises_transient(self, storage, dry_config):
         with pytest.raises(TransientVideoError, match="no manifest"):
             run_video_generation("missing-job", storage, config=dry_config)
@@ -896,6 +1004,56 @@ class TestRunVideoGeneration:
         phase_names = {p["name"] for p in perf["phases"]}
         assert {"recording", "composition", "distribution"} <= phase_names
         assert perf["total_wall_seconds"] >= 0.0
+
+    @patch("podcaster.video.job_runner._probe_audio_duration", return_value=60.0)
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_ordinary_spotify_runner_passes_typed_identity_to_real_adapter(
+        self, mock_compose, mock_record, _probe, storage, monkeypatch
+    ):
+        from podcaster.video import distribution
+
+        job_id = "video-ordinary-spotify"
+        storage.set_manifest(
+            job_id,
+            {
+                "job_id": job_id,
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {
+                    "article_title": "Ordinary draft",
+                    "week": "2026-W37",
+                    "publish_run_id": "123",
+                    "article_sha256": "a" * 64,
+                    "manifest_sha256": "b" * 64,
+                },
+                "lifecycle": {"transitions": [{"to": "accepted"}]},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        mock_record.return_value = MagicMock(recorded=[])
+
+        def compose(*args, output_path, **kwargs):
+            output_path.write_bytes(b"V" * 2048)
+            return MagicMock(duration_seconds=60.0, segment_count=2, has_audio=False)
+
+        mock_compose.side_effect = compose
+        monkeypatch.delenv("DISTRIBUTION_OUTBOX_ENABLED", raising=False)
+        adapter = MagicMock(wraps=distribution.upload_to_spotify_episode)
+        monkeypatch.setattr(distribution, "upload_to_spotify_episode", adapter)
+        result = run_video_generation(
+            job_id,
+            storage,
+            config=VideoDistributionConfig(
+                spotify_upload_enabled=True, blob_archive_enabled=False, dry_run=True
+            ),
+        )
+        assert result.status == STATUS_COMPLETED
+        assert result.distribution.spotify_upload_updated is True
+        adapter.assert_called_once()
+        assert adapter.call_args.kwargs["publication_identity_context"] == PublicationIdentity(
+            job_id, "2026-W37", "123", "a" * 64, "b" * 64
+        )
+        assert adapter.call_args.kwargs["publication_storage"] is storage
 
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
@@ -3271,6 +3429,7 @@ class _VisibilityQueue:
         self._messages = list(messages)
         self.visibility_timeouts: list[int] = []
         self.deleted: list = []
+        self.updated: list[int] = []
 
     def receive_messages(self, max_messages=1, *, visibility_timeout=600):
         self.visibility_timeouts.append(visibility_timeout)
@@ -3288,6 +3447,16 @@ class _VisibilityQueue:
     def delete_message(self, message):
         self.deleted.append(message)
 
+    def update_message(self, message, *, visibility_timeout):
+        self.updated.append(visibility_timeout)
+        if message.next_visible_on is None:
+            return message
+        return replace(
+            message,
+            pop_receipt=f"{message.pop_receipt}-renewed",
+            next_visible_on=datetime.now(timezone.utc) + timedelta(seconds=visibility_timeout),
+        )
+
 
 class TestEditorVisibilityTimeout:
     def test_drain_uses_video_visibility_timeout(self, storage, dry_config, monkeypatch):
@@ -3297,14 +3466,16 @@ class TestEditorVisibilityTimeout:
         storage.set_manifest("j1", {"generation": {"video_runner": {"status": "completed"}}})
         queue = _VisibilityQueue([_make_message("j1")])
         drain(queue, storage, dry_config)
-        assert queue.visibility_timeouts[0] == DEFAULT_VIDEO_VISIBILITY_TIMEOUT
+        assert queue.visibility_timeouts[0] == 900
+        assert queue.updated == [DEFAULT_VIDEO_VISIBILITY_TIMEOUT]
 
     def test_drain_honours_env_override(self, storage, dry_config, monkeypatch):
         monkeypatch.setenv("PODCASTER_VIDEO_VISIBILITY_TIMEOUT", "1234")
         storage.set_manifest("j1", {"generation": {"video_runner": {"status": "completed"}}})
         queue = _VisibilityQueue([_make_message("j1")])
         drain(queue, storage, dry_config)
-        assert queue.visibility_timeouts[0] == 1234
+        assert queue.visibility_timeouts[0] == 900
+        assert queue.updated == [1234]
 
     def test_drain_passes_visibility_deadline_to_job_context(
         self,
@@ -3358,9 +3529,9 @@ class TestEditorVisibilityTimeout:
         deadline_from_request_start = deadlines[0] - started
         remaining_after_receive = deadlines[0] - time.monotonic()
 
-        assert 4.8 <= deadline_from_request_start <= 5.2
-        assert 0 < remaining_after_receive <= 4.95
-        assert remaining_after_receive <= deadline_from_request_start - 0.05
+        assert 5394 <= deadline_from_request_start <= 5396
+        assert 5394 <= remaining_after_receive <= 5396
+        assert queue.updated == [5400]
 
     def test_missing_authoritative_timestamp_fails_closed(
         self,

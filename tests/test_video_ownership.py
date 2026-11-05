@@ -97,6 +97,77 @@ def _successor_guard(
     )
 
 
+def test_queue_visibility_renewal_never_extends_separate_editor_lease(tmp_path):
+    storage = _storage(tmp_path)
+    at = datetime.now(timezone.utc)
+    guard = _claim(storage, now=at)
+    guard.refresh_visibility(at + timedelta(minutes=20))
+    current = json.loads(storage.get_bytes(ownership_path("job")))["claim"]
+    assert current["visibility_expires_at"] == (at + timedelta(minutes=20)).isoformat().replace(
+        "+00:00", "Z"
+    )
+    assert current["lease_expires_at"] == (at + timedelta(minutes=5)).isoformat().replace(
+        "+00:00", "Z"
+    )
+    _force_takeover(storage, "job")
+    with pytest.raises(OwnershipError):
+        guard.refresh_visibility(at + timedelta(minutes=30))
+
+
+def test_clipped_editor_expiry_survives_multiple_queue_renewals(tmp_path):
+    storage = _storage(tmp_path)
+    at = datetime.now(timezone.utc)
+    clock = [at]
+    guard = VideoOwnershipGuard.acquire(
+        storage,
+        "job",
+        owner="video-runner",
+        execution_id="execution-1",
+        visibility_expires_at=at + timedelta(minutes=15),
+        lease_expires_at=at + timedelta(minutes=30),
+        now=lambda: clock[0],
+    )
+    clock[0] = at + timedelta(minutes=13, seconds=20)
+    guard.refresh_visibility(clock[0] + timedelta(minutes=15))
+    clock[0] = at + timedelta(minutes=26, seconds=40)
+    guard.refresh_visibility(clock[0] + timedelta(minutes=15))
+    claim = json.loads(storage.get_bytes(ownership_path("job")))["claim"]
+    assert datetime.fromisoformat(
+        claim["lease_expires_at"].replace("Z", "+00:00")
+    ) == at + timedelta(minutes=30)
+    assert datetime.fromisoformat(
+        claim["editor_expires_at"].replace("Z", "+00:00")
+    ) == at + timedelta(minutes=30)
+    clock[0] = at + timedelta(minutes=30)
+    with pytest.raises(OwnershipError, match="expired"):
+        guard.assert_current()
+    with pytest.raises(OwnershipError, match="expired"):
+        guard.refresh_visibility(clock[0] + timedelta(minutes=15))
+
+
+def test_explicit_editor_renewal_can_extend_clipped_authority(tmp_path):
+    storage = _storage(tmp_path)
+    at = datetime.now(timezone.utc)
+    guard = VideoOwnershipGuard.acquire(
+        storage,
+        "job",
+        owner="video-runner",
+        execution_id="execution-1",
+        visibility_expires_at=at + timedelta(minutes=15),
+        lease_expires_at=at + timedelta(minutes=30),
+        now=lambda: at,
+    )
+    guard.refresh_lease(at + timedelta(minutes=45))
+    guard.refresh_visibility(at + timedelta(minutes=25))
+    claim = json.loads(storage.get_bytes(ownership_path("job")))["claim"]
+    assert datetime.fromisoformat(
+        claim["lease_expires_at"].replace("Z", "+00:00")
+    ) == at + timedelta(minutes=25)
+    assert datetime.fromisoformat(
+        claim["editor_expires_at"].replace("Z", "+00:00")
+    ) == at + timedelta(minutes=45)
+
+
 def _notification_outbox(
     tmp_path: Path,
 ) -> tuple[

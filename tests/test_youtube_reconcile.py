@@ -299,7 +299,13 @@ def test_upload_stamps_identity_tag(video_file):
             return 200, {"location": "https://upload.example/s"}, b""
 
     video_id, _ = upload_to_youtube(
-        video_file, "t", "d", _config(), transport=UploadFake(), identity_tag=TAG
+        video_file,
+        "t",
+        "d",
+        _config(),
+        transport=UploadFake(),
+        identity_tag=TAG,
+        job_id="ordinary-job",
     )
     assert video_id == "vid-new"
     assert TAG in captured["metadata"]["snippet"]["tags"]

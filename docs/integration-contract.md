@@ -422,7 +422,45 @@ implement that later review. Video/provider mutation therefore remains blocked;
 generic `/api/review` approval, `publish_on_approval`, and a configured video target
 do not unblock it. Existing unrelated legacy publication behavior is unchanged.
 The manual video enqueue endpoint returns `409` for these jobs, and the direct video
-worker skips them before resolving default configuration, stores or mutable budgets.
+worker rejects any missing/invalid completed-media proof before creating scratch
+stores, clip clients, or mutable budgets. Exact-reviewed completed audio can be
+prepared privately on the ordinary video queue; neither that queue nor an
+approved script enables a provider upload.
+
+### Private-only expired video attempt continuation (W44/W45 originals)
+
+The manually enqueued exact-script video endpoint still returns `409`. A separate
+`POST /api/jobs/{job_id}/video/private-recovery` boundary requires both normal
+API authentication and the independently configured
+`X-Video-Recovery-Operator-Key` (`PODCASTER_VIDEO_RECOVERY_OPERATOR_KEY`).
+Without that key configured the boundary is disabled. The request names the
+original job in the path and provides `week`, `publish_run_id`,
+`article_sha256`, `manifest_sha256`, `audio_sha256`, and a nonempty
+`inventory_reference` for the owner-visible provider inventory. Only
+`podcast-2026-W44-00bc06dfb6e2` (11,664,239-byte MP3) and
+`podcast-2026-W45-9798e93edc06` (12,170,805-byte MP3) are eligible,
+and only after exact review/script/completed-claim/WAV/MP3 revalidation and
+expiry of their first durable video attempt. Later unknown-claim or placeholder
+jobs cannot enter this route. This is **private video preparation only**.
+
+Reservation atomically records an epoch and pending dispatch in the original
+manifest. When the operator key is configured, the API reconciles pending
+dispatches at startup and every 60 seconds; if the queue backend is unavailable,
+the intent remains pending until it can be sent or its deadline expires. Expired,
+unselected epochs are made terminal rather than re-enqueued. An authenticated
+operator can also reconcile the same intent with
+`POST /api/jobs/{job_id}/video/private-recovery/{epoch_id}/dispatch`;
+repeated sends carry the same epoch identity and cannot extend its deadline.
+Old ordinary messages are fenced; a recovery epoch uses its own clip namespace
+and immutable MP4/held-outbox candidate paths. Only one candidate selected by
+the original manifest's CAS is authoritative; readers verify both its original
+reviewed-media proof and persisted private MP4 digest. Candidates alone are inert.
+Prior, ambiguous, or corrupt video provider evidence blocks replay. This release
+has **no transition from held private output to provider dispatch**, including
+Spotify draft or unlisted YouTube. A completed MP4, an inventory reference, or
+script approval is not upload authorization. Owner-visible provider reconciliation,
+independent media-bound approval and a separately reviewed upload protocol remain
+required before any provider action; public promotion is out of scope.
 
 ## Provider delivery outcomes
 

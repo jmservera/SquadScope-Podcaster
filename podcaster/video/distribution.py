@@ -826,16 +826,27 @@ def upload_to_youtube(
     raise_on_failure: bool = False,
     budget: VideoStageBudget | None = None,
     identity_tag: str | None = None,
+    job_id: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Upload a video to YouTube via the Data API v3.
 
     ``identity_tag`` stamps the upload with the deterministic publication
     identity tag so an ambiguous create can later be reconciled (#678).
+    Enabled uploads require a validated job ID, including dry runs, so the
+    private-original hold cannot be bypassed by omitting caller identity.
 
     Returns (video_id, video_url) on success, (None, None) on failure.
     Raises RuntimeError on auth failures; returns None on upload failures
     after retries so distribution continues to other targets.
     """
+    from podcaster.video.recovery import RecoveryDenied, private_original
+
+    if config.youtube_enabled and (
+        not isinstance(job_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,127}", job_id)
+    ):
+        raise RecoveryDenied("validated job identity required for YouTube upload")
+    if private_original(job_id):
+        raise RecoveryDenied("private recovery original cannot upload to YouTube")
     if not config.youtube_enabled:
         logger.info("YouTube upload disabled")
         return None, None
@@ -1434,6 +1445,20 @@ def upload_to_spotify_episode(
     ``podcaster.publish``. Returns True on success, False otherwise.
     """
 
+    from podcaster.publication_state import (
+        PublicationStateError,
+        validate_video_publication_identity,
+    )
+    from podcaster.video.recovery import RecoveryDenied, private_original
+
+    try:
+        identity = validate_video_publication_identity(
+            publication_identity_context, job_id=job_id, publish_run_id=publish_run_id
+        )
+    except PublicationStateError as exc:
+        raise RecoveryDenied("Spotify video requires coherent publication identity") from exc
+    if private_original(identity.accepted_job_id):
+        raise RecoveryDenied("private recovery original cannot upload to Spotify")
     if config.dry_run:
         logger.info("Spotify video upload dry-run: audio_anchor=%s", anchor_id)
         return (True, None, None) if return_episode_id else True
@@ -1452,7 +1477,8 @@ def upload_to_spotify_episode(
             episode_number=episode_number,
             before_mutation=before_mutation,
             publication_storage=publication_storage,
-            publication_identity_context=publication_identity_context,
+            publication_identity_context=identity,
+            job_id=identity.accepted_job_id,
         )
         if result.status == "failed":
             logger.error("Spotify video upload failed: %s", result.error)
@@ -1736,6 +1762,10 @@ def distribute_video(
     when exactly one match exists, otherwise it stays fail-closed (#678).
     Spotify closes that window by reconciling drafts before creating one.
     """
+    from podcaster.video.recovery import RecoveryDenied, private_original
+
+    if private_original(job_id):
+        raise RecoveryDenied("private recovery original cannot use automatic distribution")
     result = DistributionResult(publish_run_id=publish_run_id)
     prior_published = published or {}
     youtube_required_failure: YouTubeDeliveryError | None = None
@@ -1849,6 +1879,7 @@ def distribute_video(
                 "tags": tags,
                 "transport": provider_transport,
                 "raise_on_failure": config.youtube_required,
+                "job_id": job_id,
             }
             if budget is not None:
                 youtube_kwargs["budget"] = budget

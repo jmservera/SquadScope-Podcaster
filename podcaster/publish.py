@@ -2991,6 +2991,7 @@ def upload_video_to_episode(
     before_mutation: Callable[[], object] | None = None,
     publication_storage: StorageBackend | None = None,
     publication_identity_context: PublicationIdentity | None = None,
+    job_id: str | None = None,
     publish_behavior: str = "draft",
     publish_on: datetime | None = None,
     episode_type: str = "full",
@@ -3022,6 +3023,20 @@ def upload_video_to_episode(
     Returns a PublishResult; ``anchor_episode_id`` is the NEW video episode id,
     status is "draft"/"scheduled"/"published" on success and "failed" otherwise.
     """
+    from podcaster.publication_state import (
+        PublicationStateError,
+        validate_video_publication_identity,
+    )
+    from podcaster.video.recovery import RecoveryDenied, private_original
+
+    try:
+        publication_identity_context = validate_video_publication_identity(
+            publication_identity_context, job_id=job_id
+        )
+    except PublicationStateError as exc:
+        raise RecoveryDenied("Spotify video requires coherent publication identity") from exc
+    if private_original(publication_identity_context.accepted_job_id):
+        raise RecoveryDenied("private recovery original cannot upload Spotify video")
     try:
         video_path = _resolve_publish_media_path(video_path, "Video")
     except ValueError as exc:

@@ -80,6 +80,30 @@ class PublicationIdentity:
     manifest_sha256: str
 
 
+def validate_video_publication_identity(
+    identity: Any, *, job_id: str | None = None, publish_run_id: str | None = None
+) -> PublicationIdentity:
+    """Validate the canonical video identity at a final provider boundary."""
+    if (
+        not isinstance(identity, PublicationIdentity)
+        or not isinstance(identity.accepted_job_id, str)
+        or not identity.accepted_job_id.strip()
+        or identity.accepted_job_id.endswith("-dry-run")
+        or not isinstance(identity.week, str)
+        or not _WEEK_RE.fullmatch(identity.week)
+        or not isinstance(identity.publish_run_id, str)
+        or not _RUN_RE.fullmatch(identity.publish_run_id)
+        or not isinstance(identity.article_sha256, str)
+        or not _SHA256_RE.fullmatch(identity.article_sha256)
+        or not isinstance(identity.manifest_sha256, str)
+        or not _SHA256_RE.fullmatch(identity.manifest_sha256)
+        or (job_id is not None and job_id != identity.accepted_job_id)
+        or (publish_run_id is not None and publish_run_id != identity.publish_run_id)
+    ):
+        raise PublicationStateError("valid coherent video publication identity is required")
+    return identity
+
+
 @dataclass(frozen=True)
 class PublicationEvidence:
     seq: int

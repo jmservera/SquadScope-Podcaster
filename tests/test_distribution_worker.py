@@ -4,6 +4,8 @@ import json
 import time
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from podcaster.distribution_outbox import DistributionOutboxRepository, commit_immutable_artifact
 from podcaster.distribution_worker import process_message, provider_mutation_enabled
 from podcaster.publication_state import PublicationIdentity
@@ -43,7 +45,7 @@ def _message(body, *, message_id="m1", pop_receipt=None, dequeue_count=1):
     )
 
 
-def _setup(tmp_path):
+def _setup(tmp_path, *, job_id="podcast-2026-W40-comparative"):
     storage = LocalStorageBackend(tmp_path / "storage", "http://localhost/artifacts")
     source = tmp_path / "video.mp4"
     source.write_bytes(b"safe-video")
@@ -55,7 +57,7 @@ def _setup(tmp_path):
         suffix=".mp4",
     )
     identity = PublicationIdentity(
-        accepted_job_id="podcast-2026-W40-comparative",
+        accepted_job_id=job_id,
         week="2026-W40",
         publish_run_id="run-123",
         article_sha256="a" * 64,
@@ -340,3 +342,83 @@ def test_enabled_dispatch_renews_lease_while_dispatcher_runs(tmp_path):
     assert outcome.reason == "injected_dispatch"
     assert len(heartbeats) > 1
     assert queue.deleted == ["m1"]
+
+
+def test_resumed_private_distribution_worker_never_calls_final_adapters(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    from podcaster import publish
+    from podcaster.distribution_outbox import outbox_path
+    from podcaster.video import distribution
+    from podcaster.video.recovery import PRIVATE_ORIGINALS
+
+    original = next(iter(PRIVATE_ORIGINALS))
+    for case in ("intact", "lost_metadata", "missing_id", "unknown_outcome", "script_only"):
+        root = tmp_path / case
+        root.mkdir()
+        storage, repository, _clock, document = _setup(root, job_id=original)
+        path = outbox_path(document["outbox_id"])
+        if case != "intact":
+            raw = repository.read(document["outbox_id"])
+            if case == "lost_metadata":
+                raw.pop("publication_identity")
+            elif case == "missing_id":
+                raw["publication_identity"].pop("accepted_job_id")
+            elif case == "unknown_outcome":
+                raw["providers"]["youtube"]["result"] = "publication_unknown"
+            else:
+                raw["artifact"]["media_kind"] = "script"
+            storage.put_bytes(path, json.dumps(raw).encode(), "application/json")
+        youtube = Mock(side_effect=AssertionError("YouTube provider called"))
+        spotify = Mock(side_effect=AssertionError("Spotify provider called"))
+        monkeypatch.setattr(distribution, "upload_to_youtube", youtube)
+        monkeypatch.setattr(publish, "upload_video_to_episode", spotify)
+        queue = MemoryQueue()
+        try:
+            outcome = process_message(
+                _message(encode_distribution_message(document["outbox_id"]), dequeue_count=2),
+                storage=storage,
+                queue=queue,
+                repository=repository,
+                mutation_enabled=True,
+            )
+        except Exception as exc:
+            assert "provider called" not in str(exc), case
+        else:
+            assert outcome.reason in {
+                "legacy_provider_dispatch_not_authorized",
+                "media_review_required",
+            }, case
+        youtube.assert_not_called()
+        spotify.assert_not_called()
+
+
+def test_resumed_private_worker_denies_identity_even_past_media_review_gate(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    from podcaster import distribution_outbox, publish
+    from podcaster.video import distribution
+    from podcaster.video.recovery import PRIVATE_ORIGINALS, RecoveryDenied
+
+    original = next(iter(PRIVATE_ORIGINALS))
+    storage, repository, _clock, document = _setup(tmp_path, job_id=original)
+    youtube = Mock(side_effect=AssertionError("YouTube provider called"))
+    spotify = Mock(side_effect=AssertionError("Spotify provider called"))
+    monkeypatch.setattr(distribution, "upload_to_youtube", youtube)
+    monkeypatch.setattr(publish, "upload_video_to_episode", spotify)
+    # Isolate the identity-wide hold from the earlier media-review gate.
+    monkeypatch.setattr(distribution_outbox, "media_review_allows_distribution", lambda _: True)
+    queue = MemoryQueue()
+    with pytest.raises(
+        RecoveryDenied, match="private recovery originals have no provider dispatch transition"
+    ):
+        process_message(
+            _message(encode_distribution_message(document["outbox_id"]), dequeue_count=2),
+            storage=storage,
+            queue=queue,
+            repository=repository,
+            mutation_enabled=True,
+        )
+    assert queue.deleted == []
+    youtube.assert_not_called()
+    spotify.assert_not_called()

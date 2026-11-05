@@ -645,6 +645,41 @@ class TestEnqueueVideo:
         assert resp.status_code == 502
 
 
+class TestPrivateVideoRecoveryBoundary:
+    @pytest.mark.parametrize(
+        "configured,supplied,status",
+        [
+            (None, None, 503),
+            ("operator-secret", None, 403),
+            ("operator-secret", "wrong", 403),
+        ],
+    )
+    def test_operator_key_denies_before_reservation_or_queue(
+        self, client, monkeypatch, configured, supplied, status
+    ):
+        if configured:
+            monkeypatch.setenv("PODCASTER_VIDEO_RECOVERY_OPERATOR_KEY", configured)
+        else:
+            monkeypatch.delenv("PODCASTER_VIDEO_RECOVERY_OPERATOR_KEY", raising=False)
+        headers = {"X-Video-Recovery-Operator-Key": supplied} if supplied else {}
+        payload = {
+            "week": "2026-W44",
+            "publish_run_id": "1",
+            "article_sha256": "a" * 64,
+            "manifest_sha256": "b" * 64,
+            "audio_sha256": "c" * 64,
+            "inventory_reference": "owner-readback",
+        }
+        with patch("podcaster.video.recovery.reserve_epoch") as reserve:
+            response = client.post(
+                "/api/jobs/podcast-2026-W44-00bc06dfb6e2/video/private-recovery",
+                json=payload,
+                headers=headers,
+            )
+        assert response.status_code == status
+        reserve.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Tests: GET /healthz
 # ---------------------------------------------------------------------------

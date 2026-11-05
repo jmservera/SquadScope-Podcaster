@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from functools import wraps
 from html.parser import HTMLParser
 from unittest.mock import MagicMock, call, patch
 
@@ -42,6 +43,24 @@ def _clean_env(monkeypatch):
         "PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE",
     ):
         monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _legacy_video_test_identity(monkeypatch):
+    """Supply the accepted test identity to historical video upload scenarios."""
+    import podcaster.publish as pub
+
+    original = pub.upload_video_to_episode
+
+    @wraps(original)
+    def with_identity(*args, **kwargs):
+        kwargs.setdefault(
+            "publication_identity_context",
+            PublicationIdentity("job-1", "2026-W37", "1", "a" * 64, "b" * 64),
+        )
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pub, "upload_video_to_episode", with_identity)
 
 
 @pytest.fixture
@@ -487,7 +506,15 @@ class TestPublishEpisode:
         build_session = MagicMock(side_effect=SpotifyPublishError("stop after session"))
         monkeypatch.setattr(pub, "_build_session", build_session)
 
-        result = publish_episode(mp3_file, "Episodio", "Descripcion", language="es")
+        result = publish_episode(
+            mp3_file,
+            "Episodio",
+            "Descripcion",
+            language="es",
+            publication_identity_context=PublicationIdentity(
+                "job-1", "2026-W37", "1", "a" * 64, "b" * 64
+            ),
+        )
 
         assert result.status == "failed"
         build_session.assert_called_once_with("dc", "key", "show-es")

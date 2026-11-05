@@ -6,6 +6,7 @@ import io
 import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from http.client import HTTPException, HTTPResponse, IncompleteRead
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -13,7 +14,7 @@ from urllib.error import URLError
 
 import pytest
 
-from podcaster.publication_state import PUBLICATION_UNKNOWN
+from podcaster.publication_state import PUBLICATION_UNKNOWN, PublicationIdentity
 from podcaster.storage import LocalStorageBackend
 from podcaster.video.budget import ProviderMutationAdmissionError, VideoStageBudget
 from podcaster.video.distribution import (
@@ -166,12 +167,22 @@ def test_actual_upload_protocol_failure_does_not_expand_mutation_retries(
     if stage == "init":
         with pytest.raises(IncompleteRead):
             upload_to_youtube(
-                video_file, "title", "description", youtube_config, raise_on_failure=True
+                video_file,
+                "title",
+                "description",
+                youtube_config,
+                raise_on_failure=True,
+                job_id="ordinary-job",
             )
     else:
         with pytest.raises(YouTubeDeliveryError) as raised:
             upload_to_youtube(
-                video_file, "title", "description", youtube_config, raise_on_failure=True
+                video_file,
+                "title",
+                "description",
+                youtube_config,
+                raise_on_failure=True,
+                job_id="ordinary-job",
             )
         assert raised.value.code == "youtube_upload_error"
         assert raised.value.retryable is False
@@ -312,6 +323,27 @@ class TestVideoDistributionConfig:
 
 
 class TestUploadToYouTube:
+    @pytest.mark.parametrize("dry_run", [False, True])
+    @pytest.mark.parametrize(
+        "job_id", [None, "", " ", "../outside", [], "podcast-2026-W44-00bc06dfb6e2"]
+    )
+    def test_missing_or_private_job_identity_denies_before_transport(
+        self, video_file, job_id, dry_run
+    ):
+        from podcaster.video.recovery import RecoveryDenied
+
+        transport = FakeTransport()
+        with pytest.raises(RecoveryDenied):
+            upload_to_youtube(
+                video_file,
+                "title",
+                "desc",
+                VideoDistributionConfig(youtube_enabled=True, dry_run=dry_run),
+                transport=transport,
+                job_id=job_id,
+            )
+        assert transport.requests == []
+
     def test_disabled(self, video_file):
         config = VideoDistributionConfig(youtube_enabled=False)
         vid_id, vid_url = upload_to_youtube(video_file, "title", "desc", config)
@@ -320,7 +352,9 @@ class TestUploadToYouTube:
 
     def test_dry_run(self, video_file):
         config = VideoDistributionConfig(youtube_enabled=True, dry_run=True)
-        vid_id, vid_url = upload_to_youtube(video_file, "title", "desc", config)
+        vid_id, vid_url = upload_to_youtube(
+            video_file, "title", "desc", config, job_id="ordinary-job"
+        )
         assert vid_id == "dry-run-id"
         assert "dry-run-id" in vid_url
 
@@ -345,6 +379,7 @@ class TestUploadToYouTube:
             "Test Desc",
             youtube_config,
             transport=transport,
+            job_id="ordinary-job",
         )
         assert vid_id == "yt-abc123"
         assert "yt-abc123" in vid_url
@@ -388,6 +423,7 @@ class TestUploadToYouTube:
             "description",
             youtube_config,
             transport=transport,
+            job_id="ordinary-job",
         )
 
         assert video_id == "large-video-id"
@@ -418,6 +454,7 @@ class TestUploadToYouTube:
             youtube_config,
             transport=FakeTransport(),
             budget=budget,
+            job_id="ordinary-job",
         ) == ("yt-safe", "https://youtube.com/watch?v=yt-safe")
         assert captured == [budget]
 
@@ -429,6 +466,7 @@ class TestUploadToYouTube:
                 "desc",
                 youtube_config,
                 transport=FakeTransport(),
+                job_id="ordinary-job",
             )
 
     def test_file_too_small(self, tmp_path, youtube_config):
@@ -441,6 +479,7 @@ class TestUploadToYouTube:
                 "desc",
                 youtube_config,
                 transport=FakeTransport(),
+                job_id="ordinary-job",
             )
 
     def test_upload_init_500_is_ambiguous_and_not_retried(self, video_file, youtube_config):
@@ -457,6 +496,7 @@ class TestUploadToYouTube:
                 "desc",
                 youtube_config,
                 transport=transport,
+                job_id="ordinary-job",
             )
         assert exc.value.mutation_ambiguous is True
         assert exc.value.retryable is False
@@ -478,6 +518,7 @@ class TestUploadToYouTube:
                 youtube_config,
                 transport=transport,
                 raise_on_failure=True,
+                job_id="ordinary-job",
             )
         assert raised.value.retryable is False
         assert raised.value.http_status == 403
@@ -496,6 +537,7 @@ class TestUploadToYouTube:
                 youtube_config,
                 transport=FailingTransport(),
                 raise_on_failure=True,
+                job_id="ordinary-job",
             )
         assert raised.value.code == "youtube_oauth_network_error"
         assert raised.value.retryable is True
@@ -530,6 +572,7 @@ class TestUploadToYouTube:
                 youtube_config,
                 transport=transport,
                 raise_on_failure=True,
+                job_id="ordinary-job",
             )
         assert notified == ["sent"]
         assert raised.value.oauth_error == "invalid_grant"
@@ -558,6 +601,7 @@ class TestUploadToYouTube:
                 youtube_config,
                 transport=transport,
                 raise_on_failure=True,
+                job_id="ordinary-job",
             )
         assert raised.value.code == "youtube_oauth_http_400"
         assert raised.value.oauth_error is None
@@ -1015,6 +1059,7 @@ class TestDistributionBudget:
                 youtube_config,
                 transport=transport,
                 budget=budget,
+                job_id="ordinary-job",
             )
 
         assert captured.value.mutation_started is True
@@ -1248,6 +1293,31 @@ class TestDistributeVideo:
         assert result.youtube_id == "dry-run-id"
         assert result.spotify_rss_updated is False
         assert result.status == "completed"
+
+    def test_distributor_passes_job_identity_to_adapter(self, video_file, monkeypatch):
+        from podcaster.video import distribution
+
+        seen = []
+
+        def capture(*args, **kwargs):
+            seen.append(kwargs.get("job_id"))
+            return "video", "url"
+
+        monkeypatch.setattr(distribution, "upload_to_youtube", capture)
+        distribute_video(
+            video_file,
+            "ordinary-job",
+            "title",
+            "desc",
+            120.0,
+            VideoDistributionConfig(
+                youtube_enabled=True,
+                spotify_rss_enabled=False,
+                blob_archive_enabled=False,
+                dry_run=True,
+            ),
+        )
+        assert seen == ["ordinary-job"]
 
     def test_partial_failure(self, video_file):
         config = VideoDistributionConfig(
@@ -2157,6 +2227,25 @@ class TestHelpers:
 class TestSpotifyEpisodeUpload:
     """Tests for the Spotify episode video-upload target (#337)."""
 
+    @pytest.fixture(autouse=True)
+    def _accepted_identity(self, monkeypatch):
+        import podcaster.video.distribution as distribution
+
+        original = distribution.upload_to_spotify_episode
+
+        @wraps(original)
+        def with_identity(*args, **kwargs):
+            job_id = kwargs.get("job_id") or "job1"
+            kwargs["job_id"] = job_id
+            kwargs["publish_run_id"] = kwargs.get("publish_run_id") or "1"
+            kwargs["publication_identity_context"] = kwargs.get(
+                "publication_identity_context"
+            ) or PublicationIdentity(job_id, "2026-W37", "1", "a" * 64, "b" * 64)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(distribution, "upload_to_spotify_episode", with_identity)
+        monkeypatch.setitem(globals(), "upload_to_spotify_episode", with_identity)
+
     def test_from_env(self, monkeypatch):
         monkeypatch.setenv("VIDEO_SPOTIFY_UPLOAD_ENABLED", "true")
         config = VideoDistributionConfig.from_env()
@@ -2478,8 +2567,17 @@ class TestPlaylistIntegration:
         captured_upload: list = []
 
         def fake_upload(
-            path, title, desc, cfg, *, tags=None, transport=None, raise_on_failure=False
+            path,
+            title,
+            desc,
+            cfg,
+            *,
+            tags=None,
+            transport=None,
+            raise_on_failure=False,
+            job_id=None,
         ):
+            assert job_id == "job1"
             captured_upload.append(True)
             return "yt-vid-001", "https://youtube.com/watch?v=yt-vid-001"
 
@@ -2697,8 +2795,17 @@ class TestPlaylistIntegration:
         """A playlist error is logged but does not fail the distribution result."""
 
         def fake_upload(
-            path, title, desc, cfg, *, tags=None, transport=None, raise_on_failure=False
+            path,
+            title,
+            desc,
+            cfg,
+            *,
+            tags=None,
+            transport=None,
+            raise_on_failure=False,
+            job_id=None,
         ):
+            assert job_id == "job1"
             return "yt-vid-002", "https://youtube.com/watch?v=yt-vid-002"
 
         monkeypatch.setattr("podcaster.video.distribution.upload_to_youtube", fake_upload)

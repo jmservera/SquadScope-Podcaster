@@ -44,6 +44,12 @@ def _file_version(path):
 
 def dispatch_reviewed_video(repository, claim, document, *, config=None, transport=None):
     """Use existing provider adapters; never admit legacy or unreviewed outboxes."""
+    from podcaster.video.recovery import RecoveryDenied, private_original
+
+    identity_data = document.get("publication_identity")
+    original_job = identity_data.get("accepted_job_id") if isinstance(identity_data, dict) else None
+    if private_original(original_job):
+        raise RecoveryDenied("private recovery originals have no provider dispatch transition")
     if "media_review" not in document:
         return "legacy_provider_dispatch_not_authorized"
     if not media_review_allows_distribution(document):
@@ -378,6 +384,7 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
                     config,
                     tags=tags,
                     identity_tag=tag,
+                    job_id=identity.accepted_job_id,
                     raise_on_failure=True,
                     transport=_GuardedTransport(http, authorize),
                 )
@@ -516,6 +523,7 @@ def _spotify(
                 before_mutation=authorize,
                 publication_storage=repository.storage,
                 publication_identity_context=identity,
+                job_id=identity.accepted_job_id,
                 require_reconciliation=True,
             )
             return (
