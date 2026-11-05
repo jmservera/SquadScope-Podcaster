@@ -102,7 +102,11 @@ async def _private_recovery_lifespan(_app: FastAPI):
 
         while True:
             try:
-                backend = create_video_queue_backend()
+                try:
+                    backend = create_video_queue_backend()
+                except Exception:
+                    logger.warning("private recovery queue backend unavailable", exc_info=True)
+                    backend = None
                 send = backend.send_message if backend is not None else queue_unavailable
                 await asyncio.to_thread(reconcile_pending, get_storage(), send)
             except Exception:

@@ -523,6 +523,7 @@ def _spotify(
                 before_mutation=authorize,
                 publication_storage=repository.storage,
                 publication_identity_context=identity,
+                job_id=identity.accepted_job_id,
                 require_reconciliation=True,
             )
             return (

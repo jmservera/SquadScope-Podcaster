@@ -1445,11 +1445,19 @@ def upload_to_spotify_episode(
     ``podcaster.publish``. Returns True on success, False otherwise.
     """
 
+    from podcaster.publication_state import (
+        PublicationStateError,
+        validate_video_publication_identity,
+    )
     from podcaster.video.recovery import RecoveryDenied, private_original
 
-    if private_original(job_id) or private_original(
-        getattr(publication_identity_context, "accepted_job_id", None)
-    ):
+    try:
+        identity = validate_video_publication_identity(
+            publication_identity_context, job_id=job_id, publish_run_id=publish_run_id
+        )
+    except PublicationStateError as exc:
+        raise RecoveryDenied("Spotify video requires coherent publication identity") from exc
+    if private_original(identity.accepted_job_id):
         raise RecoveryDenied("private recovery original cannot upload to Spotify")
     if config.dry_run:
         logger.info("Spotify video upload dry-run: audio_anchor=%s", anchor_id)
@@ -1469,7 +1477,8 @@ def upload_to_spotify_episode(
             episode_number=episode_number,
             before_mutation=before_mutation,
             publication_storage=publication_storage,
-            publication_identity_context=publication_identity_context,
+            publication_identity_context=identity,
+            job_id=identity.accepted_job_id,
         )
         if result.status == "failed":
             logger.error("Spotify video upload failed: %s", result.error)

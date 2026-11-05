@@ -1365,6 +1365,150 @@ def test_identity_wide_prior_provider_state_blocks_recovery_reservation(
     assert "video_recovery" not in load_manifest(storage, job_id)["generation"]
 
 
+@pytest.mark.parametrize(
+    "platform,kind,allowed",
+    [
+        ("youtube", None, False),
+        ("youtube", "unexpected", False),
+        ("youtube", "video", False),
+        ("youtube", ["audio"], False),
+        ("spotify", None, False),
+        (["spotify"], "audio", False),
+        (None, "audio", False),
+        ("unrecognized", "audio", False),
+        ("spotify", "audio", True),
+    ],
+)
+def test_recovery_requires_explicit_recognized_audio_evidence_scope(
+    recovery_original, platform, kind, allowed
+):
+    from podcaster.publication_state import evidence_path
+    from podcaster.video.recovery import RecoveryDenied, reserve_epoch
+
+    storage, job_id, identity, mp3_sha, at = recovery_original
+    record = {
+        "job_id": job_id,
+        "week": identity.week,
+        "publish_run_id": identity.publish_run_id,
+        "article_sha256": identity.article_sha256,
+        "manifest_sha256": identity.manifest_sha256,
+        "platform": platform,
+        "operation": "upload",
+        "outcome": "uploaded",
+    }
+    if kind is not None:
+        record["media_kind"] = kind
+    evidence = {
+        "schema_version": "squadscope-podcaster-publication-evidence-v1",
+        "job_id": job_id,
+        "records": [record],
+    }
+    storage.put_bytes(evidence_path(job_id), json.dumps(evidence).encode(), "application/json")
+    if allowed:
+        assert reserve_epoch(
+            storage,
+            job_id,
+            expected_identity=identity,
+            expected_audio_sha256=mp3_sha,
+            inventory_reference="readback",
+            now=lambda: at,
+        )
+    else:
+        with pytest.raises(RecoveryDenied):
+            reserve_epoch(
+                storage,
+                job_id,
+                expected_identity=identity,
+                expected_audio_sha256=mp3_sha,
+                inventory_reference="readback",
+                now=lambda: at,
+            )
+        assert "video_recovery" not in load_manifest(storage, job_id)["generation"]
+
+
+def test_api_queue_construction_failure_reconciles_deadline_and_recovers(
+    recovery_original, monkeypatch
+):
+    from podcaster import monitoring
+    from podcaster.video import recovery
+
+    storage, job_id, identity, mp3_sha, at = recovery_original
+    monkeypatch.setitem(recovery.PRIVATE_ORIGINALS, job_id, 0)
+    recovery.reserve_epoch(
+        storage,
+        job_id,
+        expected_identity=identity,
+        expected_audio_sha256=mp3_sha,
+        inventory_reference="readback",
+        now=lambda: at,
+    )
+    original = recovery.reconcile_pending
+    from threading import Event
+
+    reconciled = Event()
+    elapsed = [0]
+
+    def reconcile(storage_arg, send):
+        try:
+            return original(storage_arg, send, now=lambda: at + timedelta(seconds=elapsed[0]))
+        finally:
+            reconciled.set()
+
+    sent = []
+
+    def unavailable():
+        raise RuntimeError("queue constructor failed")
+
+    monkeypatch.setenv("PODCASTER_VIDEO_RECOVERY_OPERATOR_KEY", "test-operator-key")
+    monkeypatch.setattr(monitoring, "get_storage", lambda: storage)
+    monkeypatch.setattr(recovery, "reconcile_pending", reconcile)
+    monkeypatch.setattr("podcaster.queue.create_video_queue_backend", unavailable)
+    with TestClient(monitoring.app):
+        assert reconciled.wait(3)
+    assert not sent
+    epoch = load_manifest(storage, job_id)["generation"]["video_recovery"]["epochs"][0]
+    assert epoch["status"] == "reserved"
+    assert epoch["dispatch"]["status"] == "pending"
+
+    elapsed[0] = 5101
+    reconciled.clear()
+    with TestClient(monitoring.app):
+        assert reconciled.wait(3)
+    assert not sent
+    epoch = load_manifest(storage, job_id)["generation"]["video_recovery"]["epochs"][0]
+    assert epoch["status"] == "terminal"
+    assert epoch["terminal_reason"] == "deadline_elapsed"
+
+    reconciled.clear()
+    recovery.reserve_epoch(
+        storage,
+        job_id,
+        expected_identity=identity,
+        expected_audio_sha256=mp3_sha,
+        inventory_reference="fresh-readback",
+        now=lambda: at + timedelta(seconds=5101),
+    )
+
+    def healthy(storage_arg, send):
+        try:
+            return original(storage_arg, send, now=lambda: at + timedelta(seconds=5101))
+        finally:
+            reconciled.set()
+
+    monkeypatch.setattr(recovery, "reconcile_pending", healthy)
+    monkeypatch.setattr(
+        "podcaster.queue.create_video_queue_backend",
+        lambda: Mock(send_message=sent.append),
+    )
+    with TestClient(monitoring.app):
+        assert reconciled.wait(3)
+    assert len(sent) == 1
+    assert [
+        item["status"]
+        for item in load_manifest(storage, job_id)["generation"]["video_recovery"]["epochs"]
+    ] == ["terminal", "dispatched"]
+
+
 def test_private_original_cannot_reach_distribution_or_final_adapters(tmp_path):
     from podcaster import publish
     from podcaster.distribution_dispatch import dispatch_reviewed_video
@@ -1421,6 +1565,46 @@ def test_private_original_cannot_reach_distribution_or_final_adapters(tmp_path):
         )
     youtube.assert_not_called()
     spotify.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "job_id,identity",
+    [
+        ("job-1", None),
+        ("job-1", {"accepted_job_id": "job-1"}),
+        ("job-1", PublicationIdentity("other", "2026-W44", "1", "a" * 64, "b" * 64)),
+        ("job-1", PublicationIdentity("job-1", "bad-week", "1", "a" * 64, "b" * 64)),
+        ("job-1", PublicationIdentity("job-1", "2026-W44", "", "a" * 64, "b" * 64)),
+    ],
+)
+def test_spotify_video_boundaries_require_coherent_identity_before_dry_run_or_session(
+    tmp_path, monkeypatch, job_id, identity
+):
+    from podcaster import publish
+    from podcaster.video.distribution import VideoDistributionConfig, upload_to_spotify_episode
+    from podcaster.video.recovery import RecoveryDenied
+
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"V" * 2048)
+    session = Mock(side_effect=AssertionError("session reached"))
+    monkeypatch.setattr(publish, "_build_session", session)
+    monkeypatch.setenv("SPOTIFY_PUBLISH_DRY_RUN", "true")
+    with pytest.raises(RecoveryDenied):
+        upload_to_spotify_episode(
+            video,
+            None,
+            VideoDistributionConfig(dry_run=True),
+            job_id=job_id,
+            publication_identity_context=identity,
+        )
+    with pytest.raises(RecoveryDenied):
+        publish.upload_video_to_episode(
+            video,
+            title="Video",
+            job_id=job_id,
+            publication_identity_context=identity,
+        )
+    session.assert_not_called()
 
 
 def test_recovery_worker_renders_only_private_selected_candidate(recovery_original, monkeypatch):

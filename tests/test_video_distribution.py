@@ -6,6 +6,7 @@ import io
 import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from http.client import HTTPException, HTTPResponse, IncompleteRead
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -13,7 +14,7 @@ from urllib.error import URLError
 
 import pytest
 
-from podcaster.publication_state import PUBLICATION_UNKNOWN
+from podcaster.publication_state import PUBLICATION_UNKNOWN, PublicationIdentity
 from podcaster.storage import LocalStorageBackend
 from podcaster.video.budget import ProviderMutationAdmissionError, VideoStageBudget
 from podcaster.video.distribution import (
@@ -2225,6 +2226,25 @@ class TestHelpers:
 
 class TestSpotifyEpisodeUpload:
     """Tests for the Spotify episode video-upload target (#337)."""
+
+    @pytest.fixture(autouse=True)
+    def _accepted_identity(self, monkeypatch):
+        import podcaster.video.distribution as distribution
+
+        original = distribution.upload_to_spotify_episode
+
+        @wraps(original)
+        def with_identity(*args, **kwargs):
+            job_id = kwargs.get("job_id") or "job1"
+            kwargs["job_id"] = job_id
+            kwargs["publish_run_id"] = kwargs.get("publish_run_id") or "1"
+            kwargs["publication_identity_context"] = kwargs.get(
+                "publication_identity_context"
+            ) or PublicationIdentity(job_id, "2026-W37", "1", "a" * 64, "b" * 64)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(distribution, "upload_to_spotify_episode", with_identity)
+        monkeypatch.setitem(globals(), "upload_to_spotify_episode", with_identity)
 
     def test_from_env(self, monkeypatch):
         monkeypatch.setenv("VIDEO_SPOTIFY_UPLOAD_ENABLED", "true")

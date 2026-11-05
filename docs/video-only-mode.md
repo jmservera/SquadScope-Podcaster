@@ -24,6 +24,17 @@ The Spotify video is always published as a **separate** Spotify episode. This is
 true whether or not an audio episode exists, because Spotify rejects adding a
 video to an episode that already has audio. The video path never reads
 `SPOTIFY_PUBLISH_ENABLED`, and it doesn't need an audio anchor episode.
+Both Spotify video entry points require a coherent canonical publication
+identity before dry-run or provider access; a missing or mismatched identity
+cannot silently bypass the private-original fence. Normal accepted jobs still
+create a separate draft and record their publication evidence.
+
+Private video recovery does not replay a prior provider record unless its
+scope is explicitly recognized as audio. Missing or unknown platform/media
+scope, or a video-scoped record, requires reconciliation instead. If the
+recovery queue backend cannot be constructed, the monitor still reconciles
+deadlines with a fail-closed sender: expired epochs become terminal and valid
+pending sends wait for the queue to recover.
 
 ## Behavior with `SPOTIFY_PUBLISH_ENABLED=false`
 

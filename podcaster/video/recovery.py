@@ -191,10 +191,9 @@ def _assert_provider_quiet(
             raise RecoveryDenied("provider evidence is malformed")
         if any(
             not isinstance(record, dict)
-            or (
-                record.get("platform") in {"youtube", "spotify", "spotify_rss"}
-                and record.get("media_kind") == "video"
-            )
+            or not isinstance(record.get("platform"), str)
+            or record.get("platform") not in {"youtube", "spotify", "spotify_rss"}
+            or record.get("media_kind") != "audio"
             for record in records
         ):
             raise RecoveryDenied("prior or unknown video provider intent blocks replay")
