@@ -430,12 +430,15 @@ Later unknown synthesis claims are not recoverable. An expired ordinary video
 attempt is terminal: a queue redelivery cannot reset its original budget or
 enqueue another clipset. No script, TTS or audio-copy replay is permitted.
 
-`POST /api/jobs/{job_id}/video/recover` requires normal API authentication **and**
+`POST /api/jobs/{job_id}/video/recover` requires a valid human Bearer session
+(API keys and the local auth-disable switch alone are insufficient) **and**
 the separately configured `VIDEO_RECOVERY_OPERATOR_TOKEN` in
-`X-Video-Recovery-Operator`. It is disabled without that token. The request
-supplies `request_id` (stable on retry), `operator` (human), exact
+`X-Video-Recovery-Operator`. It is disabled without both configured UI
+credentials and that token. The request supplies `request_id` (stable on retry),
+`operator` matching the signed human session, exact
 `identity` (`accepted_job_id`, `week`, `publish_run_id`, `article_sha256`,
-`manifest_sha256`) and `inventory` with the same identity, `checked_by`,
+`manifest_sha256`) and `inventory` with the same identity, `checked_by` matching
+the signed operator,
 an aware `checked_at` no more than two hours old, a YouTube object with
 `status=reconciled_absent`, exact `channel_id` and
 `states=["private","unlisted","processing"]`, and a Spotify object with
