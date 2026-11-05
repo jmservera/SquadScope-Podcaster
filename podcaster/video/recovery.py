@@ -18,7 +18,7 @@ from podcaster.video.budget import JOB_DEADLINE_SECONDS, VideoStage, VideoStageB
 SCHEMA = "private-video-recovery-v1"
 QUEUE_SCHEMA = "private-video-recovery-queue-v1"
 CONTENT_TYPE = "application/json; charset=utf-8"
-LEASE_SECONDS = 1800
+LEASE_SECONDS = JOB_DEADLINE_SECONDS
 CANDIDATES = frozenset({"podcast-2026-W44-00bc06dfb6e2", "podcast-2026-W45-9798e93edc06"})
 EXPECTED_MP3_SIZES = {
     "podcast-2026-W44-00bc06dfb6e2": 11_664_239,
@@ -473,6 +473,8 @@ def claim(
             raise RecoveryDenied("completed runner can only be settled")
         if _time(entry["deadline_at"]) <= now:
             raise RecoveryDenied("recovery deadline passed")
+        if visibility_until < _time(entry["deadline_at"]):
+            raise RecoveryDenied("queue visibility does not cover the recovery deadline")
         if entry.get("status") == "running":
             if _time(entry.get("lease_until")) > now:
                 raise RecoveryDenied("current recovery owner still holds the lease")

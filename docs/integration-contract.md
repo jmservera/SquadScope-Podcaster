@@ -456,7 +456,11 @@ deadline, queue send attempts, owner and lease, and `generation.video_runner`
 are the **single ownership authority**. Send attempts persist before enqueue;
 crashes can cause a duplicate queue message but never another epoch. Delivery
 needs actual queue visibility; reclaim after a lost owner uses a fresh token and
-the same original deadline. A completed runner cannot be claimed again; only
+the same original deadline. The recovery lease covers the remaining 5100-second
+epoch, so a live recording or composition cannot lose ownership mid-run; a
+redelivery after the default 5400-second queue invisibility cannot restart that
+expired epoch. A new epoch requires a new request and fresh owner inventory, not
+automatic replay. A completed runner cannot be claimed again; only
 proof-verified settlement is allowed. Old recovery ledgers are quarantined for
 offline reconciliation, never silently migrated. Scratch clipsets and recording
 checkpoints are namespaced by epoch; the historical budget and original media

@@ -544,6 +544,14 @@ def test_recovery_dispatch_crash_replay_and_fixed_5400_deadline(recovery_cas, mo
     recovery.dispatch(storage, producer, job, "epoch-1", now=instant)
     assert producer.send_message.call_count == 2
     assert recovery.parse_message(producer.send_message.call_args.args[0]) == (job, "epoch-1")
+    with pytest.raises(recovery.RecoveryDenied, match="visibility"):
+        recovery.claim(
+            storage,
+            job,
+            "epoch-1",
+            now=instant,
+            visibility_until=instant + timedelta(seconds=1800),
+        )
     claimed = recovery.claim(
         storage,
         job,
@@ -560,16 +568,18 @@ def test_recovery_dispatch_crash_replay_and_fixed_5400_deadline(recovery_cas, mo
             visibility_until=instant + timedelta(seconds=5401),
         )
     assert claimed.epoch_id == "epoch-1"
-    successor = recovery.claim(
-        storage,
-        job,
-        "epoch-1",
-        now=instant + timedelta(seconds=1801),
-        visibility_until=instant + timedelta(seconds=5400),
-    )
-    assert successor.owner != claimed.owner
+    # A live worker remains authoritative throughout the 5100-second budget,
+    # including a recording/composition phase longer than 1800 seconds.
+    claimed.renew(now=instant + timedelta(seconds=1801))
+    claimed.check(json.loads(storage.get_bytes(path)), now=instant + timedelta(seconds=1801))
     with pytest.raises(recovery.RecoveryDenied):
-        claimed.check(json.loads(storage.get_bytes(path)))
+        recovery.claim(
+            storage,
+            job,
+            "epoch-1",
+            now=instant + timedelta(seconds=1801),
+            visibility_until=instant + timedelta(seconds=5400),
+        )
     with pytest.raises(recovery.RecoveryDenied):
         recovery.claim(
             storage,
