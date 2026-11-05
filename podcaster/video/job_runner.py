@@ -63,7 +63,7 @@ from podcaster.queue import (
     QueueProducer,
     create_clip_queue_backend,
     enqueue_distribution_job,
-    parse_job_id,
+    parse_video_message,
 )
 from podcaster.sanitization import neutralize
 from podcaster.storage import (
@@ -88,6 +88,24 @@ from podcaster.video.intermediates import create_intermediate_store, run_storage
 from podcaster.video.ownership import BoundaryPermit, OwnershipError, VideoOwnershipGuard
 from podcaster.video.perf import PipelineTimings
 from podcaster.video.process import MediaValidationError, ensure_ffprobe_available
+from podcaster.video.recovery import (
+    RecoveryError,
+    bind_private_media,
+    current_epoch,
+    expire_epoch,
+    fail_epoch,
+    fail_missing_visibility,
+)
+from podcaster.video.recovery import (
+    assert_owner as assert_recovery_owner,
+)
+from podcaster.video.recovery import (
+    claim as claim_recovery,
+)
+from podcaster.video.recovery import (
+    complete as complete_recovery,
+)
+from podcaster.video.recovery import is_candidate as is_recovery_candidate
 from podcaster.video.sync_plan import (
     annotate_removed_repos,
     extract_repo_urls,
@@ -119,6 +137,7 @@ REASON_COMPOSITION_FAILED = "composition_failed"
 REASON_RETRY_EXHAUSTED = "retry_exhausted"
 REASON_PIPELINE_CONFLICT = "pipeline_locked_by_audio"
 REASON_EDITOR_LEASE_HELD = "editor_lease_held"
+REASON_VIDEO_BUDGET_EXPIRED = "video_budget_expired"
 REASON_REQUIRED_YOUTUBE_FAILURE = "required_youtube_delivery_failed"
 REASON_INVALID_PUBLICATION_IDENTITY = "invalid_publication_identity"
 #: A configured DOG watermark could not be resolved.  Terminal by construction:
@@ -699,6 +718,46 @@ def _persist_video_budget_in_manifest(
         raise TransientVideoError(f"could not persist video budget for job_id={job_id}") from exc
 
 
+def _terminalize_expired_video_budget(
+    storage: StorageBackend, job_id: str, budget: VideoStageBudget
+) -> None:
+    """Keep the original attempt and failure when its fixed deadline is spent."""
+    from podcaster.generation import manifest_bytes
+
+    def _apply(content: bytes | None) -> bytes:
+        if content is None:
+            raise TransientVideoError(f"no manifest for job_id={job_id}")
+        document = json.loads(content)
+        generation = document["generation"]
+        history = generation.setdefault("video_attempt_history", [])
+        if not isinstance(history, list):
+            raise TransientVideoError(f"invalid video attempt history for job_id={job_id}")
+        if not any(
+            isinstance(entry, dict) and entry.get("budget") == budget.to_dict() for entry in history
+        ):
+            history.append(
+                {
+                    "budget": budget.to_dict(),
+                    "prior_video_runner": generation.get("video_runner"),
+                    "reason": REASON_VIDEO_BUDGET_EXPIRED,
+                    "terminalized_at": _iso(budget.now_utc()),
+                }
+            )
+        generation["video_runner"] = {
+            "status": STATUS_FAILED,
+            "reason": REASON_VIDEO_BUDGET_EXPIRED,
+            "at": _iso(budget.now_utc()),
+        }
+        return manifest_bytes(document)
+
+    try:
+        storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
+    except Exception as exc:
+        raise TransientVideoError(
+            f"could not terminalize spent video budget for job_id={job_id}"
+        ) from exc
+
+
 def _record_video_publish(
     storage: StorageBackend,
     job_id: str,
@@ -1043,6 +1102,8 @@ def run_video_generation(
     media_probe: Callable[[Path, float], Any] | None = None,
     ownership_execution_id: str | None = None,
     ownership_visibility_expires_at: datetime | None = None,
+    recovery_epoch_id: str | None = None,
+    recovery_owner: str | None = None,
 ) -> VideoOutcome:
     """Generate video for a staged job_id and distribute to configured targets.
 
@@ -1084,12 +1145,40 @@ def run_video_generation(
         if isinstance(exc, TransientVideoError):
             raise
         raise TransientVideoError(f"invalid manifest for job_id={job_id}") from exc
+    latest_epoch = (
+        current_epoch(storage, job_id)
+        if recovery_epoch_id is not None or is_recovery_candidate(job_id)
+        else None
+    )
+    if recovery_epoch_id is None and latest_epoch is not None:
+        raise PermanentVideoError(
+            "historical queue message is fenced by an explicit recovery epoch",
+            reason="stale_video_attempt",
+        )
+    if recovery_epoch_id is not None:
+        if (
+            latest_epoch is None
+            or latest_epoch.get("epoch_id") != recovery_epoch_id
+            or recovery_owner is None
+        ):
+            raise PermanentVideoError("recovery epoch is missing", reason="stale_recovery_epoch")
+        assert_recovery_owner(storage, job_id, recovery_epoch_id, recovery_owner)
     exact_script_job = is_exact_script_job(manifest)
+    if recovery_epoch_id is not None and not exact_script_job:
+        fail_epoch(storage, job_id, recovery_epoch_id, recovery_owner, "review_binding_missing")
+        raise PermanentVideoError(
+            "recovery requires exact script review",
+            reason="recovery_review_binding_missing",
+        )
     reviewed_audio = None
     if exact_script_job:
         try:
             reviewed_audio = validate_private_media_inputs(manifest, storage, job_id)
         except ReviewBindingError:
+            if recovery_epoch_id is not None:
+                fail_epoch(
+                    storage, job_id, recovery_epoch_id, recovery_owner, "media_proof_changed"
+                )
             return VideoOutcome(job_id, STATUS_SKIPPED, reason="completed_media_review_required")
 
     # Imported here (not at module scope) to match the existing lazy
@@ -1103,7 +1192,10 @@ def run_video_generation(
     # Blob-backed checkpoint/resume store for intermediates (issue #410). When no
     # scratch container is configured (local dev / tests) this is disabled and
     # every operation is a no-op, preserving the legacy all-local-disk path.
-    intermediates = create_intermediate_store(job_id)
+    scratch_job_id = (
+        f"{job_id}-recovery-{recovery_epoch_id}" if recovery_epoch_id is not None else job_id
+    )
+    intermediates = create_intermediate_store(scratch_job_id)
 
     # Resolve the scale-out fan-out: enabled iff both the scratch container and
     # the clip queue are available and the off-switch is not set (RFC §3).
@@ -1116,6 +1208,12 @@ def run_video_generation(
     media_validation_admitted = False
     ownership_guard: VideoOwnershipGuard | None = None
     promotion_permit: BoundaryPermit | None = None
+    if recovery_epoch_id is not None:
+        budget = VideoStageBudget.from_dict(
+            latest_epoch["budget"],
+            now_utc=current,
+            utcnow=budget_utcnow or (lambda: datetime.now(timezone.utc)),
+        )
     owns_budget = budget is None
     if budget is None:
         utcnow = budget_utcnow or (
@@ -1131,6 +1229,18 @@ def run_video_generation(
     stage_budget = budget
     if on_budget_resolved is not None:
         on_budget_resolved(stage_budget)
+    if not stage_budget.admit(VideoStage.SHUTDOWN).allowed:
+        if recovery_epoch_id is not None:
+            expire_epoch(storage, job_id, recovery_epoch_id)
+            raise PermanentVideoError(
+                "recovery epoch deadline expired", reason="recovery_epoch_expired"
+            )
+        _terminalize_expired_video_budget(storage, job_id, stage_budget)
+        raise PermanentVideoError(
+            "video attempt deadline expired",
+            reason=REASON_VIDEO_BUDGET_EXPIRED,
+            details={"job_id": job_id},
+        )
 
     def _remaining_media_validation_budget() -> float:
         nonlocal media_validation_admitted, media_validation_lease
@@ -1146,9 +1256,9 @@ def run_video_generation(
             )
 
             media_validation_lease = (
-                renew_lease(scratch, job_id, run_id)
+                renew_lease(scratch, scratch_job_id, run_id)
                 if not media_validation_admitted
-                else read_lease(scratch, job_id)
+                else read_lease(scratch, scratch_job_id)
             )
             if media_validation_lease is None or media_validation_lease.run_id != run_id:
                 raise RuntimeError(
@@ -1217,7 +1327,7 @@ def run_video_generation(
     if fanout_enabled and run_id is not None:
         from podcaster.video.editor import acquire_or_renew_lease
 
-        media_validation_lease = acquire_or_renew_lease(scratch, job_id, run_id)
+        media_validation_lease = acquire_or_renew_lease(scratch, scratch_job_id, run_id)
         if media_validation_lease is None:
             logger.info("video skipped job_id=%s reason=%s", job_id, REASON_EDITOR_LEASE_HELD)
             return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_EDITOR_LEASE_HELD)
@@ -1352,7 +1462,7 @@ def run_video_generation(
                         "at": _iso(current),
                     },
                 )
-                _release_editor_lease(scratch, job_id, run_id)
+                _release_editor_lease(scratch, scratch_job_id, run_id)
                 return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_INVALID_PLAN)
 
             # Show the claracle.com weekly page (derived from the job_id) as the
@@ -1403,7 +1513,7 @@ def run_video_generation(
                         # than risk a concurrent compose/publish for the same job_id.
                         # Raising TransientVideoError leaves the message for redelivery;
                         # our CAS release is a no-op since the successor owns the lease.
-                        if renew_lease(scratch, job_id, run_id) is None:
+                        if renew_lease(scratch, scratch_job_id, run_id) is None:
                             logger.warning(
                                 "editor lease lost during fan-in job_id=%s run_id=%s; "
                                 "aborting (another editor took over)",
@@ -1419,7 +1529,7 @@ def run_video_generation(
                         run_id,
                     )
                     recording = record_via_fanout(
-                        job_id,
+                        scratch_job_id,
                         plan.segments,
                         output_dir,
                         scratch=scratch,
@@ -1454,12 +1564,17 @@ def run_video_generation(
             if fanout_enabled and run_id is not None:
                 from podcaster.video.editor import renew_lease
 
-                media_validation_lease = renew_lease(scratch, job_id, run_id)
+                media_validation_lease = renew_lease(scratch, scratch_job_id, run_id)
                 if media_validation_lease is None:
                     raise OwnershipError("editor lease lost before downstream ownership claim")
             visibility_expires_at = ownership_visibility_expires_at or (
                 datetime.now(timezone.utc) + timedelta(seconds=_video_visibility_timeout())
             )
+            if recovery_epoch_id is not None:
+                assert_recovery_owner(storage, job_id, recovery_epoch_id, recovery_owner)
+                visibility_expires_at = min(
+                    visibility_expires_at, stage_budget.projection.deadline_at_utc
+                )
             ownership_guard = VideoOwnershipGuard.acquire(
                 storage,
                 job_id,
@@ -1479,6 +1594,8 @@ def run_video_generation(
                     nonlocal promotion_permit
                     if ownership_guard is None:
                         raise OwnershipError("downstream ownership guard is unavailable")
+                    if recovery_epoch_id is not None:
+                        assert_recovery_owner(storage, job_id, recovery_epoch_id, recovery_owner)
                     promotion_permit = ownership_guard.begin(
                         "final_candidate_promotion",
                         allow_idempotent_takeover=True,
@@ -1699,6 +1816,10 @@ def run_video_generation(
 
                     def authorize_private_archive() -> None:
                         ownership_guard.assert_permit(archive_permit)
+                        if recovery_epoch_id is not None:
+                            assert_recovery_owner(
+                                storage, job_id, recovery_epoch_id, recovery_owner
+                            )
                         if exact_script_job:
                             latest_manifest = json.loads(storage.get_bytes(manifest_path(job_id)))
                             latest_audio = validate_private_media_inputs(
@@ -1722,6 +1843,14 @@ def run_video_generation(
                         source_ownership=archive_token,
                         authorize=authorize_private_archive,
                     )
+                    if recovery_epoch_id is not None:
+                        bind_private_media(
+                            storage,
+                            job_id,
+                            recovery_epoch_id,
+                            recovery_owner,
+                            artifact.sha256,
+                        )
                     ownership_guard.complete(archive_permit, target=artifact.path)
                     repository = DistributionOutboxRepository(storage)
                     # Pre-TTS (or generic audio) consent never approves unseen MP4
@@ -1765,6 +1894,13 @@ def run_video_generation(
                             provider_context[provider]["synthesis_audio_sha256"] = hashlib.sha256(
                                 reviewed_audio.content
                             ).hexdigest()
+                        if recovery_epoch_id is not None:
+                            provider_context[provider]["private_recovery_epoch_id"] = (
+                                recovery_epoch_id
+                            )
+                            provider_context[provider]["private_recovery_media_sha256"] = (
+                                artifact.sha256
+                            )
                     outbox_permit = ownership_guard.begin(
                         "distribution_outbox",
                         allow_idempotent_takeover=True,
@@ -1773,6 +1909,10 @@ def run_video_generation(
 
                     def authorize_private_outbox() -> None:
                         ownership_guard.assert_permit(outbox_permit)
+                        if recovery_epoch_id is not None:
+                            assert_recovery_owner(
+                                storage, job_id, recovery_epoch_id, recovery_owner
+                            )
                         if exact_script_job:
                             latest_manifest = json.loads(storage.get_bytes(manifest_path(job_id)))
                             latest_audio = validate_private_media_inputs(
@@ -1863,6 +2003,11 @@ def run_video_generation(
                         },
                     )
                 else:
+                    if recovery_epoch_id is not None:
+                        raise PermanentVideoError(
+                            "recovery requires private held outbox",
+                            reason="recovery_private_only",
+                        )
                     provider_permit = ownership_guard.begin(
                         "direct_provider_intent",
                         allow_idempotent_takeover=False,
@@ -2047,8 +2192,8 @@ def run_video_generation(
             if fanout_enabled and run_id is not None:
                 from podcaster.video.editor import cleanup_clips
 
-                cleanup_clips(scratch, job_id)
-            _release_editor_lease(scratch, job_id, run_id)
+                cleanup_clips(scratch, scratch_job_id)
+            _release_editor_lease(scratch, scratch_job_id, run_id)
 
             return VideoOutcome(
                 job_id=job_id,
@@ -2059,13 +2204,13 @@ def run_video_generation(
             )
 
     except OwnershipError:
-        _release_editor_lease(scratch, job_id, run_id)
+        _release_editor_lease(scratch, scratch_job_id, run_id)
         raise
     except TransientVideoError:
-        _release_editor_lease(scratch, job_id, run_id)
+        _release_editor_lease(scratch, scratch_job_id, run_id)
         raise
     except PermanentVideoError:
-        _release_editor_lease(scratch, job_id, run_id)
+        _release_editor_lease(scratch, scratch_job_id, run_id)
         raise
     except WatermarkTransientError as exc:
         # The watermark endpoint timed out, could not be resolved/connected to,
@@ -2093,7 +2238,7 @@ def run_video_generation(
                 "at": _iso(current),
             },
         )
-        _release_editor_lease(scratch, job_id, run_id)
+        _release_editor_lease(scratch, scratch_job_id, run_id)
         raise TransientVideoError(str(exc)) from exc
     except WatermarkUnavailableError as exc:
         # A configured watermark that cannot be resolved is a *permanent*
@@ -2121,7 +2266,7 @@ def run_video_generation(
                 "at": _iso(current),
             },
         )
-        _release_editor_lease(scratch, job_id, run_id)
+        _release_editor_lease(scratch, scratch_job_id, run_id)
         raise PermanentVideoError(
             str(exc),
             reason=exc.reason,
@@ -2160,7 +2305,7 @@ def run_video_generation(
                 "at": _iso(current),
             },
         )
-        _release_editor_lease(scratch, job_id, run_id)
+        _release_editor_lease(scratch, scratch_job_id, run_id)
         raise TransientVideoError(f"video generation failed for job_id={job_id}") from exc
 
 
@@ -2337,7 +2482,7 @@ def process_message(
 ) -> VideoOutcome:
     """Process one video queue message: generate, then delete on terminal outcome."""
     try:
-        job_id = parse_job_id(message.body)
+        job_id, recovery_epoch_id = parse_video_message(message.body)
     except ValueError:
         logger.error(
             "discarding malformed video message message_id=%s dequeue_count=%s",
@@ -2353,6 +2498,36 @@ def process_message(
         message.dequeue_count,
     )
 
+    recovery_owner = f"{message.message_id}:{message.pop_receipt}"
+    if recovery_epoch_id is not None:
+        if message.next_visible_on is None or lifecycle_deadline_monotonic == float("-inf"):
+            logger.error("recovery message has no authoritative queue visibility job_id=%s", job_id)
+            try:
+                fail_missing_visibility(storage, job_id, recovery_epoch_id)
+            except RecoveryError:
+                logger.warning(
+                    "recovery visibility failure could not be terminalized job_id=%s",
+                    job_id,
+                )
+                return VideoOutcome(job_id, STATUS_FAILED, reason="recovery_visibility_unknown")
+            queue.delete_message(message)
+            return VideoOutcome(job_id, STATUS_FAILED, reason="recovery_visibility_unknown")
+        try:
+            claim_recovery(
+                storage,
+                job_id,
+                recovery_epoch_id,
+                recovery_owner,
+                message.next_visible_on,
+                now=now,
+            )
+        except RecoveryError as exc:
+            if "owned by another worker" in str(exc):
+                return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_EDITOR_LEASE_HELD)
+            logger.warning("recovery message fenced job_id=%s reason=%s", job_id, exc)
+            queue.delete_message(message)
+            return VideoOutcome(job_id, STATUS_FAILED, reason="recovery_fenced")
+
     try:
         outcome = run_video_generation(
             job_id,
@@ -2360,11 +2535,13 @@ def process_message(
             config=config,
             now=now,
             lifecycle_deadline_monotonic=lifecycle_deadline_monotonic,
-            ownership_execution_id=f"{message.message_id}:{message.pop_receipt}",
+            ownership_execution_id=recovery_owner,
             ownership_visibility_expires_at=(
                 message.next_visible_on
                 or datetime.now(timezone.utc) + timedelta(seconds=_video_visibility_timeout())
             ),
+            recovery_epoch_id=recovery_epoch_id,
+            recovery_owner=recovery_owner if recovery_epoch_id is not None else None,
         )
     except PermanentVideoError as exc:
         logger.error("terminal video failure job_id=%s reason=%s", job_id, exc.reason)
@@ -2398,6 +2575,12 @@ def process_message(
             message.dequeue_count,
         )
         return VideoOutcome(job_id, STATUS_FAILED, reason="transient")
+
+    if recovery_epoch_id is not None and outcome.status == STATUS_COMPLETED:
+        try:
+            complete_recovery(storage, job_id, recovery_epoch_id, recovery_owner)
+        except RecoveryError as exc:
+            raise TransientVideoError("recovery completion evidence unavailable") from exc
 
     # An unexpired foreign editor lease means another editor already owns this
     # job. Leave the message for redelivery (do NOT delete) so the job is not

@@ -72,7 +72,7 @@ from podcaster.progress import (
 )
 from podcaster.publication_state import latest_outcomes, read_evidence
 from podcaster.publication_status import PublicationStatusError, publication_status
-from podcaster.queue import enqueue_video_job
+from podcaster.queue import create_video_queue_backend, enqueue_video_job
 from podcaster.review import ReviewBindingError, is_exact_script_job
 from podcaster.spotify_mode import (
     record_review_skip_outcome,
@@ -82,6 +82,12 @@ from podcaster.spotify_mode import (
 from podcaster.stage_progress import summarize as summarize_stage_progress
 from podcaster.storage import StorageBackend, StorageUnavailableError, create_storage_backend
 from podcaster.validation import is_authorized, validate_payload_details
+from podcaster.video.recovery import (
+    RecoveryError,
+    reconcile_dispatch,
+    record_rejection,
+    reserve,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1033,6 +1039,74 @@ async def stream_job_progress(job_id: str, since: int = Query(default=0, ge=0)):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+class PrivateVideoRecoveryRequest(BaseModel):
+    week: str
+    publish_run_id: str
+    article_sha256: str
+    manifest_sha256: str
+    script_sha256: str
+    mp3_sha256: str
+    request_id: str
+    inventory_reference: str
+
+
+@app.post("/api/jobs/{job_id}/video/private-recovery")
+def enqueue_private_video_recovery(
+    job_id: str,
+    payload: PrivateVideoRecoveryRequest,
+    request: Request,
+    _: None = Depends(verify_auth),
+):
+    """Only a signed human administrator may reserve private video recovery."""
+    credentials = get_credentials()
+    authorization = request.headers.get("authorization", "")
+    if credentials is None or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=403, detail="Human operator login is required")
+    try:
+        identity = verify_token(authorization[7:], credentials[2])
+    except Exception as exc:
+        raise HTTPException(status_code=403, detail="Human operator login is required") from exc
+    if identity.get("sub") != credentials[0]:
+        raise HTTPException(status_code=403, detail="Human operator login is required")
+    try:
+        epoch = reserve(
+            get_storage(),
+            job_id,
+            identity={
+                "week": payload.week,
+                "publish_run_id": payload.publish_run_id,
+                "article_sha256": payload.article_sha256,
+                "manifest_sha256": payload.manifest_sha256,
+            },
+            script_sha256=payload.script_sha256,
+            mp3_sha256=payload.mp3_sha256,
+            request_id=payload.request_id,
+            operator=credentials[0],
+            inventory_reference=payload.inventory_reference,
+        )
+        epoch = reconcile_dispatch(
+            get_storage(), job_id, epoch["epoch_id"], create_video_queue_backend()
+        )
+    except RecoveryError as exc:
+        try:
+            record_rejection(
+                get_storage(),
+                job_id,
+                operator=credentials[0],
+                request_id=payload.request_id,
+                reason=str(exc),
+            )
+        except Exception:
+            logger.warning("private recovery rejection audit unavailable job_id=%s", job_id)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning("private recovery enqueue pending job_id=%s", job_id)
+        raise HTTPException(
+            status_code=503, detail="Private recovery dispatch pending; retry same request ID"
+        ) from exc
+    return {"job_id": job_id, "epoch_id": epoch["epoch_id"], "state": epoch["state"]}
 
 
 @app.post("/api/jobs/{job_id}/video/generate", dependencies=[Depends(verify_auth)])

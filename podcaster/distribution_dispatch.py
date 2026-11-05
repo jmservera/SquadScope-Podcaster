@@ -22,6 +22,7 @@ from podcaster.orchestration import load_manifest
 from podcaster.publication_state import publication_identity
 from podcaster.review import is_exact_script_job, validate_private_media_inputs
 from podcaster.video import distribution, youtube_playlist, youtube_publish
+from podcaster.video.recovery import RecoveryError, assert_provider_write_allowed
 from podcaster.video.youtube_reconcile import (
     ABSENT,
     reconcile_youtube_upload,
@@ -46,12 +47,28 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
     """Use existing provider adapters; never admit legacy or unreviewed outboxes."""
     if "media_review" not in document:
         return "legacy_provider_dispatch_not_authorized"
+    job_id = document["publication_identity"]["accepted_job_id"]
+    recovery_ids = {
+        leg.get("context", {}).get("private_recovery_epoch_id")
+        for leg in document["providers"].values()
+        if isinstance(leg, dict) and isinstance(leg.get("context"), dict)
+    }
+    recovery_ids.discard(None)
+    try:
+        if len(recovery_ids) > 1:
+            raise RecoveryError("conflicting recovery identities")
+        assert_provider_write_allowed(
+            repository.storage,
+            job_id,
+            epoch_id=next(iter(recovery_ids)) if recovery_ids else None,
+        )
+    except RecoveryError as exc:
+        raise DistributionOutboxError(str(exc)) from exc
     if not media_review_allows_distribution(document):
         raise DistributionOutboxError("separate media review is missing or stale")
     config = config or distribution.VideoDistributionConfig.from_env()
     if config.dry_run:
         return "provider_dry_run"
-    job_id = document["publication_identity"]["accepted_job_id"]
     manifest = load_manifest(repository.storage, job_id)
     language = manifest["request"].get("language", "en")
     identity = publication_identity(
@@ -75,6 +92,14 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
 
     def validate(provider, operation=None, *, verify_media=True, provider_io=True):
         nonlocal admitted_audio, admitted_audio_sha256
+        try:
+            current_leg = repository.read(claim.outbox_id)
+            epoch_marker = current_leg["providers"][provider]["context"].get(
+                "private_recovery_epoch_id"
+            )
+            assert_provider_write_allowed(repository.storage, job_id, epoch_id=epoch_marker)
+        except RecoveryError as exc:
+            raise DistributionOutboxError(str(exc)) from exc
         if provider_io and provider == "spotify" and not publish._spotify_reconcile_enabled():
             raise DistributionOutboxError("Spotify outbox requires strict reconcile-before-create")
         current = repository.authorize_dispatch(
@@ -380,6 +405,9 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
                     identity_tag=tag,
                     raise_on_failure=True,
                     transport=_GuardedTransport(http, authorize),
+                    recovery_storage=repository.storage,
+                    recovery_job_id=identity.accepted_job_id,
+                    recovery_epoch_id=leg["context"].get("private_recovery_epoch_id"),
                 )
                 return video, config.youtube_privacy
 

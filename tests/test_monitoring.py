@@ -580,6 +580,50 @@ class TestStructuredJobLogs:
 # ---------------------------------------------------------------------------
 
 
+def test_private_recovery_requires_signed_human_operator(client, monkeypatch):
+    from podcaster.auth import create_token
+
+    monkeypatch.setenv("UI_AUTH_USERNAME", "owner")
+    monkeypatch.setenv("UI_AUTH_PASSWORD", "test-only-password")
+    monkeypatch.setenv("UI_AUTH_SECRET", "test-only-signing-key")
+    monkeypatch.setenv("MONITORING_API_KEY", "machine-only-key")
+    payload = {
+        "week": "2026-W44",
+        "publish_run_id": "40269058395",
+        "article_sha256": "a" * 64,
+        "manifest_sha256": "b" * 64,
+        "script_sha256": "c" * 64,
+        "mp3_sha256": "d" * 64,
+        "request_id": "8b38fbe6-c822-40f1-bf58-9fc8b0aca830",
+        "inventory_reference": "owner-console-inspection",
+    }
+    route = "/api/jobs/podcast-2026-W44-00bc06dfb6e2/video/private-recovery"
+    with (
+        patch("podcaster.monitoring.reserve", return_value={"epoch_id": "e" * 32}) as reserve,
+        patch(
+            "podcaster.monitoring.reconcile_dispatch",
+            return_value={"epoch_id": "e" * 32, "state": "sent"},
+        ) as dispatch,
+    ):
+        machine = client.post(
+            route, json=payload, headers={"x-podcaster-api-key": "machine-only-key"}
+        )
+        assert machine.status_code == 403
+        unsigned = client.post(route, json=payload, headers={"Authorization": "Bearer forged"})
+        assert unsigned.status_code in {401, 403}
+        assert reserve.call_count == 0
+        assert dispatch.call_count == 0
+        approved = client.post(
+            route,
+            json=payload,
+            headers={"Authorization": f"Bearer {create_token('owner', 'test-only-signing-key')}"},
+        )
+    assert approved.status_code == 200
+    assert approved.json()["state"] == "sent"
+    reserve.assert_called_once()
+    dispatch.assert_called_once()
+
+
 class TestEnqueueVideo:
     @pytest.mark.parametrize("snapshot", [{"script_sha256": "a" * 64}, None, "corrupt", []])
     def test_exact_script_job_is_refused_before_manual_video_enqueue(

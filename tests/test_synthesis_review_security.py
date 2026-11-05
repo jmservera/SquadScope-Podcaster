@@ -168,12 +168,68 @@ def prepared_exact_video(reviewed_stage, monkeypatch, tmp_path, request):
     if target == "spotify_override":
         monkeypatch.setenv("PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE", "true")
     config = VideoDistributionConfig(
-        youtube_enabled=target.startswith("youtube") or target.startswith("both"),
+        youtube_enabled=(
+            target.startswith("youtube") or target.startswith("both") or target == "recovery"
+        ),
         spotify_upload_enabled=target.startswith("spotify") or target.startswith("both"),
         spotify_video_publish_mode="live" if target in {"spotify_live", "both_live"} else "draft",
         dry_run=False,
     )
-    outcome = run_video_generation(job_id, storage, config=config, fanout=False)
+    recovery_kwargs = {}
+    if target == "recovery":
+        from uuid import uuid4
+
+        from podcaster.review import validate_private_media_inputs
+        from podcaster.video import recovery
+        from podcaster.video.budget import VideoStageBudget
+        from podcaster.video.job_runner import video_budget_path
+
+        original = load_manifest(storage, job_id)
+        media = validate_private_media_inputs(original, storage, job_id)
+        now = datetime.now(timezone.utc)
+        storage.put_bytes(
+            video_budget_path(job_id),
+            json.dumps(
+                VideoStageBudget.start(now_utc=now - timedelta(seconds=5400)).to_dict()
+            ).encode(),
+            "application/json",
+        )
+        identity = {
+            key: original["request"][key]
+            for key in ("week", "publish_run_id", "article_sha256", "manifest_sha256")
+        }
+        monkeypatch.setitem(
+            recovery._CANDIDATES,
+            job_id,
+            (*identity.values(), len(media.content)),
+        )
+        epoch = recovery.reserve(
+            storage,
+            job_id,
+            identity=identity,
+            script_sha256=original["review"]["snapshot"]["script_sha256"],
+            mp3_sha256=sha256(media.content).hexdigest(),
+            request_id=str(uuid4()),
+            operator="offline-owner",
+            inventory_reference="offline-simulation-only",
+            now=now,
+        )
+        queue = Mock()
+        recovery.reconcile_dispatch(storage, job_id, epoch["epoch_id"], queue, now=now)
+        recovery.claim(
+            storage,
+            job_id,
+            epoch["epoch_id"],
+            "offline-worker",
+            now + timedelta(seconds=5000),
+            now=now,
+        )
+        recovery_kwargs = {
+            "recovery_epoch_id": epoch["epoch_id"],
+            "recovery_owner": "offline-worker",
+            "ownership_visibility_expires_at": now + timedelta(seconds=5000),
+        }
+    outcome = run_video_generation(job_id, storage, config=config, fanout=False, **recovery_kwargs)
     assert outcome.status == STATUS_COMPLETED
     assert outcome.distribution.public_delivery_status == "awaiting_review"
     repository = DistributionOutboxRepository(storage)
@@ -185,6 +241,27 @@ def prepared_exact_video(reviewed_stage, monkeypatch, tmp_path, request):
     assert storage.get_bytes(document["artifact"]["path"]) == video_bytes
     assert _distribution_human_approval(load_manifest(storage, job_id)) == {"approved": False}
     return storage, job_id, repository, document, config, composer
+
+
+@pytest.mark.parametrize("prepared_exact_video", [{"target": "recovery"}], indirect=True)
+def test_recovery_renders_private_mp4_and_persists_unreleasable_media_bound_outbox(
+    prepared_exact_video,
+):
+    from podcaster.distribution_dispatch import dispatch_reviewed_video
+    from podcaster.distribution_outbox import DistributionOutboxError
+    from podcaster.video.recovery import current_epoch
+
+    storage, job_id, repository, document, *_ = prepared_exact_video
+    epoch = current_epoch(storage, job_id)
+    assert epoch["media_sha256"] == document["artifact"]["sha256"]
+    assert document["media_review"]["status"] == "pending"
+    assert (
+        document["providers"]["youtube"]["context"]["private_recovery_epoch_id"]
+        == epoch["epoch_id"]
+    )
+    assert storage.get_bytes(document["artifact"]["path"]) == b"V" * 2048
+    with pytest.raises(DistributionOutboxError, match="recovery provider upload"):
+        dispatch_reviewed_video(repository, Mock(), document)
 
 
 def _video_decision(storage, job_id, document, **overrides):

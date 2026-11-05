@@ -35,6 +35,7 @@ from podcaster.storage import (
 
 SYNTHESIS_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-synthesis-queue-v1"
 VIDEO_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-video-queue-v1"
+VIDEO_RECOVERY_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-video-recovery-v1"
 CLIP_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-clip-queue-v1"
 DISTRIBUTION_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-distribution-queue-v1"
 _STORAGE_SCOPE = "https://storage.azure.com/.default"
@@ -116,6 +117,49 @@ def encode_video_message(job_id: str) -> str:
         separators=(",", ":"),
     )
     return base64.b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def encode_video_recovery_message(job_id: str, epoch_id: str) -> str:
+    """Deterministic queue identity for a single explicitly reserved epoch."""
+    if not isinstance(job_id, str) or not job_id.strip():
+        raise ValueError("recovery job_id is required")
+    if not isinstance(epoch_id, str) or not re.fullmatch(r"[a-f0-9]{32}", epoch_id):
+        raise ValueError("recovery epoch_id must be a 32-character hex digest")
+    payload = json.dumps(
+        {
+            "schema_version": VIDEO_RECOVERY_QUEUE_SCHEMA_VERSION,
+            "job_id": job_id,
+            "epoch_id": epoch_id,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return base64.b64encode(payload.encode()).decode("ascii")
+
+
+def parse_video_message(body: str) -> tuple[str, str | None]:
+    """Distinguish the versioned epoch envelope from historical job-only work."""
+    try:
+        payload = json.loads(base64.b64decode(body, validate=True).decode())
+    except (ValueError, UnicodeDecodeError):
+        try:
+            payload = json.loads(body)
+        except ValueError as exc:
+            raise ValueError("video queue body is invalid") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("video queue payload is invalid")
+    job_id = payload.get("job_id")
+    if not isinstance(job_id, str) or not job_id.strip():
+        raise ValueError("video queue job_id is missing")
+    schema = payload.get("schema_version")
+    if schema == VIDEO_RECOVERY_QUEUE_SCHEMA_VERSION:
+        epoch_id = payload.get("epoch_id")
+        if not isinstance(epoch_id, str) or not re.fullmatch(r"[a-f0-9]{32}", epoch_id):
+            raise ValueError("video recovery epoch_id is malformed")
+        return job_id.strip(), epoch_id
+    if schema not in (None, "v1", VIDEO_QUEUE_SCHEMA_VERSION) or "epoch_id" in payload:
+        raise ValueError("video queue schema or epoch is invalid")
+    return job_id.strip(), None
 
 
 def encode_clip_message(job_id: str, clip_index: int) -> str:

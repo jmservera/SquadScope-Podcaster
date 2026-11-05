@@ -826,6 +826,9 @@ def upload_to_youtube(
     raise_on_failure: bool = False,
     budget: VideoStageBudget | None = None,
     identity_tag: str | None = None,
+    recovery_storage: Any | None = None,
+    recovery_job_id: str | None = None,
+    recovery_epoch_id: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Upload a video to YouTube via the Data API v3.
 
@@ -836,6 +839,10 @@ def upload_to_youtube(
     Raises RuntimeError on auth failures; returns None on upload failures
     after retries so distribution continues to other targets.
     """
+    if recovery_storage is not None and recovery_job_id is not None:
+        from podcaster.video.recovery import assert_provider_write_allowed
+
+        assert_provider_write_allowed(recovery_storage, recovery_job_id, epoch_id=recovery_epoch_id)
     if not config.youtube_enabled:
         logger.info("YouTube upload disabled")
         return None, None
@@ -1434,6 +1441,10 @@ def upload_to_spotify_episode(
     ``podcaster.publish``. Returns True on success, False otherwise.
     """
 
+    if publication_storage is not None and job_id is not None:
+        from podcaster.video.recovery import assert_provider_write_allowed
+
+        assert_provider_write_allowed(publication_storage, job_id)
     if config.dry_run:
         logger.info("Spotify video upload dry-run: audio_anchor=%s", anchor_id)
         return (True, None, None) if return_episode_id else True

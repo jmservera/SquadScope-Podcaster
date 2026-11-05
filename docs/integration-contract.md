@@ -410,6 +410,43 @@ Exact-script jobs preserve the shared
 `human_review` publication blocker even after a generic post-audio approval and
 never automatically enqueue the legacy video pipeline, including on synthesis
 redelivery. Neither script nor audio review can authorize an unknown future video.
+After completed synthesis and fresh verification of the original immutable review
+binding and staged WAV/MP3 bytes, a separate video-only recovery path can prepare
+private media from the original job, without re-running TTS. The historical
+`video-budget.json` is never reset: a spent attempt terminates before clip fan-out
+or distribution, and an unexpired retry retains its original budget and clipset.
+The authenticated `POST /api/jobs/{job_id}/video/private-recovery` route requires
+a signed human administrator Bearer token (machine API keys cannot authorize it),
+the exact four-field publication identity (`week`, `publish_run_id`,
+`article_sha256`, source `manifest_sha256`), original `script_sha256`,
+`mp3_sha256`, a UUID `request_id`, and `inventory_reference` identifying a
+completed, owner-visible provider inventory. Only the two original completed
+W44/W45 jobs are candidates; later approved jobs with unknown synthesis claims
+or placeholder MP3s are not. An operator must inspect the correct YouTube channel
+and Spotify drafts/scheduled/live across configured shows, resolve any ambiguous
+prior provider state, and record a fresh inventory reference **before** calling
+the route. A reference is an operator attestation, not provider-wide absence
+proof; deployment does not execute this endpoint.
+
+The route reserves a fixed-deadline epoch and pending dispatch intent under
+storage CAS before queue send. Retry the *same* request ID after a send/ack
+uncertainty; it reuses the epoch and deterministic message body, not a new
+budget. A different request ID is refused while the prior epoch is active;
+after it expires a new epoch requires fresh reconciliation and a new inventory
+reference. A stale historical queue message cannot operate on the recovery
+epoch, and recovered recorder clips and intermediates have a separate epoch
+namespace. A lost authoritative queue visibility is terminal for recovery.
+The epoch keeps the original script and MP3, its historical failure/budget, and
+the 1200/1500/4500/5100-second bounds.
+
+Recovered video can be privately rendered and archived to a held, media-bound
+outbox only. The original job and epoch are persisted with its provider legs;
+the asynchronous distribution worker re-checks the durable hold before and
+during dispatch to both YouTube and Spotify, even if a generic media review
+record exists. This release has **no transition that permits recovered provider
+uploads**. Do not invoke production recovery while provider inventory remains
+incomplete; no provider draft/unlisted upload, public promotion, or Spotify
+auto-live is authorized by script approval or by deploying the code.
 The legacy Spotify video path can live-publish independently of outbox approval;
 it is not a supported publication route for these jobs.
 
