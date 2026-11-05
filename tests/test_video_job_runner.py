@@ -756,6 +756,26 @@ def test_cleared_manifest_marker_with_record_still_blocks_worker_and_adapters(st
     repository.authorize_dispatch.assert_not_called()
 
 
+def test_corrupt_epoch_record_cannot_be_treated_as_missing_recovery(storage):
+    job_id = "podcast-2026-W44-00bc06dfb6e2"
+    storage.set_manifest(job_id, {"job_id": job_id, "generation": {}})
+    storage.put_bytes(
+        recovery.recovery_path(job_id),
+        json.dumps({"schema_version": 1, "job_id": job_id, "epochs": [7]}).encode(),
+        "application/json",
+    )
+    with pytest.raises(recovery.RecoveryError, match="invalid"):
+        recovery.assert_provider_write_allowed(storage, job_id)
+    with pytest.raises(recovery.RecoveryError, match="invalid"):
+        recovery.assert_manifest_writer(
+            storage,
+            job_id,
+            {},
+            epoch_id=None,
+            owner=None,
+        )
+
+
 def test_historical_budget_terminalizer_cannot_replace_interleaved_recovery_completion(
     storage, monkeypatch
 ):

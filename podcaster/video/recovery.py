@@ -152,7 +152,12 @@ def _expire(entry: dict[str, Any], now: datetime) -> None:
 
 def current_epoch(storage: Any, job_id: str) -> dict[str, Any] | None:
     epochs = _read(storage, job_id)["epochs"]
-    return epochs[-1] if epochs else None
+    if not epochs:
+        return None
+    entry = epochs[-1]
+    if not isinstance(entry, dict) or not isinstance(entry.get("epoch_id"), str):
+        raise RecoveryError("recovery epoch record is invalid")
+    return entry
 
 
 def assert_private_hold(
