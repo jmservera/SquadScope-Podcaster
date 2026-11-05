@@ -44,6 +44,12 @@ def _file_version(path):
 
 def dispatch_reviewed_video(repository, claim, document, *, config=None, transport=None):
     """Use existing provider adapters; never admit legacy or unreviewed outboxes."""
+    from podcaster.video.recovery import deny_candidate_upload
+
+    identity_document = document.get("publication_identity")
+    if not isinstance(identity_document, dict):
+        raise DistributionOutboxError("video publication identity is missing")
+    deny_candidate_upload(identity_document.get("accepted_job_id"))
     if "media_review" not in document:
         return "legacy_provider_dispatch_not_authorized"
     if not media_review_allows_distribution(document):
@@ -378,6 +384,7 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
                     config,
                     tags=tags,
                     identity_tag=tag,
+                    job_id=identity.accepted_job_id,
                     raise_on_failure=True,
                     transport=_GuardedTransport(http, authorize),
                 )

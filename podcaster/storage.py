@@ -209,14 +209,48 @@ class LocalStorageBackend:
                         with os.fdopen(current_fd, "rb") as current_file:
                             current = current_file.read()
                     updated = update(current)
+                    if not (
+                        safe_path.endswith("/manifest.json") and b'"video_recovery"' in updated
+                    ):
+                        write_fd = _open_local_leaf(
+                            target_parent_fd,
+                            target_name,
+                            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                            0o644,
+                        )
+                        with os.fdopen(write_fd, "wb") as target_file:
+                            target_file.write(updated)
+                        fcntl.flock(lock_file, fcntl.LOCK_UN)
+                        return StoredArtifact(
+                            path=safe_path,
+                            url=f"{self.base_url}/{safe_path}",
+                            size_bytes=len(updated),
+                            content_type=content_type,
+                        )
+                    staging_name = f"{target_name}-{os.urandom(16).hex()}.cas"
                     write_fd = _open_local_leaf(
                         target_parent_fd,
-                        target_name,
-                        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                        staging_name,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                         0o644,
                     )
-                    with os.fdopen(write_fd, "wb") as target_file:
-                        target_file.write(updated)
+                    try:
+                        with os.fdopen(write_fd, "wb") as target_file:
+                            target_file.write(updated)
+                            target_file.flush()
+                            os.fsync(target_file.fileno())
+                        os.replace(
+                            staging_name,
+                            target_name,
+                            src_dir_fd=target_parent_fd,
+                            dst_dir_fd=target_parent_fd,
+                        )
+                        os.fsync(target_parent_fd)
+                    finally:
+                        try:
+                            os.unlink(staging_name, dir_fd=target_parent_fd)
+                        except FileNotFoundError:
+                            pass
                     fcntl.flock(lock_file, fcntl.LOCK_UN)
             finally:
                 if target_parent_fd is not None:

@@ -143,6 +143,34 @@ def client(storage):
     return TestClient(app)
 
 
+@pytest.mark.parametrize("configured", [False, True])
+def test_private_recovery_requires_distinct_operator_token_and_candidate(
+    client, storage, monkeypatch, configured
+):
+    from podcaster.video.recovery import CANDIDATES
+
+    job = next(iter(CANDIDATES))
+    storage.put_bytes(
+        f"jobs/{job}/manifest.json", json.dumps(_make_manifest(job)).encode(), "application/json"
+    )
+    if configured:
+        monkeypatch.setenv("VIDEO_RECOVERY_OPERATOR_TOKEN", "operator-only-secret")
+    else:
+        monkeypatch.delenv("VIDEO_RECOVERY_OPERATOR_TOKEN", raising=False)
+    with patch("podcaster.queue.create_video_queue_backend") as producer:
+        denied = client.post(f"/api/jobs/{job}/video/recover", json={})
+        assert denied.status_code == 403
+        producer.assert_not_called()
+        if configured:
+            wrong_job = client.post(
+                "/api/jobs/podcast-2026-W45-19c055c96ddf/video/recover",
+                headers={"X-Video-Recovery-Operator": "operator-only-secret"},
+                json={},
+            )
+            assert wrong_job.status_code == 409
+            producer.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Tests: GET /api/jobs
 # ---------------------------------------------------------------------------

@@ -415,14 +415,56 @@ it is not a supported publication route for these jobs.
 
 Eventual video delivery requires protected review-only/outbox preparation followed
 by an actual human review bound to the completed video bytes and publication
-identity: YouTube must retain human media-bound outbox review, and Spotify remains
-operator-only for reviewed video. This exact-script-to-TTS change does **not**
-establish a supported safe preparation/publication route for these jobs or
-implement that later review. Video/provider mutation therefore remains blocked;
-generic `/api/review` approval, `publish_on_approval`, and a configured video target
-do not unblock it. Existing unrelated legacy publication behavior is unchanged.
-The manual video enqueue endpoint returns `409` for these jobs, and the direct video
-worker skips them before resolving default configuration, stores or mutable budgets.
+identity. The private-only continuation below does not implement that later
+review or any upload transition. Video/provider mutation therefore remains
+blocked; generic `/api/review` approval, `publish_on_approval`, and a configured
+video target do not unblock it. Existing unrelated legacy publication behavior
+is unchanged. The manual video enqueue endpoint returns `409` for these jobs.
+
+### Private-only recovery of spent W44/W45 video attempts
+
+The only eligible original jobs are `podcast-2026-W44-00bc06dfb6e2` and
+`podcast-2026-W45-9798e93edc06`, conditional on fresh exact-review, completed
+synthesis, WAV and MP3 byte/hash proof and their existing historical video budget.
+Later unknown synthesis claims are not recoverable. An expired ordinary video
+attempt is terminal: a queue redelivery cannot reset its original budget or
+enqueue another clipset. No script, TTS or audio-copy replay is permitted.
+
+`POST /api/jobs/{job_id}/video/recover` requires normal API authentication **and**
+the separately configured `VIDEO_RECOVERY_OPERATOR_TOKEN` in
+`X-Video-Recovery-Operator`. It is disabled without that token. The request
+supplies `request_id` (stable on retry), `operator` (human), exact
+`identity` (`accepted_job_id`, `week`, `publish_run_id`, `article_sha256`,
+`manifest_sha256`) and `inventory` with the same identity, `checked_by`,
+an aware `checked_at` no more than two hours old, a YouTube object with
+`status=reconciled_absent`, exact `channel_id` and
+`states=["private","unlisted","processing"]`, and a Spotify object with
+`status=reconciled_absent`, nonempty `show_ids` across configured shows and
+`states=["draft","scheduled","live"]`. These inventory
+attestations are not an automated provider check: owner-visible all-state,
+all-show reconciliation remains an independent prerequisite to *invoking*
+the route. A different request id cannot attach to the same active epoch;
+after termination new inventory is mandatory. Do not invoke the route as
+part of deploying this change.
+
+One conditional update to `jobs/{job_id}/manifest.json` commits the complete
+`generation.video_recovery` epoch ledger. Its immutable proof, fixed 5100-second
+deadline, queue send attempts, owner and lease, and `generation.video_runner`
+are the **single ownership authority**. Send attempts persist before enqueue;
+crashes can cause a duplicate queue message but never another epoch. Delivery
+needs actual queue visibility; reclaim after a lost owner uses a fresh token and
+the same original deadline. A completed runner cannot be claimed again; only
+proof-verified settlement is allowed. Old recovery ledgers are quarantined for
+offline reconciliation, never silently migrated. Scratch clipsets and recording
+checkpoints are namespaced by epoch; the historical budget and original media
+are not overwritten. Local manifest CAS writes use fsynced atomic replacement.
+
+The finished MP4 is archived privately with its digest, and the outbox is held
+for review. **There is no approval-to-upload transition**: candidate YouTube
+and Spotify final adapters and resumed distribution workers deny provider
+mutation even if recovery metadata was removed. Production recovery, media
+approval, provider upload, public promotion and Spotify live mode are separate
+owner gates; this change authorizes none of them.
 
 ## Provider delivery outcomes
 

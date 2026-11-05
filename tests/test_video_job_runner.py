@@ -157,6 +157,431 @@ class FakeStorage:
         self._data[script_path(job_id)] = script.encode()
 
 
+class ConditionalManifestStorage(FakeStorage):
+    """Simulate Azure If-Match failure and callback re-execution on competing writes."""
+
+    def __init__(self):
+        super().__init__()
+        self.versions = {}
+        self.before_commit = None
+
+    def update_bytes(self, path, content_type, update):
+        for _ in range(5):
+            version = self.versions.get(path, 0)
+            content = self.get_bytes(path)
+            replacement = update(content)
+            hook, self.before_commit = self.before_commit, None
+            if hook is not None:
+                hook()
+            if self.versions.get(path, 0) != version:
+                continue
+            self._data[path] = replacement
+            self.versions[path] = version + 1
+            return
+        raise RuntimeError("CAS retry limit")
+
+
+@pytest.fixture
+def recovery_cas(monkeypatch):
+    from podcaster.video import recovery
+    from podcaster.video.budget import VideoStageBudget
+
+    storage = ConditionalManifestStorage()
+    job = "podcast-2026-W44-00bc06dfb6e2"
+    instant = datetime.now(timezone.utc)
+    historical_start = instant - timedelta(seconds=5400)
+    budget = VideoStageBudget.start(
+        now_utc=historical_start, utcnow=lambda: historical_start
+    ).to_dict()
+    proof = {"identity": {"accepted_job_id": job}, "original_budget": budget}
+    monkeypatch.setattr(recovery, "_proof", lambda *args, **kwargs: proof)
+    doc = {
+        "job_id": job,
+        "generation": {
+            "video_budget": budget,
+            "video_runner": {
+                "status": "failed",
+                "epoch_id": "epoch-1",
+                "reason": "historical_failure",
+            },
+            "video_recovery": {
+                "schema": recovery.SCHEMA,
+                "epochs": [
+                    {
+                        "id": "epoch-1",
+                        "request_id": "request-1",
+                        "identity": proof["identity"],
+                        "proof": proof,
+                        "budget": VideoStageBudget.start(
+                            now_utc=instant, utcnow=lambda: instant
+                        ).to_dict(),
+                        "status": "running",
+                        "owner": "original",
+                        "lease_until": (instant + timedelta(seconds=30)).isoformat(),
+                        "deadline_at": (instant + timedelta(seconds=5100)).isoformat(),
+                        "dispatch": {"state": "sending", "attempts": 1},
+                        "upload": "held",
+                    }
+                ],
+            },
+        },
+    }
+    storage.set_manifest(job, doc)
+    original = recovery.Authority(storage, job, "epoch-1", "original")
+
+    def successor(owner="successor"):
+        return recovery.claim(
+            storage,
+            job,
+            "epoch-1",
+            owner=owner,
+            now=instant + timedelta(seconds=31),
+            visibility_until=instant + timedelta(seconds=5400),
+        )
+
+    return storage, job, original, successor
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"status": "failed", "reason": "RuntimeError"},
+        {"status": "failed", "reason": "watermark_transient"},
+        {"status": "failed", "reason": "watermark_unavailable"},
+        {"status": "completed", "media_sha256": "a" * 64, "distribution": {"outbox_id": "held"}},
+    ],
+)
+def test_recovery_manifest_cas_orders_old_runner_and_successor_claim(recovery_cas, state):
+    from podcaster.video.job_runner import _record_video_state
+    from podcaster.video.recovery import RecoveryDenied
+
+    storage, job, original, claim_next = recovery_cas
+    path = manifest_path(job)
+
+    # Old commit precedes successor claim: completed state cannot be replaced.
+    _record_video_state(storage, job, state.copy(), recovery_authority=original, fail_closed=True)
+    if state["status"] == "completed":
+        with pytest.raises(RecoveryDenied):
+            claim_next()
+        assert (
+            json.loads(storage.get_bytes(path))["generation"]["video_runner"]["status"]
+            == "completed"
+        )
+        return
+    claim_next()
+    before = json.loads(storage.get_bytes(path))
+    assert (
+        before["generation"]["video_recovery"]["epochs"][-1]["runner_attempts"][-1]["reason"]
+        == state["reason"]
+    )
+    with pytest.raises(RecoveryDenied):
+        _record_video_state(
+            storage, job, state.copy(), recovery_authority=original, fail_closed=True
+        )
+
+    # Successor commits after old callback validation but before conditional PUT.
+    doc = json.loads(storage.get_bytes(path))
+    doc["generation"]["video_recovery"]["epochs"][-1]["owner"] = "original"
+    doc["generation"]["video_recovery"]["epochs"][-1]["lease_until"] = (
+        datetime.now(timezone.utc) + timedelta(seconds=30)
+    ).isoformat()
+    storage.set_manifest(job, doc)
+    storage.before_commit = claim_next
+    with pytest.raises(RecoveryDenied):
+        _record_video_state(
+            storage, job, state.copy(), recovery_authority=original, fail_closed=True
+        )
+    final = json.loads(storage.get_bytes(path))
+    assert final["generation"]["video_recovery"]["epochs"][-1]["owner"] == "successor"
+    assert final["generation"]["video_runner"]["status"] == "running"
+
+
+def test_recovery_claims_racing_on_one_expired_lease(recovery_cas):
+    from podcaster.video.recovery import RecoveryDenied
+
+    storage, job, _old, claim_next = recovery_cas
+    storage.before_commit = lambda: claim_next("winner")
+    with pytest.raises(RecoveryDenied):
+        claim_next("loser")
+    doc = json.loads(storage.get_bytes(manifest_path(job)))
+    assert doc["generation"]["video_recovery"]["epochs"][-1]["owner"] == "winner"
+
+
+def test_recovery_reservation_idempotency_expiry_and_new_inventory(recovery_cas):
+    from podcaster.video import recovery
+
+    storage, job, _old, _claim = recovery_cas
+    doc = json.loads(storage.get_bytes(manifest_path(job)))
+    old_budget = doc["generation"]["video_budget"]
+    doc["generation"].pop("video_recovery")
+    doc["generation"]["video_runner"] = {"status": "failed", "reason": "original_expiry"}
+    storage.set_manifest(job, doc)
+    instant = datetime.now(timezone.utc)
+    identity = {"accepted_job_id": job}
+    inventory = {
+        "identity": identity,
+        "youtube": {
+            "status": "reconciled_absent",
+            "channel_id": "owner-channel",
+            "states": ["private", "unlisted", "processing"],
+        },
+        "spotify": {
+            "status": "reconciled_absent",
+            "show_ids": ["english-show"],
+            "states": ["draft", "scheduled", "live"],
+        },
+        "checked_by": "human",
+        "checked_at": instant.isoformat(),
+    }
+
+    def reserve(request_id, inventory=inventory, now=instant):
+        return recovery.reserve(
+            storage,
+            job,
+            request_id=request_id,
+            identity=identity,
+            operator="human",
+            inventory=inventory,
+            now=now,
+        )
+
+    first = reserve("original-request")
+    assert reserve("original-request")["id"] == first["id"]
+    assert first["dispatch"] == {"state": "pending", "attempts": 0}
+    with pytest.raises(recovery.RecoveryDenied):
+        reserve("another-request")
+    with pytest.raises(recovery.RecoveryDenied):
+        reserve("original-request", {**inventory, "identity": {"accepted_job_id": "wrong"}})
+    later = instant + timedelta(seconds=5400)
+    second = reserve(
+        "another-request",
+        {**inventory, "checked_at": later.isoformat()},
+        now=later,
+    )
+    saved = json.loads(storage.get_bytes(manifest_path(job)))["generation"]
+    assert saved["video_budget"] == old_budget
+    assert saved["video_recovery"]["epochs"][0]["status"] == "expired"
+    assert saved["video_recovery"]["epochs"][0]["deadline_at"] == first["deadline_at"]
+    assert second["id"] != first["id"]
+    assert len(saved["video_recovery"]["epochs"]) == 2
+    assert saved["video_runner"]["reason"] == "original_expiry"
+    assert second["prior_runner"]["reason"] == "original_expiry"
+
+
+def test_completed_recovery_settles_after_expiry_without_render(recovery_cas, monkeypatch):
+    from podcaster import distribution_outbox
+    from podcaster.video import recovery
+
+    storage, job, _old, claim_next = recovery_cas
+    doc = json.loads(storage.get_bytes(manifest_path(job)))
+    entry = doc["generation"]["video_recovery"]["epochs"][-1]
+    entry["deadline_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    entry["outbox_id"] = "held-outbox"
+    entry["media_sha256"] = "a" * 64
+    doc["generation"]["video_runner"] = {
+        "status": "completed",
+        "epoch_id": entry["id"],
+        "media_sha256": "a" * 64,
+        "distribution": {"outbox_id": "held-outbox"},
+    }
+    storage.set_manifest(job, doc)
+    artifact = {
+        "path": "immutable/held.mp4",
+        "sha256": "a" * 64,
+        "size_bytes": 2048,
+        "media_kind": "video",
+    }
+    monkeypatch.setattr(
+        distribution_outbox.DistributionOutboxRepository,
+        "read",
+        lambda self, outbox_id: {
+            "artifact": artifact,
+            "publication_identity": entry["identity"],
+            "media_review": {"status": "pending"},
+        },
+    )
+    verify = MagicMock()
+    monkeypatch.setattr(distribution_outbox, "verify_artifact", verify)
+    with pytest.raises(recovery.RecoveryDenied):
+        claim_next()
+    recovery.settle(storage, job, entry["id"], media_sha256="a" * 64, outbox_id="held-outbox")
+    verify.assert_called_once()
+    assert (
+        json.loads(storage.get_bytes(manifest_path(job)))["generation"]["video_recovery"]["epochs"][
+            -1
+        ]["status"]
+        == "completed"
+    )
+
+
+def test_recovery_dispatch_crash_replay_and_fixed_5400_deadline(recovery_cas, monkeypatch):
+    from podcaster.video import recovery
+
+    storage, job, _original, _claim = recovery_cas
+    instant = datetime.now(timezone.utc)
+    doc = json.loads(storage.get_bytes(manifest_path(job)))
+    doc["generation"]["video_recovery"]["epochs"][-1].update(
+        status="reserved",
+        owner=None,
+        lease_until=None,
+        dispatch={"state": "pending", "attempts": 0},
+    )
+    storage.set_manifest(job, doc)
+    producer = MagicMock()
+    path = manifest_path(job)
+    real_update = storage.update_bytes
+    calls = 0
+
+    def crash_after_send(path, kind, callback):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("acknowledgment lost")
+        return real_update(path, kind, callback)
+
+    storage.update_bytes = crash_after_send
+    with pytest.raises(RuntimeError, match="acknowledgment lost"):
+        recovery.dispatch(storage, producer, job, "epoch-1", now=instant)
+    assert producer.send_message.call_count == 1
+    assert json.loads(storage.get_bytes(path))["generation"]["video_recovery"]["epochs"][-1][
+        "dispatch"
+    ] == {"state": "sending", "attempts": 1}
+    storage.update_bytes = real_update
+    recovery.dispatch(storage, producer, job, "epoch-1", now=instant)
+    assert producer.send_message.call_count == 2
+    assert recovery.parse_message(producer.send_message.call_args.args[0]) == (job, "epoch-1")
+    claimed = recovery.claim(
+        storage,
+        job,
+        "epoch-1",
+        now=instant,
+        visibility_until=instant + timedelta(seconds=5400),
+    )
+    with pytest.raises(recovery.RecoveryDenied):
+        recovery.claim(
+            storage,
+            job,
+            "epoch-1",
+            now=instant + timedelta(seconds=1),
+            visibility_until=instant + timedelta(seconds=5401),
+        )
+    assert claimed.epoch_id == "epoch-1"
+    successor = recovery.claim(
+        storage,
+        job,
+        "epoch-1",
+        now=instant + timedelta(seconds=1801),
+        visibility_until=instant + timedelta(seconds=5400),
+    )
+    assert successor.owner != claimed.owner
+    with pytest.raises(recovery.RecoveryDenied):
+        claimed.check(json.loads(storage.get_bytes(path)))
+    with pytest.raises(recovery.RecoveryDenied):
+        recovery.claim(
+            storage,
+            job,
+            "epoch-1",
+            now=instant + timedelta(seconds=5400),
+            visibility_until=instant + timedelta(seconds=10800),
+        )
+    assert len(json.loads(storage.get_bytes(path))["generation"]["video_recovery"]["epochs"]) == 1
+
+
+def test_recovery_missing_metadata_and_unknown_synthesis_never_reach_providers(
+    monkeypatch, tmp_path
+):
+    from podcaster import distribution_dispatch, publish
+    from podcaster.video import distribution, recovery
+
+    job = "podcast-2026-W44-00bc06dfb6e2"
+    candidate = tmp_path / f"{job}.mp4"
+    candidate.write_bytes(b"mp4")
+    config = VideoDistributionConfig()
+    transport = MagicMock(side_effect=AssertionError("provider called"))
+    with pytest.raises(recovery.RecoveryDenied):
+        distribution.upload_to_youtube(
+            candidate, "title", "description", config, transport=transport
+        )
+    with pytest.raises(recovery.RecoveryDenied):
+        distribution.upload_to_spotify_episode(candidate, None, config, job_id=job)
+    with pytest.raises(recovery.RecoveryDenied):
+        publish.upload_video_to_episode(candidate)
+    with pytest.raises(recovery.RecoveryDenied):
+        distribution_dispatch.dispatch_reviewed_video(
+            MagicMock(), MagicMock(), {"publication_identity": {"accepted_job_id": job}}
+        )
+    transport.assert_not_called()
+    storage = ConditionalManifestStorage()
+    storage.set_manifest(
+        job, {"job_id": job, "generation": {"synthesis_claim": {"status": "unknown"}}}
+    )
+    before = storage.get_bytes(manifest_path(job))
+    with pytest.raises(recovery.RecoveryDenied):
+        recovery.reserve(
+            storage,
+            job,
+            request_id="request-unknown",
+            identity={"accepted_job_id": job},
+            operator="operator",
+            inventory={
+                "identity": {"accepted_job_id": job},
+                "youtube": {"status": "reconciled_absent"},
+                "spotify": {"status": "reconciled_absent"},
+                "checked_by": "operator",
+            },
+        )
+    assert storage.get_bytes(manifest_path(job)) == before
+    storage.set_manifest(job, {"job_id": job, "generation": {"video_recovery": {}}})
+    runner = MagicMock(side_effect=AssertionError("render or provider crossed"))
+    monkeypatch.setattr("podcaster.video.job_runner.run_video_generation", runner)
+    queue = MagicMock()
+    message = QueueMessage(
+        "id",
+        "receipt",
+        recovery.encode_message(job, "epoch-1"),
+        1,
+        datetime.now(timezone.utc) + timedelta(seconds=5400),
+    )
+    assert process_message(message, storage=storage, queue=queue).reason == "recovery_denied"
+    runner.assert_not_called()
+    queue.delete_message.assert_called_once_with(message)
+
+
+def test_spent_original_video_attempt_stops_before_fanout_or_distribution(monkeypatch):
+    from podcaster.video import job_runner
+    from podcaster.video.budget import VideoStageBudget
+
+    job = "podcast-2026-W44-original"
+    first = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    expired = first + timedelta(seconds=5400)
+    storage = FakeStorage()
+    storage.set_manifest(job, {"job_id": job, "request": {}, "generation": {}})
+    historical = VideoStageBudget.start(now_utc=first, utcnow=lambda: first).to_dict()
+    storage.put_bytes(
+        job_runner.video_budget_path(job), json.dumps(historical).encode(), "application/json"
+    )
+    fanout = MagicMock(side_effect=AssertionError("fanout crossed"))
+    monkeypatch.setattr(job_runner, "claim_pipeline", fanout)
+    monkeypatch.setattr(job_runner, "create_intermediate_store", lambda job_id: MagicMock())
+
+    outcome = run_video_generation(
+        job,
+        storage,
+        now=expired,
+        fanout=True,
+        fanout_scratch=MagicMock(),
+        clip_producer=MagicMock(),
+    )
+
+    assert outcome.reason == "video_budget_expired"
+    assert json.loads(storage.get_bytes(job_runner.video_budget_path(job))) == historical
+    assert (
+        json.loads(storage.get_bytes(manifest_path(job)))["generation"]["video_runner"]["reason"]
+        == "video_budget_expired"
+    )
+    fanout.assert_not_called()
+
+
 def test_video_publication_evidence_failure_overwrites_snapshot_unknown(monkeypatch, caplog):
     from podcaster.video import job_runner
 

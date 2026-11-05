@@ -1074,6 +1074,54 @@ def enqueue_video(job_id: str):
     return {"job_id": job_id, "enqueued": True}
 
 
+@app.post("/api/jobs/{job_id}/video/recover", dependencies=[Depends(verify_auth)])
+async def recover_private_video(
+    job_id: str,
+    request: Request,
+    x_video_recovery_operator: str = Header(default=""),
+):
+    """Reserve or reconcile an explicitly authorized private-only recovery."""
+    from podcaster.queue import create_video_queue_backend
+    from podcaster.video.recovery import CANDIDATES, RecoveryDenied, dispatch, reserve
+
+    secret = os.environ.get("VIDEO_RECOVERY_OPERATOR_TOKEN", "")
+    if (
+        not secret
+        or not x_video_recovery_operator
+        or not hmac.compare_digest(secret, x_video_recovery_operator)
+    ):
+        raise HTTPException(
+            status_code=403, detail="Distinct recovery operator authorization required"
+        )
+    if job_id not in CANDIDATES:
+        raise HTTPException(status_code=409, detail="Job is not an eligible original")
+    payload, error = await _read_json_object(request)
+    if error is not None:
+        return error
+    assert payload is not None
+    producer = create_video_queue_backend()
+    if producer is None:
+        raise HTTPException(status_code=503, detail="Video queue is not configured")
+    try:
+        epoch = reserve(
+            get_storage(),
+            job_id,
+            request_id=payload.get("request_id"),
+            identity=payload.get("identity"),
+            operator=payload.get("operator"),
+            inventory=payload.get("inventory"),
+        )
+        dispatch(get_storage(), producer, job_id, epoch["id"])
+    except RecoveryDenied as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("private recovery dispatch failed for job_id=%s", job_id)
+        raise HTTPException(
+            status_code=503, detail="Recovery send is pending; retry same request id"
+        ) from exc
+    return {"job_id": job_id, "epoch_id": epoch["id"], "status": "private_only"}
+
+
 @app.get("/healthz")
 def healthz():
     return {"status": "healthy"}

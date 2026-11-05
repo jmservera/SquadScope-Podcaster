@@ -826,6 +826,7 @@ def upload_to_youtube(
     raise_on_failure: bool = False,
     budget: VideoStageBudget | None = None,
     identity_tag: str | None = None,
+    job_id: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Upload a video to YouTube via the Data API v3.
 
@@ -836,6 +837,11 @@ def upload_to_youtube(
     Raises RuntimeError on auth failures; returns None on upload failures
     after retries so distribution continues to other targets.
     """
+    from podcaster.video.recovery import CANDIDATES, deny_candidate_upload
+
+    deny_candidate_upload(job_id)
+    if isinstance(video_path, (str, Path)) and Path(video_path).stem in CANDIDATES:
+        deny_candidate_upload(Path(video_path).stem)
     if not config.youtube_enabled:
         logger.info("YouTube upload disabled")
         return None, None
@@ -1434,6 +1440,11 @@ def upload_to_spotify_episode(
     ``podcaster.publish``. Returns True on success, False otherwise.
     """
 
+    from podcaster.video.recovery import CANDIDATES, deny_candidate_upload
+
+    deny_candidate_upload(job_id)
+    if isinstance(video_path, (str, Path)) and Path(video_path).stem in CANDIDATES:
+        deny_candidate_upload(Path(video_path).stem)
     if config.dry_run:
         logger.info("Spotify video upload dry-run: audio_anchor=%s", anchor_id)
         return (True, None, None) if return_episode_id else True
@@ -1736,6 +1747,9 @@ def distribute_video(
     when exactly one match exists, otherwise it stays fail-closed (#678).
     Spotify closes that window by reconciling drafts before creating one.
     """
+    from podcaster.video.recovery import deny_candidate_upload
+
+    deny_candidate_upload(job_id)
     result = DistributionResult(publish_run_id=publish_run_id)
     prior_published = published or {}
     youtube_required_failure: YouTubeDeliveryError | None = None
