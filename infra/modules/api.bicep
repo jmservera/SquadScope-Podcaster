@@ -20,6 +20,21 @@ param identityId string
 @description('User-assigned managed identity client ID.')
 param identityClientId string
 
+@allowed([
+  'inactive'
+  'active'
+])
+param recoveryOperatorState string = 'inactive'
+
+@description('Dedicated API-only identity resource ID; empty when inactive.')
+param recoveryIdentityId string = ''
+
+@description('Dedicated API-only identity client ID; empty when inactive.')
+param recoveryIdentityClientId string = ''
+
+@description('Derived versionless dedicated-vault secret URI; empty when inactive.')
+param recoveryOperatorSecretUri string = ''
+
 @description('Existing Storage Account name (for artifact staging + queue).')
 param storageAccountName string
 
@@ -140,15 +155,18 @@ var youtubeReadbackEnvironment = youtubeReadbackConfigured ? [
   { name: 'VIDEO_YOUTUBE_CLIENT_SECRET', secretRef: 'youtube-client-secret' }
   { name: 'VIDEO_YOUTUBE_REFRESH_TOKEN', secretRef: 'youtube-refresh-token' }
 ] : []
+var recoveryEnabled = recoveryOperatorState == 'active'
+var recoveryEnvironment = recoveryEnabled ? [
+  { name: 'PODCASTER_VIDEO_RECOVERY_OPERATOR_SECRET_URI', value: recoveryOperatorSecretUri }
+  { name: 'PODCASTER_VIDEO_RECOVERY_IDENTITY_CLIENT_ID', value: recoveryIdentityClientId }
+] : []
 
 resource apiApp 'Microsoft.App/containerApps@2025-01-01' = {
   name: apiAppName
   location: location
   identity: {
     type: 'UserAssigned'
-    userAssignedIdentities: {
-      '${identityId}': {}
-    }
+    userAssignedIdentities: union({ '${identityId}': {} }, recoveryEnabled ? { '${recoveryIdentityId}': {} } : {})
   }
   properties: {
     environmentId: containerAppsEnvId
@@ -299,7 +317,7 @@ resource apiApp 'Microsoft.App/containerApps@2025-01-01' = {
               name: 'UI_AUTH_SECRET'
               secretRef: 'ui-auth-secret'
             }
-          ], ttsRuntimeEnvironment, youtubeReadbackEnvironment)
+          ], ttsRuntimeEnvironment, youtubeReadbackEnvironment, recoveryEnvironment)
         }
       ]
       scale: {

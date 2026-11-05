@@ -944,6 +944,18 @@ def test_reconciler_isolates_corrupt_original_and_bad_epoch(
     assert "malformed" in caplog.text
 
 
+def _enable_mock_vault_recovery(monkeypatch, monitoring):
+    monkeypatch.delenv("PODCASTER_VIDEO_RECOVERY_OPERATOR_KEY", raising=False)
+    monkeypatch.setenv(
+        "PODCASTER_VIDEO_RECOVERY_OPERATOR_SECRET_URI",
+        "https://podrv123456789abcd.vault.azure.net/secrets/video-recovery-operator-key",
+    )
+    monkeypatch.setenv(
+        "PODCASTER_VIDEO_RECOVERY_IDENTITY_CLIENT_ID", "c089ed5d-96a2-411b-bf5d-2f0789586713"
+    )
+    monkeypatch.setattr(monitoring.recovery_operator_key, "get", lambda: "test-operator-key")
+
+
 def test_api_restart_reconciles_unsent_private_dispatch(recovery_original, monkeypatch):
     from podcaster import monitoring
     from podcaster.video import recovery
@@ -965,7 +977,7 @@ def test_api_restart_reconciles_unsent_private_dispatch(recovery_original, monke
         sent.append(message)
         delivered.set()
 
-    monkeypatch.setenv("PODCASTER_VIDEO_RECOVERY_OPERATOR_KEY", "test-operator-key")
+    _enable_mock_vault_recovery(monkeypatch, monitoring)
     monkeypatch.setattr(monitoring, "get_storage", lambda: storage)
     monkeypatch.setattr(
         "podcaster.queue.create_video_queue_backend",
@@ -1683,7 +1695,7 @@ def test_api_queue_construction_failure_reconciles_deadline_and_recovers(
     def unavailable():
         raise RuntimeError("queue constructor failed")
 
-    monkeypatch.setenv("PODCASTER_VIDEO_RECOVERY_OPERATOR_KEY", "test-operator-key")
+    _enable_mock_vault_recovery(monkeypatch, monitoring)
     monkeypatch.setattr(monitoring, "get_storage", lambda: storage)
     monkeypatch.setattr(recovery, "reconcile_pending", reconcile)
     monkeypatch.setattr("podcaster.queue.create_video_queue_backend", unavailable)

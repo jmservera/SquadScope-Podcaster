@@ -227,6 +227,13 @@ param containerRegistryServer string = ''
 @description('Deploy the HTTP API app for /api/generate (#131).')
 param deployApiApp bool = true
 
+@allowed([
+  'inactive'
+  'active'
+])
+@description('API recovery boundary desired state. Production release workflow requires explicit protected configuration.')
+param recoveryOperatorState string = 'inactive'
+
 @description('HTTP API container image (#131).')
 param apiImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 
@@ -340,6 +347,12 @@ var hasDeploymentPrincipalObjectId = !empty(deploymentPrincipalObjectId)
 var openAiCustomSubDomain = toLower(openAiAccountName)
 var openAiEndpoint = 'https://${openAiCustomSubDomain}.openai.azure.com/'
 var acrLoginServer = deployAcr ? '${toLower(acrName)}.azurecr.io' : containerRegistryServer
+var recoveryVaultName = 'podrv${uniqueString(resourceGroup().id, 'recovery')}'
+
+// Existing only: bootstrap and post-owner-secret RBAC are separate deployments.
+resource recoveryIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
+  name: '${baseName}-api-recovery-id'
+}
 // Guard: deployVnet=true requires private-only Storage access (#675).
 // Keep this relationship explicit until Bicep assertions are stable enough to enforce it.
 var _storageVnetContractSatisfied = !(deployVnet && storagePublicNetworkAccess == 'Enabled')
@@ -721,6 +734,10 @@ module api 'modules/api.bicep' = if (deployApiApp) {
     baseName: baseName
     identityId: aca.outputs.jobIdentityResourceId
     identityClientId: aca.outputs.jobIdentityClientId
+    recoveryOperatorState: recoveryOperatorState
+    recoveryIdentityId: recoveryOperatorState == 'active' ? recoveryIdentity.id : ''
+    recoveryIdentityClientId: recoveryOperatorState == 'active' ? recoveryIdentity.properties.clientId : ''
+    recoveryOperatorSecretUri: recoveryOperatorState == 'active' ? 'https://${recoveryVaultName}${environment().suffixes.keyvaultDns}/secrets/video-recovery-operator-key' : ''
     storageAccountName: storage.name
     storageContainerName: storageContainerName
     synthesisQueueName: synthesisQueueName

@@ -70,6 +70,9 @@ jobs:
       UI_IMAGE: ${{ inputs.ui_image || format('{0}/{1}:latest', vars.SYNTHESIS_IMAGE_REGISTRY, vars.UI_IMAGE_REPOSITORY || 'podcaster-ui') }}
       DEPLOY_VNET: ${{ inputs.deploy_vnet || 'false' }}
       STORAGE_PUBLIC_NETWORK_ACCESS: ${{ inputs.storage_public_network_access || 'Disabled' }}
+      RECOVERY_OPERATOR_STATE: ${{ vars.PODCASTER_VIDEO_RECOVERY_STATE }}
+      RECOVERY_EXPECTED_LIVE_STATE: ${{ vars.PODCASTER_VIDEO_RECOVERY_EXPECTED_LIVE_STATE }}
+      RECOVERY_TRANSITION_APPROVED: ${{ vars.PODCASTER_VIDEO_RECOVERY_TRANSITION_APPROVED }}
     steps:
       - name: Checkout
         # actions/checkout v6.0.3
@@ -111,6 +114,8 @@ jobs:
           require_config AZURE_TENANT_ID "variables"
           require_config AZURE_SUBSCRIPTION_ID "variables"
           require_config AZURE_RESOURCE_GROUP "variables"
+          require_config RECOVERY_OPERATOR_STATE "protected prod variables"
+          require_config RECOVERY_EXPECTED_LIVE_STATE "protected prod variables"
 
           if [ "$SYNC_SQUADSCOPE" = "true" ]; then
             require_config SQUADSCOPE_SYNC_TOKEN "secrets for sync_squadscope=true"
@@ -313,6 +318,19 @@ jobs:
               --output none
           fi
 
+      - name: Refuse recovery drift and unsafe network replay
+        run: |
+          set -euo pipefail
+          python3 infra/recovery_deploy_guard.py \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --expected "$RECOVERY_EXPECTED_LIVE_STATE" \
+            --desired "$RECOVERY_OPERATOR_STATE" \
+            --transition-approved "${RECOVERY_TRANSITION_APPROVED:-false}" \
+            --synthesis-image "$SYNTHESIS_IMAGE" \
+            --api-image "$API_IMAGE" \
+            --ui-image "$UI_IMAGE" \
+            --deploy-vnet "$DEPLOY_VNET"
+
       - name: Deploy infrastructure
         id: deploy_bicep
         run: |
@@ -390,6 +408,7 @@ jobs:
             --parameters deploymentPrincipalObjectId="$deployment_principal_object_id" \
             --parameters podcasterApiKey="$PODCASTER_API_KEY" \
             --parameters deployApiApp=true \
+            --parameters recoveryOperatorState="$RECOVERY_OPERATOR_STATE" \
             --parameters synthesisImage="${SYNTHESIS_IMAGE}" \
             --parameters apiImage="${API_IMAGE}" \
             --parameters spotifyPublishEnabled="${SPOTIFY_PUBLISH_ENABLED:-false}" \
@@ -424,6 +443,19 @@ jobs:
             --output none
           echo "### ACA-only Podcaster infrastructure deployed" >> "$GITHUB_STEP_SUMMARY"
           echo "Region: $AZURE_LOCATION" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify API recovery metadata after deployment
+        run: |
+          set -euo pipefail
+          python3 infra/recovery_deploy_guard.py \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --expected "$RECOVERY_OPERATOR_STATE" \
+            --desired "$RECOVERY_OPERATOR_STATE" \
+            --transition-approved false \
+            --synthesis-image "$SYNTHESIS_IMAGE" \
+            --api-image "$API_IMAGE" \
+            --ui-image "$UI_IMAGE" \
+            --deploy-vnet "$DEPLOY_VNET"
 
       - name: Get app FQDNs
         id: get_fqdn

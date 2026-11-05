@@ -74,6 +74,7 @@ from podcaster.progress import (
 from podcaster.publication_state import latest_outcomes, read_evidence
 from podcaster.publication_status import PublicationStatusError, publication_status
 from podcaster.queue import enqueue_video_job
+from podcaster.recovery_operator_key import RecoveryKeyUnavailable, recovery_operator_key
 from podcaster.review import ReviewBindingError, is_exact_script_job
 from podcaster.spotify_mode import (
     record_review_skip_outcome,
@@ -89,7 +90,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def _private_recovery_lifespan(_app: FastAPI):
-    if not os.environ.get("PODCASTER_VIDEO_RECOVERY_OPERATOR_KEY"):
+    if not recovery_operator_key.configured():
         yield
         return
 
@@ -102,15 +103,20 @@ async def _private_recovery_lifespan(_app: FastAPI):
 
         while True:
             try:
+                await asyncio.to_thread(recovery_operator_key.get)
+            except RecoveryKeyUnavailable:
+                await asyncio.sleep(60)
+                continue
+            try:
                 try:
                     backend = create_video_queue_backend()
                 except Exception:
-                    logger.warning("private recovery queue backend unavailable", exc_info=True)
+                    logger.warning("private recovery queue backend unavailable")
                     backend = None
                 send = backend.send_message if backend is not None else queue_unavailable
                 await asyncio.to_thread(reconcile_pending, get_storage(), send)
             except Exception:
-                logger.warning("private recovery dispatch reconciliation failed", exc_info=True)
+                logger.warning("private recovery dispatch reconciliation failed")
             await asyncio.sleep(60)
 
     task = asyncio.create_task(reconcile_loop())
@@ -122,6 +128,7 @@ async def _private_recovery_lifespan(_app: FastAPI):
             await task
         except asyncio.CancelledError:
             pass
+        recovery_operator_key.clear()
 
 
 app = FastAPI(title="Podcaster Job Monitor", version="0.1.0", lifespan=_private_recovery_lifespan)
@@ -1123,9 +1130,12 @@ class PrivateVideoRecoveryRequest(BaseModel):
 
 
 def _require_video_recovery_operator(key: str | None) -> None:
-    configured = os.environ.get("PODCASTER_VIDEO_RECOVERY_OPERATOR_KEY", "")
-    if not configured:
-        raise HTTPException(status_code=503, detail="Recovery operator boundary is disabled")
+    try:
+        configured = recovery_operator_key.get()
+    except RecoveryKeyUnavailable:
+        raise HTTPException(
+            status_code=503, detail="Recovery operator boundary unavailable"
+        ) from None
     if not key or not hmac.compare_digest(key, configured):
         raise HTTPException(status_code=403, detail="Recovery operator authorization required")
 

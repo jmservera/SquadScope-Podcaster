@@ -104,7 +104,8 @@ def test_deployed_api_and_worker_have_identical_effective_review_provider_finger
             assert references.get(field) == field
         assert references.get("ttsRuntimeEnvironment") == "ttsRuntimeEnvironment"
         assert re.search(
-            r"env:\s*concat\(\[.*?\], ttsRuntimeEnvironment(?:, youtubeReadbackEnvironment)?\)",
+            r"env:\s*concat\(\[.*?\], ttsRuntimeEnvironment"
+            r"(?:, youtubeReadbackEnvironment, recoveryEnvironment)?\)",
             module,
             re.S,
         )
@@ -154,7 +155,7 @@ def test_api_youtube_status_credentials_are_optional_secret_refs_without_mutatio
         assert f"{{ name: '{environment}', secretRef: '{name}' }}" in api
     assert "secrets: concat([" in api
     assert "], youtubeReadbackSecrets)" in api
-    assert "], ttsRuntimeEnvironment, youtubeReadbackEnvironment)" in api
+    assert "], ttsRuntimeEnvironment, youtubeReadbackEnvironment, recoveryEnvironment)" in api
     assert "var youtubeReadbackSecrets = youtubeReadbackConfigured ? [" in api
     assert "var youtubeReadbackEnvironment = youtubeReadbackConfigured ? [" in api
     for forbidden in (
