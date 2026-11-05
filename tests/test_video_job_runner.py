@@ -414,6 +414,31 @@ def test_completed_recovery_settles_after_expiry_without_render(recovery_cas, mo
     )
 
 
+def test_missing_queue_visibility_terminalizes_before_render(recovery_cas, monkeypatch):
+    from podcaster.video import recovery
+
+    storage, job, _old, _claim = recovery_cas
+    doc = json.loads(storage.get_bytes(manifest_path(job)))
+    doc["generation"]["video_recovery"]["epochs"][-1].update(
+        status="reserved", owner=None, lease_until=None
+    )
+    storage.set_manifest(job, doc)
+    runner = MagicMock(side_effect=AssertionError("render crossed"))
+    monkeypatch.setattr("podcaster.video.job_runner.run_video_generation", runner)
+    queue = MagicMock()
+    message = QueueMessage("id", "receipt", recovery.encode_message(job, "epoch-1"), 1, None)
+
+    assert process_message(message, storage=storage, queue=queue).reason == "recovery_denied"
+    assert (
+        json.loads(storage.get_bytes(manifest_path(job)))["generation"]["video_recovery"]["epochs"][
+            -1
+        ]["terminal_reason"]
+        == "queue_visibility_missing"
+    )
+    runner.assert_not_called()
+    queue.delete_message.assert_called_once_with(message)
+
+
 def test_recovery_dispatch_crash_replay_and_fixed_5400_deadline(recovery_cas, monkeypatch):
     from podcaster.video import recovery
 
