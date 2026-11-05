@@ -1194,7 +1194,7 @@ def run_video_generation(
                 reason="recovery_reserved_inputs_changed",
             ) from exc
 
-    if recovery_epoch_id is None and _already_processed(manifest):
+    if _already_processed(manifest):
         logger.info("video skipped job_id=%s reason=%s", job_id, REASON_ALREADY_PROCESSED)
         return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_ALREADY_PROCESSED)
 
@@ -1306,11 +1306,6 @@ def run_video_generation(
         stage=VideoStage.PREFLIGHT,
         reason="attempt",
     )
-
-    # Check idempotency
-    if _already_processed(manifest):
-        logger.info("video skipped job_id=%s reason=%s", job_id, REASON_ALREADY_PROCESSED)
-        return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_ALREADY_PROCESSED)
 
     # Claim pipeline lock — prevent concurrent audio synthesis on same job
     if not claim_pipeline(storage, job_id, PIPELINE_VIDEO, now=current):

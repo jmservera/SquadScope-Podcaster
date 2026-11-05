@@ -116,3 +116,10 @@ outbox retry, explicit corrupt-evidence rejection, and fail-closed adapter
 inputs. These are local corrections within the approved private-only scope,
 not operational approval or a test waiver. Updated source requires a new
 full test/CI result and independent re-review before merge eligibility.
+The next Copilot pass marked six of seven findings resolved; its remaining
+completed-duplicate finding pointed at a redundant late idempotency branch.
+The completion skip now has one early location, before any budget expiry
+terminalization, for both normal and recovered jobs. Repeated focused
+video/review/distribution/publish/monitoring suite: **973 passed**; Ruff and
+whitespace checks passed. The concurrent full run was stopped when this
+final source correction changed its inputs.
