@@ -107,6 +107,7 @@ class VideoOwnershipGuard:
         visibility = _iso(visibility_expires_at)
         effective_lease = min(lease_expires_at or visibility_expires_at, visibility_expires_at)
         lease = _iso(effective_lease)
+        editor_expiry = _iso(lease_expires_at) if lease_expires_at is not None else None
         if (
             _parse_time(visibility) <= claimed_at + _EXPIRY_RESERVE
             or _parse_time(lease) <= claimed_at + _EXPIRY_RESERVE
@@ -139,6 +140,7 @@ class VideoOwnershipGuard:
                 "fencing_token": fencing_token,
                 "visibility_expires_at": visibility,
                 "lease_expires_at": lease,
+                "editor_expires_at": editor_expiry,
                 "claimed_at": _iso(claimed_at),
             }
             document.update(
@@ -186,8 +188,19 @@ class VideoOwnershipGuard:
             raise OwnershipError("ownership claim is stale")
         visibility = _parse_time(current.get("visibility_expires_at"))
         lease = _parse_time(current.get("lease_expires_at"))
+        editor_value = current.get("editor_expires_at")
+        editor = _parse_time(editor_value) if editor_value is not None else None
         safe_now = self.now() + _EXPIRY_RESERVE
-        if visibility is None or lease is None or visibility <= safe_now or lease <= safe_now:
+        if (
+            "editor_expires_at" not in current
+            or (editor_value is not None and editor is None)
+            or visibility is None
+            or lease is None
+            or lease > visibility
+            or (editor is not None and (lease > editor or editor <= safe_now))
+            or visibility <= safe_now
+            or lease <= safe_now
+        ):
             raise OwnershipError("ownership claim has expired")
 
     def assert_current(self) -> None:
@@ -197,16 +210,20 @@ class VideoOwnershipGuard:
         self._require_current(_load(raw))
 
     def refresh_lease(self, lease_expires_at: datetime) -> None:
+        """Record explicit editor authority independently of queue visibility."""
+
         def _refresh(raw: bytes | None) -> bytes:
             document = _load(raw)
             self._require_current(document)
             visibility = _parse_time(document["claim"].get("visibility_expires_at"))
             if visibility is None:
                 raise OwnershipError("visibility expiry is invalid")
+            editor = _parse_time(_iso(lease_expires_at))
             refreshed = _iso(min(lease_expires_at, visibility))
             lease = _parse_time(refreshed)
             if lease is None or lease <= self.now() + _EXPIRY_RESERVE:
                 raise OwnershipError("refreshed lease expiry is outside visibility authority")
+            document["claim"]["editor_expires_at"] = _iso(editor)
             document["claim"]["lease_expires_at"] = refreshed
             document["updated_at"] = _iso(self.now())
             return _dump(document)
@@ -215,7 +232,7 @@ class VideoOwnershipGuard:
         self.assert_current()
 
     def refresh_visibility(self, visibility_expires_at: datetime) -> None:
-        """Extend both boundaries only while this same fenced queue owner is live."""
+        """Renew queue visibility without creating new editor authority."""
         visibility = _iso(visibility_expires_at)
 
         def _refresh(raw: bytes | None) -> bytes:
@@ -223,10 +240,12 @@ class VideoOwnershipGuard:
             self._require_current(document)
             if _parse_time(visibility) <= self.now() + _EXPIRY_RESERVE:
                 raise OwnershipError("refreshed visibility has expired")
-            old_visibility = _parse_time(document["claim"]["visibility_expires_at"])
-            old_lease = _parse_time(document["claim"]["lease_expires_at"])
+            editor_value = document["claim"]["editor_expires_at"]
+            editor = _parse_time(editor_value) if editor_value is not None else None
             document["claim"]["visibility_expires_at"] = visibility
-            lease_expiry = old_lease if old_lease < old_visibility else _parse_time(visibility)
+            lease_expiry = (
+                min(_parse_time(visibility), editor) if editor else _parse_time(visibility)
+            )
             document["claim"]["lease_expires_at"] = _iso(lease_expiry)
             document["updated_at"] = _iso(self.now())
             return _dump(document)

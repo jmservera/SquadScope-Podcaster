@@ -886,6 +886,64 @@ def test_restart_reconciler_sends_pending_or_terminalizes_expired_intent(
     assert len(sent) == (1 if elapsed == 0 else 0)
 
 
+@pytest.mark.parametrize("w44_fault", ["corrupt", "unavailable", "invalid_ledger"])
+def test_reconciler_isolates_corrupt_original_and_bad_epoch(
+    recovery_original, monkeypatch, caplog, w44_fault
+):
+    from podcaster.generation import manifest_bytes
+    from podcaster.video import recovery
+
+    storage, job_id, identity, mp3_sha, at = recovery_original
+    w44 = "podcast-2026-W44-00bc06dfb6e2"
+    monkeypatch.setattr(recovery, "PRIVATE_ORIGINALS", {w44: 0, job_id: 0})
+    w44_path = f"jobs/{w44}/manifest.json"
+    if w44_fault == "corrupt":
+        storage.put_bytes(w44_path, b"{bad", "application/json")
+    elif w44_fault == "invalid_ledger":
+        invalid_state = {
+            "job_id": w44,
+            "generation": {
+                "video_recovery": {
+                    "schema_version": recovery.SCHEMA,
+                    "epochs": [{"epoch_id": "duplicate"}, {"epoch_id": "duplicate"}],
+                },
+            },
+        }
+        storage.put_bytes(w44_path, manifest_bytes(invalid_state), "application/json")
+    epoch = recovery.reserve_epoch(
+        storage,
+        job_id,
+        expected_identity=identity,
+        expected_audio_sha256=mp3_sha,
+        inventory_reference="readback",
+        now=lambda: at,
+    )
+    manifest = load_manifest(storage, job_id)
+    invalid = dict(manifest["generation"]["video_recovery"]["epochs"][0])
+    invalid.update(epoch_id="malformed", deadline_at_utc="invalid")
+    manifest["generation"]["video_recovery"]["epochs"].insert(0, invalid)
+    storage.put_bytes(f"jobs/{job_id}/manifest.json", manifest_bytes(manifest), "application/json")
+    if w44_fault == "unavailable":
+        read = storage.get_bytes
+
+        def unavailable(path):
+            if path == w44_path:
+                raise OSError("storage read failed")
+            return read(path)
+
+        monkeypatch.setattr(storage, "get_bytes", unavailable)
+    sent = []
+    recovery.reconcile_pending(storage, sent.append, now=lambda: at)
+    assert len(sent) == 1
+    assert recovery.message_epoch(sent[0]) == epoch
+    assert (
+        load_manifest(storage, job_id)["generation"]["video_recovery"]["epochs"][0]["status"]
+        == "reserved"
+    )
+    assert w44 in caplog.text
+    assert "malformed" in caplog.text
+
+
 def test_api_restart_reconciles_unsent_private_dispatch(recovery_original, monkeypatch):
     from podcaster import monitoring
     from podcaster.video import recovery
@@ -1051,6 +1109,108 @@ def test_private_candidate_selection_losers_and_readback_fail_closed(recovery_or
     )
     with pytest.raises(RecoveryDenied, match="ambiguous"):
         read_selected(storage, job_id)
+
+
+def test_selected_completion_survives_commit_then_raise_and_failed_or_skipped_updates(
+    recovery_original, tmp_path, monkeypatch
+):
+    from podcaster.queue import QueueMessage
+    from podcaster.video import job_runner, recovery
+    from podcaster.video.recovery import _proof
+
+    storage, job_id, identity, mp3_sha, at = recovery_original
+    epoch = recovery.reserve_epoch(
+        storage,
+        job_id,
+        expected_identity=identity,
+        expected_audio_sha256=mp3_sha,
+        inventory_reference="readback",
+        now=lambda: at,
+    )
+    claim = recovery.claim_epoch(
+        storage,
+        job_id,
+        epoch,
+        "owner",
+        now=lambda: at,
+        visibility_expires_at=at + timedelta(seconds=5400),
+    )
+    proof = _proof(load_manifest(storage, job_id), storage, job_id)[1]
+    source = tmp_path / "selected.mp4"
+    source.write_bytes(b"V" * 2048)
+    update = storage.update_bytes
+    once = [True]
+
+    def commit_then_raise(path, content_type, callback):
+        result = update(path, content_type, callback)
+        if path == f"jobs/{job_id}/manifest.json" and once[0]:
+            document = load_manifest(storage, job_id)
+            if document["generation"]["video_recovery"].get("selected_private_output"):
+                once[0] = False
+                raise RuntimeError("selection committed, acknowledgement lost")
+        return result
+
+    monkeypatch.setattr(storage, "update_bytes", commit_then_raise)
+    with pytest.raises(RuntimeError, match="acknowledgement lost"):
+        recovery.select_private_output(
+            storage,
+            job_id,
+            source,
+            attempt_id="selected",
+            claim=claim,
+            expected_proof_sha256=proof,
+            now=lambda: at,
+        )
+    selected = recovery.read_selected(storage, job_id)
+    for status in ("failed", "skipped"):
+        job_runner._record_video_state(
+            storage,
+            job_id,
+            {"status": status, "reason": "post_selection"},
+            recovery_claim=claim,
+            attempt_id="selected",
+            fail_closed=True,
+        )
+        runner = load_manifest(storage, job_id)["generation"]["video_runner"]
+        assert runner["status"] == "completed"
+        assert runner["distribution"]["blob_path"] == selected["archive_path"]
+    job_runner._record_video_state(
+        storage,
+        job_id,
+        {"status": "completed", "segment_count": 3},
+        recovery_claim=claim,
+        attempt_id="selected",
+        fail_closed=True,
+    )
+    assert (
+        load_manifest(storage, job_id)["generation"]["video_runner"]["distribution"]["blob_path"]
+        == selected["archive_path"]
+    )
+    queue = Mock()
+    replay = QueueMessage(
+        message_id="replay",
+        pop_receipt="new",
+        body=recovery.message(job_id, epoch),
+        dequeue_count=2,
+        next_visible_on=at + timedelta(seconds=900),
+    )
+    outcome = job_runner.process_message(replay, storage=storage, queue=queue, now=at)
+    assert outcome.status == "completed"
+    assert outcome.video_blob_path == selected["archive_path"]
+    assert recovery.read_selected(storage, job_id) == selected
+    durable = load_manifest(storage, job_id)["generation"]["video_runner"]
+    assert durable["status"] == "completed"
+    assert durable["distribution"]["blob_path"] == selected["archive_path"]
+    queue.delete_message.assert_called_once_with(replay)
+    with pytest.raises(recovery.RecoveryDenied):
+        job_runner._record_video_state(
+            storage,
+            job_id,
+            {"status": "failed"},
+            recovery_claim=claim,
+            attempt_id="stale",
+            fail_closed=True,
+        )
 
 
 @pytest.mark.parametrize("pause_at", ["archive", "selection", "cas_retry"])
@@ -1701,6 +1861,14 @@ def test_real_dispatcher_blocks_unready_youtube_before_public_promotion(
 
     storage, job_id, repository, document, config, _ = prepared_exact_video
     _video_decision(storage, job_id, document)
+    original_upload = distribution.upload_to_youtube
+    upload_jobs = []
+
+    def observe_upload(*args, **kwargs):
+        upload_jobs.append(kwargs.get("job_id"))
+        return original_upload(*args, **kwargs)
+
+    monkeypatch.setattr(distribution, "upload_to_youtube", observe_upload)
     http = _ReviewedYouTubeTransport(
         processing_status=processing_status, upload_status=upload_status
     )
@@ -1709,6 +1877,7 @@ def test_real_dispatcher_blocks_unready_youtube_before_public_promotion(
     monkeypatch.setattr(distribution, "_get_youtube_access_token", lambda *_: "offline")
     assert _run_reviewed_worker(storage, document).reason == "reviewed_video_dispatched"
     assert http.mutations == ["upload"]
+    assert upload_jobs == [job_id]
     state = repository.read(document["outbox_id"])
     assert state["aggregate"]["externally_verified_public"] is False
     assert state["providers"]["youtube"]["result"] == "pending_provider"

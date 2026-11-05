@@ -383,22 +383,33 @@ def reconcile_pending(
     """Revisit reserved intentions after API restarts; expiry becomes terminal."""
     at = _utc(now())
     for job_id in PRIVATE_ORIGINALS:
-        raw = storage.get_bytes(f"jobs/{job_id}/manifest.json")
-        if raw is None:
+        try:
+            raw = storage.get_bytes(f"jobs/{job_id}/manifest.json")
+            if raw is None:
+                continue
+            epochs = _state(_read(raw, job_id))["epochs"]
+        except Exception:
+            logger.warning("private video dispatch original unreadable job_id=%s", job_id)
             continue
-        for epoch in _state(_read(raw, job_id))["epochs"]:
-            status = epoch.get("status")
-            dispatch = epoch.get("dispatch")
-            pending = isinstance(dispatch, dict) and dispatch.get("status") == "pending"
-            expired = status != "selected" and at >= _parse(epoch["deadline_at_utc"])
-            if status in {"reserved", "dispatched", "running", "selected"} and (pending or expired):
-                try:
+        for epoch in epochs:
+            epoch_id = epoch.get("epoch_id")
+            try:
+                status = epoch.get("status")
+                dispatch = epoch.get("dispatch")
+                pending = isinstance(dispatch, dict) and dispatch.get("status") == "pending"
+                expired = status != "selected" and at >= _parse(epoch["deadline_at_utc"])
+                if status in {"reserved", "dispatched", "running", "selected"} and (
+                    pending or expired
+                ):
                     reconcile_dispatch(storage, job_id, epoch["epoch_id"], send, now=lambda: at)
-                except RecoveryDenied:
-                    # Expired intents are terminal; invalid proofs remain blocked.
-                    continue
-                except Exception:
-                    logger.warning("private video dispatch retry failed for job_id=%s", job_id)
+            except RecoveryDenied:
+                logger.warning(
+                    "private video dispatch denied job_id=%s epoch_id=%r", job_id, epoch_id
+                )
+            except Exception:
+                logger.warning(
+                    "private video dispatch retry failed job_id=%s epoch_id=%r", job_id, epoch_id
+                )
 
 
 def claim_epoch(

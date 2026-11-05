@@ -153,7 +153,13 @@ def test_large_upload_opens_exactly_one_session(large_video, config):
     fake = FakeResumableYouTube()
 
     video_id, video_url = upload_to_youtube(
-        large_video, "t", "d", config, transport=fake, raise_on_failure=True
+        large_video,
+        "t",
+        "d",
+        config,
+        transport=fake,
+        raise_on_failure=True,
+        job_id="ordinary-job",
     )
 
     assert video_id == "vid-1"
@@ -173,7 +179,13 @@ def test_transient_chunk_failure_resumes_same_session(large_video, config, failu
     fake = FakeResumableYouTube(chunk_failures={3: failure})
 
     video_id, _ = upload_to_youtube(
-        large_video, "t", "d", config, transport=fake, raise_on_failure=True
+        large_video,
+        "t",
+        "d",
+        config,
+        transport=fake,
+        raise_on_failure=True,
+        job_id="ordinary-job",
     )
 
     assert video_id == "vid-1"
@@ -187,7 +199,13 @@ def test_small_upload_put_retry_reuses_same_session(small_video, config):
     fake = FakeResumableYouTube(single_put_failures=[503, ConnectionError("reset")])
 
     video_id, _ = upload_to_youtube(
-        small_video, "t", "d", config, transport=fake, raise_on_failure=True
+        small_video,
+        "t",
+        "d",
+        config,
+        transport=fake,
+        raise_on_failure=True,
+        job_id="ordinary-job",
     )
 
     assert video_id == "vid-1"
@@ -210,7 +228,15 @@ def test_init_failure_never_opens_a_second_session(
     fake = FakeResumableYouTube(init_responses=[init_response])
 
     with pytest.raises(YouTubeDeliveryError) as raised:
-        upload_to_youtube(large_video, "t", "d", config, transport=fake, raise_on_failure=True)
+        upload_to_youtube(
+            large_video,
+            "t",
+            "d",
+            config,
+            transport=fake,
+            raise_on_failure=True,
+            job_id="ordinary-job",
+        )
 
     assert raised.value.code == code
     assert raised.value.retryable is retryable
@@ -221,7 +247,9 @@ def test_init_failure_never_opens_a_second_session(
 def test_init_failure_best_effort_mode_opens_one_session(large_video, config):
     fake = FakeResumableYouTube(init_responses=[(200, {}, b"")])
 
-    assert upload_to_youtube(large_video, "t", "d", config, transport=fake) == (None, None)
+    assert upload_to_youtube(
+        large_video, "t", "d", config, transport=fake, job_id="ordinary-job"
+    ) == (None, None)
     assert len(fake.init_posts) == 1
     assert fake.put_urls == []
 
@@ -230,7 +258,15 @@ def test_exhausted_chunk_retries_fail_without_reinit(large_video, config):
     fake = FakeResumableYouTube(chunk_failures={n: 503 for n in range(2, 20)})
 
     with pytest.raises(YouTubeDeliveryError) as raised:
-        upload_to_youtube(large_video, "t", "d", config, transport=fake, raise_on_failure=True)
+        upload_to_youtube(
+            large_video,
+            "t",
+            "d",
+            config,
+            transport=fake,
+            raise_on_failure=True,
+            job_id="ordinary-job",
+        )
 
     assert raised.value.stage == "upload_chunked"
     assert raised.value.code == "youtube_chunked_http_503"

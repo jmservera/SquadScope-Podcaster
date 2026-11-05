@@ -172,7 +172,9 @@ def test_large_file_delegates_to_chunked_uploader(tmp_path, monkeypatch):
     fake_mod.upload_video = _forbidden_upload_video
     monkeypatch.setitem(sys.modules, "podcaster.video.youtube", fake_mod)
 
-    vid_id, vid_url = upload_to_youtube(big, "t", "d", cfg, transport=_InitTransport())
+    vid_id, vid_url = upload_to_youtube(
+        big, "t", "d", cfg, transport=_InitTransport(), job_id="ordinary-job"
+    )
     assert vid_id == "vid-big"
     assert vid_url.endswith("vid-big")
     # The chunked uploader reuses the session opened by upload_to_youtube.
@@ -204,13 +206,17 @@ def test_large_file_without_chunked_module_returns_none(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "podcaster.video.youtube", None)  # ImportError on import
 
     transport = _InitTransport()
-    vid_id, vid_url = upload_to_youtube(big, "t", "d", cfg, transport=transport)
+    vid_id, vid_url = upload_to_youtube(
+        big, "t", "d", cfg, transport=transport, job_id="ordinary-job"
+    )
     assert vid_id is None and vid_url is None
     # No session may be opened when the chunked path cannot finish it (#698).
     assert transport.init_posts == 0
 
     with pytest.raises(YouTubeDeliveryError) as raised:
-        upload_to_youtube(big, "t", "d", cfg, transport=transport, raise_on_failure=True)
+        upload_to_youtube(
+            big, "t", "d", cfg, transport=transport, raise_on_failure=True, job_id="ordinary-job"
+        )
     assert raised.value.code == "youtube_chunked_unavailable"
     assert raised.value.stage == "upload_chunked"
     assert raised.value.retryable is False

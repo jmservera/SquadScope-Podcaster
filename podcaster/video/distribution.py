@@ -832,6 +832,8 @@ def upload_to_youtube(
 
     ``identity_tag`` stamps the upload with the deterministic publication
     identity tag so an ambiguous create can later be reconciled (#678).
+    Enabled uploads require a validated job ID, including dry runs, so the
+    private-original hold cannot be bypassed by omitting caller identity.
 
     Returns (video_id, video_url) on success, (None, None) on failure.
     Raises RuntimeError on auth failures; returns None on upload failures
@@ -839,6 +841,10 @@ def upload_to_youtube(
     """
     from podcaster.video.recovery import RecoveryDenied, private_original
 
+    if config.youtube_enabled and (
+        not isinstance(job_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,127}", job_id)
+    ):
+        raise RecoveryDenied("validated job identity required for YouTube upload")
     if private_original(job_id):
         raise RecoveryDenied("private recovery original cannot upload to YouTube")
     if not config.youtube_enabled:
@@ -1864,6 +1870,7 @@ def distribute_video(
                 "tags": tags,
                 "transport": provider_transport,
                 "raise_on_failure": config.youtube_required,
+                "job_id": job_id,
             }
             if budget is not None:
                 youtube_kwargs["budget"] = budget

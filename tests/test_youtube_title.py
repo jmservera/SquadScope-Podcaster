@@ -39,7 +39,9 @@ def test_direct_and_chunked_titles_reserve_full_week_and_locale(tmp_path, week, 
         youtube_client_secret="test",
         youtube_refresh_token="test",
     )
-    upload_to_youtube(video, title, "description", config, transport=transport)
+    upload_to_youtube(
+        video, title, "description", config, transport=transport, job_id="ordinary-job"
+    )
     request = next(
         item
         for item in transport.requests
@@ -120,6 +122,7 @@ def test_actual_resumable_paths_keep_week_locale_and_identity_tag(
         transport=CaptureTransport(),
         identity_tag=identity_tag,
         raise_on_failure=True,
+        job_id="ordinary-job",
     )
     assert len(metadata) == 1
     assert metadata[0]["snippet"]["title"] == clamp_youtube_title(title)

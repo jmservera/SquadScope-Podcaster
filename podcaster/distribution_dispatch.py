@@ -384,6 +384,7 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
                     config,
                     tags=tags,
                     identity_tag=tag,
+                    job_id=identity.accepted_job_id,
                     raise_on_failure=True,
                     transport=_GuardedTransport(http, authorize),
                 )

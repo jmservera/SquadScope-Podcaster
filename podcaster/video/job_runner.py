@@ -550,7 +550,7 @@ def _record_video_state(
     recovery_claim=None,
     attempt_id: str | None = None,
 ) -> None:
-    """Record video runner state in the manifest."""
+    """Record runner state without erasing a CAS-selected private completion."""
     from podcaster.generation import manifest_bytes
 
     def _apply(content: bytes | None) -> bytes:
@@ -559,10 +559,35 @@ def _record_video_state(
         doc = json.loads(content.decode("utf-8")) if content else {}
         if not isinstance(doc, dict):
             doc = {}
-        from podcaster.video.recovery import guard_manifest
+        from podcaster.video.recovery import RecoveryDenied, guard_manifest
 
         guard_manifest(doc, claim=recovery_claim, attempt_id=attempt_id)
         generation = doc.setdefault("generation", {})
+        selected = generation.get("video_recovery", {}).get("selected_private_output")
+        if selected is not None:
+            if selected.get("attempt_id") != attempt_id:
+                raise RecoveryDenied("video state writer is not selected")
+            existing = generation.get("video_runner")
+            distribution = existing.get("distribution") if isinstance(existing, dict) else None
+            if (
+                not isinstance(existing, dict)
+                or existing.get("status") != "completed"
+                or not isinstance(distribution, dict)
+                or distribution.get("blob_path") != selected.get("archive_path")
+                or distribution.get("public_delivery_status") != "awaiting_review"
+            ):
+                raise RecoveryDenied("selected video completion is inconsistent")
+            if state.get("status") == "completed":
+                for key in (
+                    "segment_count",
+                    "duration_seconds",
+                    "performance",
+                    "publication_metadata",
+                ):
+                    if key in state:
+                        existing[key] = state[key]
+                return manifest_bytes(doc)
+            return content if content is not None else manifest_bytes(doc)
         generation["video_runner"] = state
         return manifest_bytes(doc)
 
