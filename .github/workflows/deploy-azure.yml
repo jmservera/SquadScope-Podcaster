@@ -28,6 +28,18 @@ on:
         default: 'Disabled'
         type: choice
         options: ['Disabled', 'Enabled']
+      synthesis_image:
+        description: 'Reviewed synthesis image @sha256 digest; required for a recovery state transition.'
+        required: false
+        type: string
+      api_image:
+        description: 'Reviewed API image @sha256 digest; required for a recovery state transition.'
+        required: false
+        type: string
+      ui_image:
+        description: 'Reviewed UI image @sha256 digest; required for a recovery state transition.'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -41,6 +53,9 @@ jobs:
       deploy_openai: ${{ inputs.deploy_openai }}
       deploy_vnet: ${{ inputs.deploy_vnet }}
       storage_public_network_access: ${{ inputs.storage_public_network_access }}
+      synthesis_image: ${{ inputs.synthesis_image }}
+      api_image: ${{ inputs.api_image }}
+      ui_image: ${{ inputs.ui_image }}
     secrets: inherit
     permissions:
       contents: read

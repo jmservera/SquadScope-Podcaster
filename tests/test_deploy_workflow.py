@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/deploy-azure.yml"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
+TRANSITION_WORKFLOW = ROOT / ".github/workflows/recovery-transition.yml"
 REUSABLE_WORKFLOW = ROOT / ".github/workflows/reusable-deploy-azure.yml"
 BICEP = ROOT / "infra/main.bicep"
 ALERTS_BICEP = ROOT / "infra/modules/distribution-alerts.bicep"
@@ -104,7 +107,8 @@ def test_deployed_api_and_worker_have_identical_effective_review_provider_finger
             assert references.get(field) == field
         assert references.get("ttsRuntimeEnvironment") == "ttsRuntimeEnvironment"
         assert re.search(
-            r"env:\s*concat\(\[.*?\], ttsRuntimeEnvironment(?:, youtubeReadbackEnvironment)?\)",
+            r"env:\s*concat\(\[.*?\], ttsRuntimeEnvironment"
+            r"(?:, youtubeReadbackEnvironment, recoveryEnvironment)?\)",
             module,
             re.S,
         )
@@ -128,6 +132,90 @@ def test_deployed_api_and_worker_have_identical_effective_review_provider_finger
 
 def _workflow_text() -> str:
     return WORKFLOW.read_text(encoding="utf-8")
+
+
+def test_manual_recovery_transition_forwards_reviewed_image_digests():
+    manual = (ROOT / ".github/workflows/deploy-azure.yml").read_text(encoding="utf-8")
+    for image in ("synthesis_image", "api_image", "ui_image"):
+        assert f"      {image}:" in manual
+        assert f"{image}: ${{{{ inputs.{image} }}}}" in manual
+    assert "deploy_vnet: ${{ inputs.deploy_vnet }}" in manual
+    assert "RECOVERY_OPERATOR_STATE" in REUSABLE_WORKFLOW.read_text(encoding="utf-8")
+
+
+def _run_gate(script: str, **values: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-e", "-c", script],
+        env={**os.environ, **values},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("desired", "expected", "allowed"),
+    [
+        ("inactive", "inactive", True),
+        ("active", "active", False),
+        ("active", "inactive", False),
+        ("inactive", "active", False),
+        ("", "inactive", False),
+    ],
+)
+def test_legacy_release_refuses_active_or_transitioning_recovery(desired, expected, allowed):
+    workflow = yaml.safe_load(RELEASE_WORKFLOW.read_text(encoding="utf-8"))
+    gate = workflow["jobs"]["recovery-release-gate"]
+    assert gate["environment"] == "prod"
+    assert "recovery-release-gate" in workflow["jobs"]["infra"]["needs"]
+    script = gate["steps"][0]["run"]
+    assert (_run_gate(script, DESIRED=desired, EXPECTED=expected).returncode == 0) == allowed
+
+
+@pytest.mark.parametrize(("desired", "expected"), [("active", "inactive"), ("inactive", "active")])
+def test_protected_transition_requires_all_reviewed_digests_and_approval(desired, expected):
+    workflow = yaml.safe_load(TRANSITION_WORKFLOW.read_text(encoding="utf-8"))
+    for image in ("synthesis_image", "api_image", "ui_image"):
+        assert workflow[True]["workflow_dispatch"]["inputs"][image]["required"] is True
+    jobs = workflow["jobs"]
+    assert jobs["preflight"]["environment"] == "prod"
+    assert jobs["deploy"]["needs"] == ["preflight"]
+    assert jobs["deploy"]["with"]["deploy_vnet"] == "true"
+    assert jobs["deploy"]["with"]["storage_public_network_access"] == "Disabled"
+    for image in ("synthesis_image", "api_image", "ui_image"):
+        assert jobs["deploy"]["with"][image] == f"${{{{ inputs.{image} }}}}"
+    script = jobs["preflight"]["steps"][0]["run"]
+    values = {
+        "DESIRED": desired,
+        "EXPECTED": expected,
+        "APPROVED": "true",
+        "SYNTHESIS_IMAGE": f"registry.test/synthesis@sha256:{'a' * 64}",
+        "API_IMAGE": f"registry.test/api@sha256:{'b' * 64}",
+        "UI_IMAGE": f"registry.test/ui@sha256:{'c' * 64}",
+    }
+    assert _run_gate(script, **values).returncode == 0
+    for name in ("SYNTHESIS_IMAGE", "API_IMAGE", "UI_IMAGE"):
+        assert _run_gate(script, **{**values, name: ""}).returncode != 0
+        assert _run_gate(script, **{**values, name: "registry.test/ui:latest"}).returncode != 0
+    assert _run_gate(script, **{**values, "APPROVED": "false"}).returncode != 0
+    assert _run_gate(script, **{**values, "EXPECTED": desired}).returncode != 0
+
+
+def test_image_input_is_validated_before_github_environment_write():
+    workflow = yaml.safe_load(REUSABLE_WORKFLOW.read_text(encoding="utf-8"))
+    step = next(
+        item
+        for item in workflow["jobs"]["deploy"]["steps"]
+        if item.get("name") == "Resolve image tags to SHA-pinned references"
+    )
+    script = step["run"]
+    assert "^[A-Za-z0-9._:/@-]+$" in script
+    for image in ("SYNTHESIS_IMAGE", "API_IMAGE", "UI_IMAGE"):
+        assert script.index(f'validate_image_ref "${image}"') < script.index(
+            f'echo "{image}=$resolved_'
+        )
+    for image in ("resolved_synth", "resolved_api", "resolved_ui"):
+        assert script.index(f'validate_image_ref "${image}"') < script.index('>> "$GITHUB_ENV"')
 
 
 def test_api_youtube_status_credentials_are_optional_secret_refs_without_mutation_flags():
@@ -154,7 +242,7 @@ def test_api_youtube_status_credentials_are_optional_secret_refs_without_mutatio
         assert f"{{ name: '{environment}', secretRef: '{name}' }}" in api
     assert "secrets: concat([" in api
     assert "], youtubeReadbackSecrets)" in api
-    assert "], ttsRuntimeEnvironment, youtubeReadbackEnvironment)" in api
+    assert "], ttsRuntimeEnvironment, youtubeReadbackEnvironment, recoveryEnvironment)" in api
     assert "var youtubeReadbackSecrets = youtubeReadbackConfigured ? [" in api
     assert "var youtubeReadbackEnvironment = youtubeReadbackConfigured ? [" in api
     for forbidden in (
