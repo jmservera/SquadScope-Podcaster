@@ -123,3 +123,25 @@ def test_upload_file_does_not_create_temp_file_after_parent_symlink_swap(
         storage.upload_file("nested/blob.txt", source, "text/plain")
 
     assert list(outside.iterdir()) == []
+
+
+def test_recovery_manifest_local_cas_keeps_previous_image_on_replace_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = LocalStorageBackend(tmp_path / "root", "https://example.invalid/artifacts")
+    path = "jobs/podcast-2026-W44-00bc06dfb6e2/manifest.json"
+    original = b'{"generation":{"video_recovery":{"epochs":[]}}}'
+    storage.put_bytes(path, original, "application/json")
+
+    def fail_replace(*args: object, **kwargs: object) -> None:
+        raise OSError("replacement interrupted")
+
+    monkeypatch.setattr("podcaster.storage.os.replace", fail_replace)
+    with pytest.raises(OSError, match="replacement interrupted"):
+        storage.update_bytes(
+            path,
+            "application/json",
+            lambda content: b'{"generation":{"video_recovery":{"epochs":[1]}}}',
+        )
+    assert storage.get_bytes(path) == original
+    assert not list((tmp_path / "root" / "jobs" / "podcast-2026-W44-00bc06dfb6e2").glob("*.cas"))

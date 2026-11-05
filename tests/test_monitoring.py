@@ -143,6 +143,62 @@ def client(storage):
     return TestClient(app)
 
 
+@pytest.mark.parametrize("configured", [False, True])
+def test_private_recovery_requires_distinct_operator_token_and_candidate(
+    client, storage, monkeypatch, configured
+):
+    from podcaster.auth import create_token
+    from podcaster.video.recovery import CANDIDATES
+
+    job = next(iter(CANDIDATES))
+    storage.put_bytes(
+        f"jobs/{job}/manifest.json", json.dumps(_make_manifest(job)).encode(), "application/json"
+    )
+    if configured:
+        monkeypatch.setenv("VIDEO_RECOVERY_OPERATOR_TOKEN", "operator-only-secret")
+    else:
+        monkeypatch.delenv("VIDEO_RECOVERY_OPERATOR_TOKEN", raising=False)
+    with patch("podcaster.queue.create_video_queue_backend") as producer:
+        denied = client.post(f"/api/jobs/{job}/video/recover", json={})
+        assert denied.status_code == 403
+        producer.assert_not_called()
+        if configured:
+            monkeypatch.setenv("UI_AUTH_USERNAME", "human")
+            monkeypatch.setenv("UI_AUTH_PASSWORD", "test-password")
+            monkeypatch.setenv("UI_AUTH_SECRET", "test-session-secret")
+            headers = {
+                "X-Video-Recovery-Operator": "operator-only-secret",
+                "Authorization": f"Bearer {create_token('human', 'test-session-secret')}",
+            }
+            wrong_job = client.post(
+                "/api/jobs/podcast-2026-W45-19c055c96ddf/video/recover",
+                headers=headers,
+                json={},
+            )
+            assert wrong_job.status_code == 409
+            producer.assert_not_called()
+            invalid_operator = client.post(
+                f"/api/jobs/{job}/video/recover",
+                headers=headers,
+                json={"operator": "another-human", "inventory": {"checked_by": "another-human"}},
+            )
+            assert invalid_operator.status_code == 409
+            producer.assert_not_called()
+            with (
+                patch("podcaster.video.recovery.reserve", return_value={"id": "epoch"}) as reserve,
+                patch("podcaster.video.recovery.dispatch") as dispatch,
+            ):
+                accepted = client.post(
+                    f"/api/jobs/{job}/video/recover",
+                    headers=headers,
+                    json={"operator": "human", "inventory": {"checked_by": "human"}},
+                )
+            assert accepted.status_code == 200
+            assert accepted.json()["status"] == "private_only"
+            assert reserve.call_args.kwargs["operator"] == "human"
+            dispatch.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # Tests: GET /api/jobs
 # ---------------------------------------------------------------------------

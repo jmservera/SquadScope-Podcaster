@@ -3022,6 +3022,12 @@ def upload_video_to_episode(
     Returns a PublishResult; ``anchor_episode_id`` is the NEW video episode id,
     status is "draft"/"scheduled"/"published" on success and "failed" otherwise.
     """
+    from podcaster.video.recovery import CANDIDATES, deny_candidate_upload
+
+    if isinstance(video_path, (str, Path)) and Path(video_path).stem in CANDIDATES:
+        deny_candidate_upload(Path(video_path).stem)
+    if publication_identity_context is not None:
+        deny_candidate_upload(publication_identity_context.accepted_job_id)
     try:
         video_path = _resolve_publish_media_path(video_path, "Video")
     except ValueError as exc:

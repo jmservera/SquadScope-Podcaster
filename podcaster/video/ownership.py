@@ -100,6 +100,7 @@ class VideoOwnershipGuard:
         execution_id: str,
         visibility_expires_at: datetime,
         lease_expires_at: datetime | None = None,
+        authorize_takeover: Callable[[], None] | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> "VideoOwnershipGuard":
         clock = now or (lambda: datetime.now(timezone.utc))
@@ -125,9 +126,12 @@ class VideoOwnershipGuard:
                 current_expiry = min(visibility_expiry, lease_expiry)
                 if current_expiry is not None and current_expiry > claimed_at + _EXPIRY_RESERVE:
                     if current.get("owner") != owner or current.get("execution_id") != execution_id:
-                        raise OwnershipError("video job already has an active downstream owner")
-                    captured.update(current)
-                    return raw if raw is not None else b""
+                        if authorize_takeover is None:
+                            raise OwnershipError("video job already has an active downstream owner")
+                        authorize_takeover()
+                    else:
+                        captured.update(current)
+                        return raw if raw is not None else b""
             current_fence = document.get("fencing_token", 0)
             if type(current_fence) is not int or current_fence < 0:
                 raise OwnershipError("ownership fencing token is malformed")

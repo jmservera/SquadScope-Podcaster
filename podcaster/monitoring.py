@@ -42,6 +42,7 @@ from azure.core.exceptions import AzureError
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from jwt import PyJWTError
 from pydantic import BaseModel
 
 from podcaster.auth import (
@@ -1072,6 +1073,72 @@ def enqueue_video(job_id: str):
 
     logger.info("manual video enqueue succeeded job_id=%s", job_id)
     return {"job_id": job_id, "enqueued": True}
+
+
+@app.post("/api/jobs/{job_id}/video/recover", dependencies=[Depends(verify_auth)])
+async def recover_private_video(
+    job_id: str,
+    request: Request,
+    x_video_recovery_operator: str = Header(default=""),
+    authorization: str = Header(default=""),
+):
+    """Reserve or reconcile an explicitly authorized private-only recovery."""
+    from podcaster.queue import create_video_queue_backend
+    from podcaster.video.recovery import CANDIDATES, RecoveryDenied, dispatch, reserve
+
+    credentials = get_credentials()
+    if credentials is None or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=403, detail="Human session required")
+    try:
+        claims = verify_token(authorization[7:], credentials[2])
+    except PyJWTError as exc:
+        raise HTTPException(status_code=403, detail="Human session required") from exc
+    operator = claims.get("sub")
+    if operator != credentials[0] or not isinstance(operator, str) or not operator.strip():
+        raise HTTPException(status_code=403, detail="Human session required")
+    secret = os.environ.get("VIDEO_RECOVERY_OPERATOR_TOKEN", "")
+    if (
+        not secret
+        or not x_video_recovery_operator
+        or not hmac.compare_digest(secret, x_video_recovery_operator)
+    ):
+        raise HTTPException(
+            status_code=403, detail="Distinct recovery operator authorization required"
+        )
+    if job_id not in CANDIDATES:
+        raise HTTPException(status_code=409, detail="Job is not an eligible original")
+    payload, error = await _read_json_object(request)
+    if error is not None:
+        return error
+    assert payload is not None
+    if payload.get("operator") != operator or (
+        not isinstance(payload.get("inventory"), dict)
+        or payload["inventory"].get("checked_by") != operator
+    ):
+        raise HTTPException(
+            status_code=409, detail="Operator and inventory must bind to human session"
+        )
+    producer = create_video_queue_backend()
+    if producer is None:
+        raise HTTPException(status_code=503, detail="Video queue is not configured")
+    try:
+        epoch = reserve(
+            get_storage(),
+            job_id,
+            request_id=payload.get("request_id"),
+            identity=payload.get("identity"),
+            operator=operator,
+            inventory=payload.get("inventory"),
+        )
+        dispatch(get_storage(), producer, job_id, epoch["id"])
+    except RecoveryDenied as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("private recovery dispatch failed for job_id=%s", job_id)
+        raise HTTPException(
+            status_code=503, detail="Recovery send is pending; retry same request id"
+        ) from exc
+    return {"job_id": job_id, "epoch_id": epoch["id"], "status": "private_only"}
 
 
 @app.get("/healthz")

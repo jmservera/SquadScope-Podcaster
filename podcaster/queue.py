@@ -80,6 +80,8 @@ class QueueBackend(Protocol):
 
     def delete_message(self, message: QueueMessage) -> None: ...
 
+    def renew_message(self, message: QueueMessage, *, visibility_timeout: int) -> QueueMessage: ...
+
 
 class QueueProducer(Protocol):
     def send_message(self, body: str) -> None: ...
@@ -308,6 +310,30 @@ class AzureStorageQueueBackend:
         with urlopen(request, timeout=30):
             return
 
+    def renew_message(self, message: QueueMessage, *, visibility_timeout: int) -> QueueMessage:
+        query = urlencode(
+            {"popreceipt": message.pop_receipt, "visibilitytimeout": visibility_timeout}
+        )
+        encoded_id = quote(message.message_id, safe="")
+        body = f"<QueueMessage><MessageText>{escape(message.body)}</MessageText></QueueMessage>"
+        headers = self._headers()
+        headers["Content-Type"] = "application/xml"
+        request = Request(
+            f"{self._queue_url}/messages/{encoded_id}?{query}",
+            data=body.encode("utf-8"),
+            method="PUT",
+            headers=headers,
+        )
+        with urlopen(request, timeout=30) as response:
+            root = ElementTree.fromstring(response.read())
+        receipt = root.findtext("PopReceipt")
+        visible = _parse_queue_timestamp(root.findtext("TimeNextVisible"))
+        if not receipt or visible is None:
+            raise ValueError("queue visibility renewal did not return authority")
+        return QueueMessage(
+            message.message_id, receipt, message.body, message.dequeue_count, visible
+        )
+
     def send_message(self, body: str) -> None:
         document = f"<QueueMessage><MessageText>{escape(body)}</MessageText></QueueMessage>"
         headers = self._headers()
@@ -408,6 +434,21 @@ class ConnectionStringQueueBackend:
 
     def delete_message(self, message: QueueMessage) -> None:
         self._client.delete_message(message.message_id, message.pop_receipt)
+
+    def renew_message(self, message: QueueMessage, *, visibility_timeout: int) -> QueueMessage:
+        result = self._client.update_message(
+            message.message_id,
+            message.pop_receipt,
+            content=message.body,
+            visibility_timeout=visibility_timeout,
+        )
+        visible = _parse_queue_timestamp(getattr(result, "next_visible_on", None))
+        receipt = getattr(result, "pop_receipt", None)
+        if not receipt or visible is None:
+            raise ValueError("queue visibility renewal did not return authority")
+        return QueueMessage(
+            message.message_id, receipt, message.body, message.dequeue_count, visible
+        )
 
     def send_message(self, body: str) -> None:
         self._client.send_message(body)
