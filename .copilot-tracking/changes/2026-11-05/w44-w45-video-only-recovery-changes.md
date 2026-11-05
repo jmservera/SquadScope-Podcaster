@@ -123,3 +123,21 @@ terminalization, for both normal and recovered jobs. Repeated focused
 video/review/distribution/publish/monitoring suite: **973 passed**; Ruff and
 whitespace checks passed. The concurrent full run was stopped when this
 final source correction changed its inputs.
+
+The `762d5cd` full run exposed four budget regression cases: completed
+legacy jobs still need their existing budget persisted into the manifest
+before skipping; the prior early skip omitted that compatibility write.
+The completed check now occurs after loading/persisting the existing budget
+and attempt timing but before expiration terminalization. Focused
+`test_video_budget.py`, runner and review suites: **278 passed**. The full
+run on that SHA had **6015 passed, 4 failed** (these four corrected budget
+cases), 4 skipped, 2 deselected; it is not acceptance evidence.
+
+The exact-SHA CI `ci / lockfile` check separately failed because the
+unmodified dependency resolver now selects `pydantic==2.14.3` and
+`pydantic-core==2.50.4` while `requirements.lock` still pins 2.14.2/2.50.2.
+Neither `pyproject.toml` nor `requirements.lock` changed in this focused
+video PR. This is a genuine external lockfile drift and remains a CI
+blocker; do not weaken the gate or bundle an unrelated dependency upgrade
+into the private-recovery patch. Copilot review at `762d5cd` reports no
+open findings, but human review and a green exact-SHA CI are still needed.

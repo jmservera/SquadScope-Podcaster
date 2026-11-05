@@ -1194,10 +1194,6 @@ def run_video_generation(
                 reason="recovery_reserved_inputs_changed",
             ) from exc
 
-    if _already_processed(manifest):
-        logger.info("video skipped job_id=%s reason=%s", job_id, REASON_ALREADY_PROCESSED)
-        return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_ALREADY_PROCESSED)
-
     # Imported here (not at module scope) to match the existing lazy
     # ``video_compose`` import policy in this module, while still binding the
     # name before the ``try`` block whose ``except`` clause needs it.
@@ -1246,6 +1242,19 @@ def run_video_generation(
     stage_budget = budget
     if on_budget_resolved is not None:
         on_budget_resolved(stage_budget)
+    if _already_processed(manifest):
+        if owns_budget:
+            _persist_video_budget_in_manifest(storage, job_id, stage_budget)
+        _append_video_timing_evidence(
+            storage,
+            job_id,
+            stage_budget,
+            kind=TimingEvidenceKind.ATTEMPT,
+            stage=VideoStage.PREFLIGHT,
+            reason="attempt",
+        )
+        logger.info("video skipped job_id=%s reason=%s", job_id, REASON_ALREADY_PROCESSED)
+        return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_ALREADY_PROCESSED)
     if not stage_budget.admit(VideoStage.SHUTDOWN).allowed:
         if recovery_epoch_id is not None:
             expire_epoch(storage, job_id, recovery_epoch_id)
