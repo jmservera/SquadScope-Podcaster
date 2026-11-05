@@ -141,3 +141,14 @@ video PR. This is a genuine external lockfile drift and remains a CI
 blocker; do not weaken the gate or bundle an unrelated dependency upgrade
 into the private-recovery patch. Copilot review at `762d5cd` reports no
 open findings, but human review and a green exact-SHA CI are still needed.
+
+Final unchanged source at `6b35290` passed complete `pytest tests/ -q`:
+**6019 passed, 4 skipped, 2 deselected**, 25 warnings in 1040.13
+seconds. Focused budget/runner/review **278 passed**, broader
+video/review/distribution/publish/monitoring **973 passed**, Ruff
+check/format and diff whitespace passed. Copilot review at `6b35290`
+reported **no open findings** but explicitly requested human assessment.
+The separate clean-main Docker fan-out reproduction remains `[2,2,2]`,
+and `ci / lockfile` remains red on the external uncapped pydantic/core
+resolver drift. No gate was bypassed; P02-T01 stays open pending
+reconciled CI, and P02-T02 (merge/deploy/readback) has not begun.
