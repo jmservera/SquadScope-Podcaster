@@ -68,3 +68,25 @@ was reproduced independently at clean `origin/main` `7043ce1`: recorder
 containers exit `[2,2,2]` at `test_scaleout_fanout_end_to_end`. This is a
 baseline failure, not waived or weakened; run final-source full suite and
 report remaining failures.
+
+## Independent review correction and PR
+
+PR jmservera/SquadScope-Podcaster#776 was opened from commit `15ee5b2`
+(`frank/w44-w45-private-video-epoch`), based on live `origin/main` `7043ce1`.
+A read-only non-author review found three concrete races/bypasses before
+acceptance: queue delivery can precede the sender's sent-ack CAS, a crash
+after completed manifest but before epoch completion strands redelivery, and
+direct video distribution omitted adapter recovery context. The correction
+permits claiming only a pending epoch with a durable send attempt; replay
+verifies completed manifest, held outbox and actual archived MP4 bytes against
+the epoch digest before CAS completion; and direct distribution plus both
+provider entry points fail closed for candidate IDs without storage. Focused
+tests cover the three previously missing paths. No provider writes occurred.
+
+After correction, focused video/review/distribution tests: **358 passed**;
+Ruff check/format on all `podcaster tests` and `git diff --check` passed.
+Full final-source `pytest tests/ -q` is in progress. The earlier full run was
+stopped when review corrections changed its source; it is not acceptance
+evidence. The baseline Docker failure remains an open release gate, not a
+test waiver. Independent re-review and PR CI are pending; no merge or
+deployment occurs in this offline-only handoff.

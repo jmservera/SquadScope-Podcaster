@@ -446,7 +446,10 @@ def claim(
         _expire(entry, current)
         if entry["state"] == "expired":
             return dict(entry)
-        if entry["state"] not in {"sent", "running"}:
+        # A delivered message can outrun the sender's separate sent-ack CAS.
+        if entry["state"] == "pending" and entry.get("send_attempts", 0) < 1:
+            raise RecoveryError("recovery send has not been attempted")
+        if entry["state"] not in {"pending", "sent", "running"}:
             raise RecoveryError("recovery epoch is not runnable")
         lease = min(_parse(entry["budget"]["deadline_at_utc"]), visibility_expires_at)
         if lease <= current + timedelta(seconds=5):
@@ -523,10 +526,43 @@ def fail_epoch(storage: Any, job_id: str, epoch_id: str, owner: str, reason: str
 
 
 def complete(storage: Any, job_id: str, epoch_id: str, owner: str) -> None:
+    from podcaster.distribution_outbox import DistributionOutboxRepository
+
+    entry = current_epoch(storage, job_id)
+    if entry is None or entry.get("epoch_id") != epoch_id:
+        raise RecoveryError("recovery completion epoch is stale")
+    try:
+        manifest = json.loads(storage.get_bytes(f"jobs/{job_id}/manifest.json"))
+        generation = manifest["generation"]
+        runner = generation["video_runner"]
+        outbox_id = runner["distribution"]["outbox_id"]
+        outbox = DistributionOutboxRepository(storage).read(outbox_id)
+        artifact = outbox["artifact"]
+        media = storage.get_bytes(artifact["path"])
+        if (
+            generation.get("video_recovery_epoch_id") != epoch_id
+            or runner.get("status") != "completed"
+            or outbox["publication_identity"]["accepted_job_id"] != job_id
+            or entry.get("media_sha256") != artifact["sha256"]
+            or media is None
+            or hashlib.sha256(media).hexdigest() != artifact["sha256"]
+            or not any(
+                provider.get("context", {}).get("private_recovery_epoch_id") == epoch_id
+                and provider.get("context", {}).get("private_recovery_media_sha256")
+                == artifact["sha256"]
+                for provider in outbox["providers"].values()
+            )
+        ):
+            raise RecoveryError("recovery completion evidence is incomplete")
+    except (TypeError, KeyError, ValueError, AttributeError) as exc:
+        raise RecoveryError("recovery completion evidence is unavailable") from exc
+
     def change(document: dict[str, Any]) -> None:
         entry = _epoch(document, epoch_id)
         if entry["state"] != "running" or entry.get("owner") != owner:
             raise RecoveryError("recovery completion owner is stale")
+        if entry.get("media_sha256") != artifact["sha256"]:
+            raise RecoveryError("recovery completion media changed")
         entry["state"] = "completed"
         entry["terminal_at"] = _utc(datetime.now(timezone.utc))
 

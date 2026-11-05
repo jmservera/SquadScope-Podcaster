@@ -839,10 +839,20 @@ def upload_to_youtube(
     Raises RuntimeError on auth failures; returns None on upload failures
     after retries so distribution continues to other targets.
     """
-    if recovery_storage is not None and recovery_job_id is not None:
-        from podcaster.video.recovery import assert_provider_write_allowed
+    if recovery_job_id is not None:
+        from podcaster.video.recovery import (
+            RecoveryError,
+            assert_provider_write_allowed,
+            is_candidate,
+        )
 
-        assert_provider_write_allowed(recovery_storage, recovery_job_id, epoch_id=recovery_epoch_id)
+        if recovery_storage is None:
+            if is_candidate(recovery_job_id) or recovery_epoch_id is not None:
+                raise RecoveryError("recovery provider storage is required")
+        else:
+            assert_provider_write_allowed(
+                recovery_storage, recovery_job_id, epoch_id=recovery_epoch_id
+            )
     if not config.youtube_enabled:
         logger.info("YouTube upload disabled")
         return None, None
@@ -1441,10 +1451,18 @@ def upload_to_spotify_episode(
     ``podcaster.publish``. Returns True on success, False otherwise.
     """
 
-    if publication_storage is not None and job_id is not None:
-        from podcaster.video.recovery import assert_provider_write_allowed
+    if job_id is not None:
+        from podcaster.video.recovery import (
+            RecoveryError,
+            assert_provider_write_allowed,
+            is_candidate,
+        )
 
-        assert_provider_write_allowed(publication_storage, job_id)
+        if publication_storage is None:
+            if is_candidate(job_id):
+                raise RecoveryError("recovery provider storage is required")
+        else:
+            assert_provider_write_allowed(publication_storage, job_id)
     if config.dry_run:
         logger.info("Spotify video upload dry-run: audio_anchor=%s", anchor_id)
         return (True, None, None) if return_episode_id else True
@@ -1747,6 +1765,12 @@ def distribute_video(
     when exactly one match exists, otherwise it stays fail-closed (#678).
     Spotify closes that window by reconciling drafts before creating one.
     """
+    from podcaster.video.recovery import RecoveryError, assert_provider_write_allowed, is_candidate
+
+    if is_candidate(job_id) and publication_storage is None:
+        raise RecoveryError("recovery provider storage is required")
+    if publication_storage is not None:
+        assert_provider_write_allowed(publication_storage, job_id)
     result = DistributionResult(publish_run_id=publish_run_id)
     prior_published = published or {}
     youtube_required_failure: YouTubeDeliveryError | None = None
@@ -1863,6 +1887,9 @@ def distribute_video(
             }
             if budget is not None:
                 youtube_kwargs["budget"] = budget
+            if is_candidate(job_id):
+                youtube_kwargs["recovery_storage"] = publication_storage
+                youtube_kwargs["recovery_job_id"] = job_id
             video_id, video_url = upload_to_youtube(
                 video_path,
                 title,

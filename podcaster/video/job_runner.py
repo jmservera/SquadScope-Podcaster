@@ -2576,7 +2576,10 @@ def process_message(
         )
         return VideoOutcome(job_id, STATUS_FAILED, reason="transient")
 
-    if recovery_epoch_id is not None and outcome.status == STATUS_COMPLETED:
+    if recovery_epoch_id is not None and (
+        outcome.status == STATUS_COMPLETED
+        or (outcome.status == STATUS_SKIPPED and outcome.reason == REASON_ALREADY_PROCESSED)
+    ):
         try:
             complete_recovery(storage, job_id, recovery_epoch_id, recovery_owner)
         except RecoveryError as exc:

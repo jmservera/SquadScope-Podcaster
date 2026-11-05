@@ -305,6 +305,53 @@ def test_private_recovery_reservation_reconciles_send_and_fences_second_owner(st
         )
 
 
+def test_recovery_worker_can_claim_before_sender_ack(storage, monkeypatch):
+    job_id = "podcast-2026-W44-00bc06dfb6e2"
+    now = datetime.now(timezone.utc)
+    _stage_recovery(storage, job_id, now)
+    monkeypatch.setattr(recovery, "_verify_original", lambda *_args: {})
+    identity = dict(
+        zip(
+            ("week", "publish_run_id", "article_sha256", "manifest_sha256"),
+            recovery._CANDIDATES[job_id][:4],
+            strict=True,
+        )
+    )
+    epoch = recovery.reserve(
+        storage,
+        job_id,
+        identity=identity,
+        script_sha256="a" * 64,
+        mp3_sha256="b" * 64,
+        request_id=str(uuid.uuid4()),
+        operator="owner",
+        inventory_reference="offline-test",
+        now=now,
+    )
+    with pytest.raises(recovery.RecoveryError, match="send has not been attempted"):
+        recovery.claim(
+            storage, job_id, epoch["epoch_id"], "early", now + timedelta(seconds=600), now=now
+        )
+
+    class Producer:
+        def send_message(self, _body):
+            claimed = recovery.claim(
+                storage,
+                job_id,
+                epoch["epoch_id"],
+                "first-worker",
+                now + timedelta(seconds=600),
+                now=now,
+            )
+            assert claimed["state"] == "running"
+
+    dispatched = recovery.reconcile_dispatch(
+        storage, job_id, epoch["epoch_id"], Producer(), now=now
+    )
+    assert dispatched["state"] == "running"
+    assert dispatched["owner"] == "first-worker"
+
+
 def test_private_recovery_rejects_unproven_media_before_reservation(storage):
     job_id = "podcast-2026-W44-00bc06dfb6e2"
     now = datetime.now(timezone.utc)

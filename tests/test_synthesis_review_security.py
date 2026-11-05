@@ -264,6 +264,70 @@ def test_recovery_renders_private_mp4_and_persists_unreleasable_media_bound_outb
         dispatch_reviewed_video(repository, Mock(), document)
 
 
+@pytest.mark.parametrize("prepared_exact_video", [{"target": "recovery"}], indirect=True)
+def test_recovery_completed_manifest_replay_finishes_epoch(prepared_exact_video, monkeypatch):
+    from podcaster.queue import QueueMessage, encode_video_recovery_message
+    from podcaster.video import recovery
+    from podcaster.video.job_runner import (
+        REASON_ALREADY_PROCESSED,
+        STATUS_SKIPPED,
+        VideoOutcome,
+        process_message,
+    )
+
+    storage, job_id, _, _, config, _ = prepared_exact_video
+    epoch = recovery.current_epoch(storage, job_id)
+
+    def expire_old_lease(raw):
+        state = json.loads(raw)
+        state["epochs"][-1]["lease_expires_at"] = "2026-01-01T00:00:00Z"
+        return json.dumps(state).encode()
+
+    storage.update_bytes(recovery.recovery_path(job_id), "application/json", expire_old_lease)
+    monkeypatch.setattr(
+        "podcaster.video.job_runner.run_video_generation",
+        lambda *_args, **_kwargs: VideoOutcome(
+            job_id, STATUS_SKIPPED, reason=REASON_ALREADY_PROCESSED
+        ),
+    )
+    queue = Mock()
+    message = QueueMessage(
+        message_id="redelivery",
+        pop_receipt="new-owner",
+        body=encode_video_recovery_message(job_id, epoch["epoch_id"]),
+        dequeue_count=2,
+        next_visible_on=datetime.now(timezone.utc) + timedelta(seconds=600),
+    )
+    outcome = process_message(message, storage=storage, queue=queue, config=config)
+    assert outcome.status == STATUS_SKIPPED
+    assert recovery.current_epoch(storage, job_id)["state"] == "completed"
+    queue.delete_message.assert_called_once_with(message)
+
+
+@pytest.mark.parametrize("prepared_exact_video", [{"target": "recovery"}], indirect=True)
+def test_recovery_adapters_deny_missing_storage_and_direct_distribution(
+    prepared_exact_video, monkeypatch, tmp_path
+):
+    from podcaster.video import distribution, recovery
+
+    _storage, job_id, _repository, _document, config, _composer = prepared_exact_video
+    provider = Mock(side_effect=AssertionError("provider reached"))
+    monkeypatch.setattr(distribution, "_get_youtube_access_token", provider)
+    monkeypatch.setattr("podcaster.publish.upload_video_to_episode", provider)
+    mp4 = tmp_path / "private.mp4"
+    mp4.write_bytes(b"private")
+
+    with pytest.raises(recovery.RecoveryError, match="storage is required"):
+        distribution.distribute_video(mp4, job_id, "title", "description", 1.0, config)
+    with pytest.raises(recovery.RecoveryError, match="storage is required"):
+        distribution.upload_to_youtube(mp4, "title", "description", config, recovery_job_id=job_id)
+    with pytest.raises(recovery.RecoveryError, match="storage is required"):
+        distribution.upload_to_spotify_episode(
+            mp4, None, config, title="title", description="description", job_id=job_id
+        )
+    provider.assert_not_called()
+
+
 def _video_decision(storage, job_id, document, **overrides):
     return process_review_decision(
         job_id,
