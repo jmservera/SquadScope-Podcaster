@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import re
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
@@ -85,7 +86,41 @@ from podcaster.validation import is_authorized, validate_payload_details
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Podcaster Job Monitor", version="0.1.0")
+
+@asynccontextmanager
+async def _private_recovery_lifespan(_app: FastAPI):
+    if not os.environ.get("PODCASTER_VIDEO_RECOVERY_OPERATOR_KEY"):
+        yield
+        return
+
+    async def reconcile_loop():
+        from podcaster.queue import create_video_queue_backend
+        from podcaster.video.recovery import reconcile_pending
+
+        def queue_unavailable(_message: str) -> None:
+            raise RuntimeError("video queue backend unavailable")
+
+        while True:
+            try:
+                backend = create_video_queue_backend()
+                send = backend.send_message if backend is not None else queue_unavailable
+                await asyncio.to_thread(reconcile_pending, get_storage(), send)
+            except Exception:
+                logger.warning("private recovery dispatch reconciliation failed", exc_info=True)
+            await asyncio.sleep(60)
+
+    task = asyncio.create_task(reconcile_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+app = FastAPI(title="Podcaster Job Monitor", version="0.1.0", lifespan=_private_recovery_lifespan)
 
 MAX_REQUEST_BODY = 1 * 1024 * 1024  # 1 MiB
 
@@ -1072,6 +1107,89 @@ def enqueue_video(job_id: str):
 
     logger.info("manual video enqueue succeeded job_id=%s", job_id)
     return {"job_id": job_id, "enqueued": True}
+
+
+class PrivateVideoRecoveryRequest(BaseModel):
+    week: str
+    publish_run_id: str
+    article_sha256: str
+    manifest_sha256: str
+    audio_sha256: str
+    inventory_reference: str
+
+
+def _require_video_recovery_operator(key: str | None) -> None:
+    configured = os.environ.get("PODCASTER_VIDEO_RECOVERY_OPERATOR_KEY", "")
+    if not configured:
+        raise HTTPException(status_code=503, detail="Recovery operator boundary is disabled")
+    if not key or not hmac.compare_digest(key, configured):
+        raise HTTPException(status_code=403, detail="Recovery operator authorization required")
+
+
+def _dispatch_private_recovery(storage: StorageBackend, job_id: str, epoch_id: str) -> None:
+    from podcaster.queue import create_video_queue_backend
+    from podcaster.video.recovery import RecoveryDenied, reconcile_dispatch
+
+    backend = create_video_queue_backend()
+    if backend is None:
+        raise HTTPException(
+            status_code=503, detail={"epoch_id": epoch_id, "error": "Video queue unavailable"}
+        )
+    try:
+        reconcile_dispatch(storage, job_id, epoch_id, backend.send_message)
+    except RecoveryDenied as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"epoch_id": epoch_id, "error": "Dispatch pending reconciliation"},
+        ) from exc
+
+
+@app.post("/api/jobs/{job_id}/video/private-recovery", dependencies=[Depends(verify_auth)])
+def reserve_private_video_recovery(
+    job_id: str,
+    request: PrivateVideoRecoveryRequest,
+    x_video_recovery_operator_key: str | None = Header(default=None),
+):
+    """Reserve reviewed original media, then send only the fenced private video message."""
+    from podcaster.publication_state import PublicationIdentity
+    from podcaster.video.recovery import RecoveryDenied, reserve_epoch
+
+    _require_video_recovery_operator(x_video_recovery_operator_key)
+    storage = get_storage()
+    try:
+        epoch_id = reserve_epoch(
+            storage,
+            job_id,
+            expected_identity=PublicationIdentity(
+                job_id,
+                request.week,
+                request.publish_run_id,
+                request.article_sha256,
+                request.manifest_sha256,
+            ),
+            expected_audio_sha256=request.audio_sha256,
+            inventory_reference=request.inventory_reference,
+        )
+    except RecoveryDenied as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _dispatch_private_recovery(storage, job_id, epoch_id)
+    return {"job_id": job_id, "epoch_id": epoch_id, "status": "dispatched_private_only"}
+
+
+@app.post(
+    "/api/jobs/{job_id}/video/private-recovery/{epoch_id}/dispatch",
+    dependencies=[Depends(verify_auth)],
+)
+def reconcile_private_video_dispatch(
+    job_id: str,
+    epoch_id: str,
+    x_video_recovery_operator_key: str | None = Header(default=None),
+):
+    _require_video_recovery_operator(x_video_recovery_operator_key)
+    _dispatch_private_recovery(get_storage(), job_id, epoch_id)
+    return {"job_id": job_id, "epoch_id": epoch_id, "status": "dispatched_private_only"}
 
 
 @app.get("/healthz")

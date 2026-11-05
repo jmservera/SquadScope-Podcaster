@@ -639,6 +639,107 @@ class TestAlreadyProcessed:
 
 
 class TestRunVideoGeneration:
+    def test_completed_attempt_stays_skipped_after_its_original_deadline(
+        self, storage, dry_config, monkeypatch
+    ):
+        from podcaster.video import job_runner as runner
+        from podcaster.video.budget import VideoStageBudget
+
+        job_id = "already-complete"
+        started = datetime(2026, 11, 1, tzinfo=timezone.utc)
+        original = VideoStageBudget.start(now_utc=started, utcnow=lambda: started).to_dict()
+        storage.set_manifest(job_id, {"generation": {"video_runner": {"status": "completed"}}})
+        storage.put_bytes(
+            runner.video_budget_path(job_id), json.dumps(original).encode(), "application/json"
+        )
+        forbidden = MagicMock(side_effect=AssertionError("completed job replayed"))
+        monkeypatch.setattr(runner, "create_intermediate_store", forbidden)
+        result = run_video_generation(
+            job_id,
+            storage,
+            config=dry_config,
+            now=started + timedelta(seconds=5400),
+        )
+        assert result.status == STATUS_SKIPPED
+        assert result.reason == REASON_ALREADY_PROCESSED
+        assert storage.get_bytes(runner.video_budget_path(job_id)) == json.dumps(original).encode()
+        assert (
+            "video_attempt_terminal"
+            not in json.loads(storage.get_bytes(manifest_path(job_id)))["generation"]
+        )
+        forbidden.assert_not_called()
+
+    def test_short_retry_reuses_original_budget(self, storage, dry_config, monkeypatch):
+        from podcaster.video import job_runner as runner
+
+        job_id = "unexpired-attempt"
+        started = datetime(2026, 11, 1, tzinfo=timezone.utc)
+        storage.set_manifest(job_id, {"generation": {"validation": {"duration_seconds": 60}}})
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        monkeypatch.setattr(
+            "podcaster.video.video_gen.record_episode",
+            MagicMock(side_effect=RuntimeError("transient recording failure")),
+        )
+        observed = []
+        for at in (started, started + timedelta(seconds=60)):
+            with pytest.raises(TransientVideoError):
+                run_video_generation(
+                    job_id,
+                    storage,
+                    config=dry_config,
+                    now=at,
+                    on_budget_resolved=lambda value: observed.append(value.to_dict()),
+                )
+        assert observed[0] == observed[1]
+        assert json.loads(storage.get_bytes(runner.video_budget_path(job_id))) == observed[0]
+        assert (
+            json.loads(storage.get_bytes(manifest_path(job_id)))["generation"].get(
+                "video_attempt_terminal"
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize("redelivery_seconds", [5400, 10800])
+    def test_expired_attempt_is_terminal_before_any_video_side_effect(
+        self, storage, dry_config, monkeypatch, redelivery_seconds
+    ):
+        from podcaster.video import job_runner as runner
+        from podcaster.video.budget import VideoStageBudget
+
+        job_id = "spent-attempt"
+        started = datetime(2026, 11, 1, tzinfo=timezone.utc)
+        storage.set_manifest(
+            job_id,
+            {"generation": {"video_runner": {"status": "failed", "reason": "first_error"}}},
+        )
+        original = VideoStageBudget.start(now_utc=started, utcnow=lambda: started).to_dict()
+        storage.put_bytes(
+            runner.video_budget_path(job_id), json.dumps(original).encode(), "application/json"
+        )
+        for boundary in (
+            "create_intermediate_store",
+            "create_scratch_storage_backend",
+            "create_clip_queue_backend",
+            "claim_pipeline",
+            "commit_immutable_artifact",
+            "distribute_video",
+        ):
+            monkeypatch.setattr(
+                runner, boundary, MagicMock(side_effect=AssertionError(f"crossed {boundary}"))
+            )
+        redelivery = started + timedelta(seconds=redelivery_seconds)
+        outcome = run_video_generation(job_id, storage, config=dry_config, now=redelivery)
+
+        assert outcome.status == STATUS_FAILED
+        assert outcome.reason == runner.REASON_ATTEMPT_EXPIRED
+        assert json.loads(storage.get_bytes(runner.video_budget_path(job_id))) == original
+        generation = json.loads(storage.get_bytes(manifest_path(job_id)))["generation"]
+        assert generation["video_runner"] == {"status": "failed", "reason": "first_error"}
+        assert generation["video_budget"] == original
+        assert (
+            generation["video_attempt_terminal"]["deadline_at_utc"] == original["deadline_at_utc"]
+        )
+
     def test_no_manifest_raises_transient(self, storage, dry_config):
         with pytest.raises(TransientVideoError, match="no manifest"):
             run_video_generation("missing-job", storage, config=dry_config)
