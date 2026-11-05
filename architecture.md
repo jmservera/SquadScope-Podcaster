@@ -199,6 +199,19 @@ Optional:
 - Disabled automatically when `PODCASTER_VIDEO_SCRATCH_CONTAINER` is unset
   (local dev / tests fall back to the legacy all-local-disk path).
 
+## Private video recovery queue authority
+- The `video-jobs` consumer initially receives with a 900-second visibility
+  timeout because Azure applies it before the message body can identify a
+  recovery epoch. Ordinary messages immediately extend to their configured
+  visibility (5400 seconds by default) using the returned rotating receipt.
+- Recovery messages retain the short visibility and renew their queue receipt
+  and manifest owner every 300 seconds while rendering. Crash redelivery can
+  reclaim the 1800-second lease before the original, fixed 5100-second epoch
+  deadline; a lost receipt or lease denies private candidate selection.
+- The selected private candidate and terminal runner readback commit in one
+  manifest CAS. Immutable attempt artifacts remain inert until selection;
+  neither recovery nor queue replay authorizes a provider write.
+
 ## Key Commands
 - Run tests: pytest tests/ -q
 - Local pipeline: python scripts/run_full_pipeline.py

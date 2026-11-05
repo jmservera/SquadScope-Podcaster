@@ -397,6 +397,185 @@ def test_recovery_dispatch_reclaim_and_fixed_deadline(recovery_original):
     assert record["deadline_at_utc"] == first.deadline_at_utc
 
 
+def test_recovery_actual_queue_crash_redelivers_before_fixed_deadline(
+    recovery_original, monkeypatch
+):
+    from dataclasses import replace
+
+    from podcaster.queue import QueueMessage
+    from podcaster.video import job_runner, recovery
+
+    storage, job_id, identity, mp3_sha, at = recovery_original
+    epoch = recovery.reserve_epoch(
+        storage,
+        job_id,
+        expected_identity=identity,
+        expected_audio_sha256=mp3_sha,
+        inventory_reference="queue-crash-replay",
+        now=lambda: at,
+    )
+
+    class TimelineQueue:
+        def __init__(self):
+            self.clock = at
+            self.body = None
+            self.visible = at
+            self.receipt = 0
+            self.receives = []
+            self.deleted = []
+
+        def send_message(self, body):
+            self.body = body
+
+        def receive_messages(self, max_messages=1, *, visibility_timeout=600):
+            self.receives.append(visibility_timeout)
+            if self.body is None or self.clock < self.visible:
+                return []
+            self.receipt += 1
+            self.visible = self.clock + timedelta(seconds=visibility_timeout)
+            return [
+                QueueMessage("queue-id", str(self.receipt), self.body, self.receipt, self.visible)
+            ]
+
+        def update_message(self, message, *, visibility_timeout):
+            assert message.pop_receipt == str(self.receipt)
+            self.receipt += 1
+            self.visible = self.clock + timedelta(seconds=visibility_timeout)
+            return replace(message, pop_receipt=str(self.receipt), next_visible_on=self.visible)
+
+        def delete_message(self, message):
+            assert message.pop_receipt == str(self.receipt)
+            self.deleted.append(message)
+            self.body = None
+
+    queue = TimelineQueue()
+    recovery.reconcile_dispatch(storage, job_id, epoch, queue.send_message, now=lambda: at)
+    original_process = job_runner.process_message
+    monkeypatch.setattr(
+        job_runner,
+        "process_message",
+        lambda msg, **kwargs: original_process(msg, now=queue.clock, **kwargs),
+    )
+    active_leases = []
+    monkeypatch.setattr(
+        job_runner._RecoveryQueueLease,
+        "start",
+        lambda lease: active_leases.append(lease),
+    )
+    monkeypatch.setattr(job_runner._RecoveryQueueLease, "stop", lambda lease: None)
+
+    def crash_during_recording(*_args, **_kwargs):
+        for seconds in (300, 600, 900, 1200, 1500):
+            queue.clock = at + timedelta(seconds=seconds)
+            active_leases[-1].beat()
+        queue.clock = at + timedelta(seconds=1800)
+        raise RuntimeError("crashed while recording")
+
+    run = Mock(side_effect=crash_during_recording)
+    monkeypatch.setattr(job_runner, "run_video_generation", run)
+    with pytest.raises(RuntimeError, match="crashed"):
+        job_runner.drain(queue, storage, max_messages=1)
+    assert queue.receives == [900]
+    original = load_manifest(storage, job_id)["generation"]["video_recovery"]["epochs"][0]
+    assert original["owner"] == "queue-id:1"
+    assert queue.visible == at + timedelta(seconds=2400)
+    queue.clock = at + timedelta(seconds=2399)
+    assert job_runner.drain(queue, storage, max_messages=1) == []
+    queue.clock = at + timedelta(seconds=2400)
+    run.side_effect = None
+    run.return_value = job_runner.VideoOutcome(job_id, job_runner.STATUS_FAILED, reason="offline")
+    outcome = job_runner.drain(queue, storage, max_messages=1)
+    assert outcome[0].reason == "offline"
+    assert queue.deleted[0].pop_receipt == "7"
+    reclaimed = load_manifest(storage, job_id)["generation"]["video_recovery"]["epochs"][0]
+    assert reclaimed["owner"] == "queue-id:7"
+    assert reclaimed["deadline_at_utc"] == original["deadline_at_utc"]
+    assert queue.clock < datetime.fromisoformat(reclaimed["deadline_at_utc"].replace("Z", "+00:00"))
+
+
+def test_recovery_queue_renewal_rotates_receipt_and_fences_old_owner(recovery_original):
+    from dataclasses import replace
+
+    from podcaster.queue import QueueMessage
+    from podcaster.video import job_runner, recovery
+    from podcaster.video.ownership import VideoOwnershipGuard
+
+    storage, job_id, identity, mp3_sha, at = recovery_original
+    epoch = recovery.reserve_epoch(
+        storage,
+        job_id,
+        expected_identity=identity,
+        expected_audio_sha256=mp3_sha,
+        inventory_reference="renew-receipt",
+        now=lambda: at,
+    )
+    current = at
+    message = QueueMessage(
+        "m", "r0", recovery.message(job_id, epoch), 1, at + timedelta(seconds=900)
+    )
+    claim = recovery.claim_epoch(
+        storage,
+        job_id,
+        epoch,
+        "m:r0",
+        now=lambda: current,
+        visibility_expires_at=message.next_visible_on,
+    )
+
+    class RotatingQueue:
+        def __init__(self):
+            self.receipt = "r0"
+            self.visible = message.next_visible_on
+            self.updates = []
+
+        def update_message(self, msg, *, visibility_timeout):
+            assert msg.pop_receipt == self.receipt
+            assert visibility_timeout == 900
+            self.receipt = f"r{len(self.updates) + 1}"
+            self.visible = current + timedelta(seconds=visibility_timeout)
+            self.updates.append(self.visible)
+            return replace(msg, pop_receipt=self.receipt, next_visible_on=self.visible)
+
+        def delete_message(self, msg):
+            assert msg.pop_receipt == self.receipt
+
+    queue = RotatingQueue()
+    lease = job_runner._RecoveryQueueLease(queue, storage, message, claim, clock=lambda: current)
+    guard = VideoOwnershipGuard.acquire(
+        storage,
+        f"{job_id}-epoch-{epoch}",
+        owner="video-runner",
+        execution_id="m:r0",
+        visibility_expires_at=message.next_visible_on,
+        now=lambda: current,
+    )
+    lease.attach_guard(guard)
+    for seconds in (300, 600, 900, 1200, 1500):
+        current = at + timedelta(seconds=seconds)
+        lease.beat()
+        assert lease.visible_until() == queue.visible
+        assert lease.message.pop_receipt == queue.receipt
+        with pytest.raises(recovery.RecoveryDenied):
+            recovery.claim_epoch(
+                storage,
+                job_id,
+                epoch,
+                "late-old-owner",
+                now=lambda: current,
+                visibility_expires_at=current + timedelta(seconds=900),
+            )
+    current = at + timedelta(seconds=1800)
+    assert queue.visible > current
+    guard.assert_current()
+    with pytest.raises(AssertionError):
+        queue.delete_message(message)
+    queue.delete_message(lease.message)
+    record = load_manifest(storage, job_id)["generation"]["video_recovery"]["epochs"][0]
+    assert record["deadline_at_utc"] == (at + timedelta(seconds=5100)).isoformat().replace(
+        "+00:00", "Z"
+    )
+
+
 def test_dispatch_send_before_ack_reconciles_from_running_claim(recovery_original):
     from podcaster.video.recovery import claim_epoch, reconcile_dispatch, reserve_epoch
 
@@ -848,6 +1027,8 @@ def test_private_original_cannot_reach_distribution_or_final_adapters(tmp_path):
 
 
 def test_recovery_worker_renders_only_private_selected_candidate(recovery_original, monkeypatch):
+    import time
+
     from podcaster.video import job_runner, recovery
     from podcaster.video.distribution import VideoDistributionConfig
     from podcaster.video.ownership import VideoOwnershipGuard
@@ -901,6 +1082,8 @@ def test_recovery_worker_renders_only_private_selected_candidate(recovery_origin
         now=at,
         ownership_execution_id="recovery-worker",
         ownership_visibility_expires_at=visibility,
+        lifecycle_deadline_monotonic=time.monotonic() - 10,
+        recovery_visibility=lambda: datetime.now(timezone.utc) + timedelta(seconds=900),
         recovery_claim=claim,
     )
     assert outcome.status == "completed"
@@ -1066,6 +1249,10 @@ def test_postcommit_retry_resolves_same_verified_private_pointer(
         expected_proof_sha256=proof,
         now=lambda: at,
     )
+    precrash_state = load_manifest(storage, job_id)["generation"]["video_runner"]
+    assert precrash_state["status"] == "completed"
+    assert precrash_state["distribution"]["blob_path"] == selected["archive_path"]
+    assert precrash_state["distribution"]["public_delivery_status"] == "awaiting_review"
     forbidden = Mock(side_effect=AssertionError("post-commit retry rerendered"))
     monkeypatch.setattr(job_runner, "create_intermediate_store", forbidden)
     queue = Mock()
@@ -1083,6 +1270,7 @@ def test_postcommit_retry_resolves_same_verified_private_pointer(
     assert outcome.distribution.public_delivery_status == "awaiting_review"
     assert outcome.video_blob_path == selected["archive_path"]
     assert recovery.read_selected(storage, job_id) == selected
+    assert load_manifest(storage, job_id)["generation"]["video_runner"] == precrash_state
     queue.delete_message.assert_called_once_with(retry)
     forbidden.assert_not_called()
 

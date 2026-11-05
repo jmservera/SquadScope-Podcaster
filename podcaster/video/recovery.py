@@ -682,6 +682,15 @@ def select_private_output(
         if claim:
             epoch["status"] = "selected"
         current["generation"]["video_recovery"] = state
+        current["generation"]["video_runner"] = {
+            "status": "completed",
+            "at": _iso(_utc(now())),
+            "distribution": {
+                "status": "completed",
+                "public_delivery_status": "awaiting_review",
+                "blob_path": archive,
+            },
+        }
         selected.update(candidate)
         return manifest_bytes(current)
 

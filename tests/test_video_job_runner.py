@@ -300,6 +300,13 @@ class FakeQueue:
     def delete_message(self, message: QueueMessage):
         self.deleted.append(message)
 
+    def update_message(self, message: QueueMessage, *, visibility_timeout: int):
+        return replace(
+            message,
+            pop_receipt=f"{message.pop_receipt}-renewed",
+            next_visible_on=datetime.now(timezone.utc) + timedelta(seconds=visibility_timeout),
+        )
+
 
 def _make_message(job_id: str, dequeue_count: int = 1) -> QueueMessage:
     import base64
@@ -3372,6 +3379,7 @@ class _VisibilityQueue:
         self._messages = list(messages)
         self.visibility_timeouts: list[int] = []
         self.deleted: list = []
+        self.updated: list[int] = []
 
     def receive_messages(self, max_messages=1, *, visibility_timeout=600):
         self.visibility_timeouts.append(visibility_timeout)
@@ -3389,6 +3397,16 @@ class _VisibilityQueue:
     def delete_message(self, message):
         self.deleted.append(message)
 
+    def update_message(self, message, *, visibility_timeout):
+        self.updated.append(visibility_timeout)
+        if message.next_visible_on is None:
+            return message
+        return replace(
+            message,
+            pop_receipt=f"{message.pop_receipt}-renewed",
+            next_visible_on=datetime.now(timezone.utc) + timedelta(seconds=visibility_timeout),
+        )
+
 
 class TestEditorVisibilityTimeout:
     def test_drain_uses_video_visibility_timeout(self, storage, dry_config, monkeypatch):
@@ -3398,14 +3416,16 @@ class TestEditorVisibilityTimeout:
         storage.set_manifest("j1", {"generation": {"video_runner": {"status": "completed"}}})
         queue = _VisibilityQueue([_make_message("j1")])
         drain(queue, storage, dry_config)
-        assert queue.visibility_timeouts[0] == DEFAULT_VIDEO_VISIBILITY_TIMEOUT
+        assert queue.visibility_timeouts[0] == 900
+        assert queue.updated == [DEFAULT_VIDEO_VISIBILITY_TIMEOUT]
 
     def test_drain_honours_env_override(self, storage, dry_config, monkeypatch):
         monkeypatch.setenv("PODCASTER_VIDEO_VISIBILITY_TIMEOUT", "1234")
         storage.set_manifest("j1", {"generation": {"video_runner": {"status": "completed"}}})
         queue = _VisibilityQueue([_make_message("j1")])
         drain(queue, storage, dry_config)
-        assert queue.visibility_timeouts[0] == 1234
+        assert queue.visibility_timeouts[0] == 900
+        assert queue.updated == [1234]
 
     def test_drain_passes_visibility_deadline_to_job_context(
         self,
@@ -3459,9 +3479,9 @@ class TestEditorVisibilityTimeout:
         deadline_from_request_start = deadlines[0] - started
         remaining_after_receive = deadlines[0] - time.monotonic()
 
-        assert 4.8 <= deadline_from_request_start <= 5.2
-        assert 0 < remaining_after_receive <= 4.95
-        assert remaining_after_receive <= deadline_from_request_start - 0.05
+        assert 5394 <= deadline_from_request_start <= 5396
+        assert 5394 <= remaining_after_receive <= 5396
+        assert queue.updated == [5400]
 
     def test_missing_authoritative_timestamp_fails_closed(
         self,

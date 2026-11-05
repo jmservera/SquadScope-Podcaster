@@ -26,6 +26,7 @@ import math
 import os
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -151,6 +152,8 @@ ENV_FANOUT = "PODCASTER_VIDEO_FANOUT"
 #: compose + publish); the dedicated editor lease is the backstop if it is too low.
 ENV_VIDEO_VISIBILITY_TIMEOUT = "PODCASTER_VIDEO_VISIBILITY_TIMEOUT"
 DEFAULT_VIDEO_VISIBILITY_TIMEOUT = 5400
+RECOVERY_VIDEO_VISIBILITY_TIMEOUT = 900
+RECOVERY_VIDEO_RENEW_INTERVAL = 300
 AUTHORITY_CLOCK_SKEW_RESERVE_SECONDS = 5.0
 
 # Minimum valid MP4 byte size
@@ -1067,6 +1070,76 @@ def _video_visibility_timeout(env: dict[str, str] | None = None) -> int:
     return value if value > 0 else DEFAULT_VIDEO_VISIBILITY_TIMEOUT
 
 
+class _RecoveryQueueLease:
+    """Keep the received recovery message and its manifest owner in sync."""
+
+    def __init__(
+        self,
+        queue: QueueBackend,
+        storage: StorageBackend,
+        message: QueueMessage,
+        claim: Any,
+        *,
+        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    ) -> None:
+        self.queue = queue
+        self.storage = storage
+        self.message = message
+        self.claim = claim
+        self.clock = clock
+        self.error: Exception | None = None
+        self.ownership_guard: VideoOwnershipGuard | None = None
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def beat(self) -> None:
+        from podcaster.video.recovery import claim_epoch
+
+        updated = self.queue.update_message(
+            self.message, visibility_timeout=RECOVERY_VIDEO_VISIBILITY_TIMEOUT
+        )
+        self.message = updated
+        claim_epoch(
+            self.storage,
+            self.claim.job_id,
+            self.claim.epoch_id,
+            self.claim.owner,
+            now=self.clock,
+            visibility_expires_at=updated.next_visible_on,
+        )
+        if self.ownership_guard is not None:
+            self.ownership_guard.refresh_visibility(updated.next_visible_on)
+
+    def _run(self) -> None:
+        while not self._stop.wait(RECOVERY_VIDEO_RENEW_INTERVAL):
+            try:
+                self.beat()
+            except Exception as exc:
+                self.error = exc
+                logger.warning("recovery queue/owner renewal failed job_id=%s", self.claim.job_id)
+                return
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def attach_guard(self, guard: VideoOwnershipGuard) -> None:
+        self.ownership_guard = guard
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
+
+    def visible_until(self) -> datetime:
+        from podcaster.video.recovery import RecoveryDenied, assert_current
+
+        if self.error is not None or self.message.next_visible_on is None:
+            raise RecoveryDenied("recovery queue renewal failed")
+        assert_current(self.storage, self.claim, now=self.clock)
+        return self.message.next_visible_on
+
+
 def _authoritative_deadline_monotonic(expires_at: datetime | None) -> float | None:
     """Convert a provider/storage wall expiry to a conservative monotonic deadline."""
     if expires_at is None or expires_at.tzinfo is None or expires_at.utcoffset() is None:
@@ -1100,6 +1173,8 @@ def run_video_generation(
     media_probe: Callable[[Path, float], Any] | None = None,
     ownership_execution_id: str | None = None,
     ownership_visibility_expires_at: datetime | None = None,
+    recovery_visibility: Callable[[], datetime] | None = None,
+    on_recovery_ownership: Callable[[VideoOwnershipGuard], None] | None = None,
     recovery_claim=None,
 ) -> VideoOutcome:
     """Generate video for a staged job_id and distribute to configured targets.
@@ -1250,7 +1325,12 @@ def run_video_generation(
 
         current_monotonic = time.monotonic()
         remaining: list[float] = []
-        if lifecycle_deadline_monotonic is not None:
+        if recovery_visibility is not None:
+            renewed_deadline = _authoritative_deadline_monotonic(recovery_visibility())
+            if renewed_deadline is None:
+                raise RuntimeError("final media validation failed: queue renewal is unavailable")
+            remaining.append(renewed_deadline - current_monotonic)
+        elif lifecycle_deadline_monotonic is not None:
             remaining.append(lifecycle_deadline_monotonic - current_monotonic)
         if fanout_enabled and run_id is not None:
             from podcaster.video.editor import (
@@ -1556,9 +1636,11 @@ def run_video_generation(
                 media_validation_lease = renew_lease(scratch, clip_job_id, run_id)
                 if media_validation_lease is None:
                     raise OwnershipError("editor lease lost before downstream ownership claim")
-            visibility_expires_at = ownership_visibility_expires_at or (
-                datetime.now(timezone.utc) + timedelta(seconds=_video_visibility_timeout())
-            )
+            visibility_expires_at = (
+                recovery_visibility()
+                if recovery_visibility is not None
+                else ownership_visibility_expires_at
+            ) or (datetime.now(timezone.utc) + timedelta(seconds=_video_visibility_timeout()))
             ownership_guard = VideoOwnershipGuard.acquire(
                 storage,
                 clip_job_id,
@@ -1571,6 +1653,8 @@ def run_video_generation(
                     else None
                 ),
             )
+            if on_recovery_ownership is not None:
+                on_recovery_ownership(ownership_guard)
 
             with timings.phase("composition"):
 
@@ -1581,12 +1665,17 @@ def run_video_generation(
                     if recovery_claim is not None:
                         from podcaster.video.recovery import claim_epoch
 
+                        current_visibility = (
+                            recovery_visibility()
+                            if recovery_visibility is not None
+                            else ownership_visibility_expires_at
+                        )
                         claim_epoch(
                             storage,
                             job_id,
                             recovery_claim.epoch_id,
                             recovery_claim.owner,
-                            visibility_expires_at=ownership_visibility_expires_at,
+                            visibility_expires_at=current_visibility,
                         )
                         assert_current(storage, recovery_claim)
                     promotion_permit = ownership_guard.begin(
@@ -1787,12 +1876,17 @@ def run_video_generation(
                     from podcaster.video.recovery import claim_epoch, select_private_output
 
                     if recovery_claim is not None:
+                        current_visibility = (
+                            recovery_visibility()
+                            if recovery_visibility is not None
+                            else ownership_visibility_expires_at
+                        )
                         claim_epoch(
                             storage,
                             job_id,
                             recovery_claim.epoch_id,
                             recovery_claim.owner,
-                            visibility_expires_at=ownership_visibility_expires_at,
+                            visibility_expires_at=current_visibility,
                         )
 
                     candidate = select_private_output(
@@ -2565,20 +2659,43 @@ def process_message(
             queue.delete_message(message)
             return VideoOutcome(job_id, STATUS_FAILED, reason="recovery_authority_denied")
 
-    try:
-        outcome = run_video_generation(
-            job_id,
+    lease = (
+        _RecoveryQueueLease(
+            queue,
             storage,
-            config=config,
-            now=now,
-            lifecycle_deadline_monotonic=lifecycle_deadline_monotonic,
-            ownership_execution_id=f"{message.message_id}:{message.pop_receipt}",
-            ownership_visibility_expires_at=(
-                message.next_visible_on
-                or datetime.now(timezone.utc) + timedelta(seconds=_video_visibility_timeout())
-            ),
-            recovery_claim=recovery_claim,
+            message,
+            recovery_claim,
+            clock=(lambda: now) if now is not None else lambda: datetime.now(timezone.utc),
         )
+        if recovery_claim is not None
+        else None
+    )
+    try:
+        if lease is not None:
+            lease.start()
+        try:
+            outcome = run_video_generation(
+                job_id,
+                storage,
+                config=config,
+                now=now,
+                lifecycle_deadline_monotonic=lifecycle_deadline_monotonic,
+                ownership_execution_id=f"{message.message_id}:{message.pop_receipt}",
+                ownership_visibility_expires_at=(
+                    message.next_visible_on
+                    or datetime.now(timezone.utc) + timedelta(seconds=_video_visibility_timeout())
+                ),
+                recovery_visibility=lease.visible_until if lease is not None else None,
+                on_recovery_ownership=lease.attach_guard if lease is not None else None,
+                recovery_claim=recovery_claim,
+            )
+        finally:
+            if lease is not None:
+                lease.stop()
+        if lease is not None and lease.error is not None:
+            from podcaster.video.recovery import RecoveryDenied
+
+            raise RecoveryDenied("recovery queue renewal failed")
     except PermanentVideoError as exc:
         logger.error("terminal video failure job_id=%s reason=%s", job_id, exc.reason)
         details: dict[str, Any] = {"job_id": job_id, "reason": exc.reason}
@@ -2589,10 +2706,12 @@ def process_message(
             error_message=str(exc),
             details=details,
         )
-        queue.delete_message(message)
+        queue.delete_message(lease.message if lease is not None else message)
         return VideoOutcome(job_id, STATUS_FAILED, reason=exc.reason)
     except RecoveryDenied:
-        queue.delete_message(message)
+        if lease is not None and lease.error is not None:
+            return VideoOutcome(job_id, STATUS_FAILED, reason="transient")
+        queue.delete_message(lease.message if lease is not None else message)
         return VideoOutcome(job_id, STATUS_FAILED, reason="recovery_authority_denied")
     except TransientVideoError:
         if message.dequeue_count >= MAX_DEQUEUE_COUNT:
@@ -2606,7 +2725,7 @@ def process_message(
                 ),
                 details={"job_id": job_id, "dequeue_count": message.dequeue_count},
             )
-            queue.delete_message(message)
+            queue.delete_message(lease.message if lease is not None else message)
             return VideoOutcome(job_id, STATUS_FAILED, reason=REASON_RETRY_EXHAUSTED)
         logger.warning(
             "leaving video message for retry job_id=%s dequeue_count=%s",
@@ -2627,7 +2746,7 @@ def process_message(
         )
         return outcome
 
-    queue.delete_message(message)
+    queue.delete_message(lease.message if lease is not None else message)
     return outcome
 
 
@@ -2640,15 +2759,27 @@ def drain(
 ) -> list[VideoOutcome]:
     """Process queued video messages until the queue is empty or capped."""
     outcomes: list[VideoOutcome] = []
-    # Hold each ``video-jobs`` message invisible for the editor's worst-case
-    # runtime (fan-in wait + compose + publish) so the job is not redelivered to a
-    # second editor mid-run; the dedicated editor lease is the backstop (RFC §8).
-    visibility_timeout = _video_visibility_timeout()
+    # Receive conservatively: Azure applies visibility before the body is known.
+    # A crash in this gap must never strand a recovery hint past its epoch deadline.
     for _ in range(max_messages):
-        messages = queue.receive_messages(max_messages=1, visibility_timeout=visibility_timeout)
+        messages = queue.receive_messages(
+            max_messages=1, visibility_timeout=RECOVERY_VIDEO_VISIBILITY_TIMEOUT
+        )
         if not messages:
             break
         for message in messages:
+            from podcaster.video.recovery import RecoveryDenied, message_epoch
+
+            try:
+                is_recovery = message_epoch(message.body) is not None
+            except RecoveryDenied:
+                is_recovery = True
+            if not is_recovery:
+                # Ordinary editor jobs retain their existing 5400s (or configured)
+                # visibility from this point forward, using the rotated receipt.
+                message = queue.update_message(
+                    message, visibility_timeout=_video_visibility_timeout()
+                )
             lifecycle_deadline = _authoritative_deadline_monotonic(message.next_visible_on)
             if lifecycle_deadline is None:
                 lifecycle_deadline = float("-inf")

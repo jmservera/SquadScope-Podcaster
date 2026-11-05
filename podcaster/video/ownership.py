@@ -214,6 +214,26 @@ class VideoOwnershipGuard:
         self.storage.update_bytes(ownership_path(self.claim.job_id), _CONTENT_TYPE, _refresh)
         self.assert_current()
 
+    def refresh_visibility(self, visibility_expires_at: datetime) -> None:
+        """Extend both boundaries only while this same fenced queue owner is live."""
+        visibility = _iso(visibility_expires_at)
+
+        def _refresh(raw: bytes | None) -> bytes:
+            document = _load(raw)
+            self._require_current(document)
+            if _parse_time(visibility) <= self.now() + _EXPIRY_RESERVE:
+                raise OwnershipError("refreshed visibility has expired")
+            old_visibility = _parse_time(document["claim"]["visibility_expires_at"])
+            old_lease = _parse_time(document["claim"]["lease_expires_at"])
+            document["claim"]["visibility_expires_at"] = visibility
+            lease_expiry = old_lease if old_lease < old_visibility else _parse_time(visibility)
+            document["claim"]["lease_expires_at"] = _iso(lease_expiry)
+            document["updated_at"] = _iso(self.now())
+            return _dump(document)
+
+        self.storage.update_bytes(ownership_path(self.claim.job_id), _CONTENT_TYPE, _refresh)
+        self.assert_current()
+
     def begin(self, name: str, *, allow_idempotent_takeover: bool) -> BoundaryPermit:
         captured: dict[str, Any] = {}
 

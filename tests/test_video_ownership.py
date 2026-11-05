@@ -97,6 +97,23 @@ def _successor_guard(
     )
 
 
+def test_queue_visibility_renewal_never_extends_separate_editor_lease(tmp_path):
+    storage = _storage(tmp_path)
+    at = datetime.now(timezone.utc)
+    guard = _claim(storage, now=at)
+    guard.refresh_visibility(at + timedelta(minutes=20))
+    current = json.loads(storage.get_bytes(ownership_path("job")))["claim"]
+    assert current["visibility_expires_at"] == (at + timedelta(minutes=20)).isoformat().replace(
+        "+00:00", "Z"
+    )
+    assert current["lease_expires_at"] == (at + timedelta(minutes=5)).isoformat().replace(
+        "+00:00", "Z"
+    )
+    _force_takeover(storage, "job")
+    with pytest.raises(OwnershipError):
+        guard.refresh_visibility(at + timedelta(minutes=30))
+
+
 def _notification_outbox(
     tmp_path: Path,
 ) -> tuple[
