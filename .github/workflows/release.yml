@@ -53,9 +53,26 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "### Release tag: \`$tag\`" >> "$GITHUB_STEP_SUMMARY"
 
+  # This legacy release builds tags after infra reconciliation. It cannot safely
+  # supply verified digests to that initial call or pin the existing UI image.
+  recovery-release-gate:
+    runs-on: ubuntu-latest
+    environment: prod
+    env:
+      DESIRED: ${{ vars.PODCASTER_VIDEO_RECOVERY_STATE }}
+      EXPECTED: ${{ vars.PODCASTER_VIDEO_RECOVERY_EXPECTED_LIVE_STATE }}
+    steps:
+      - name: Require inactive recovery for legacy release
+        run: |
+          set -euo pipefail
+          if [ "$DESIRED" != inactive ] || [ "$EXPECTED" != inactive ]; then
+            echo "::error::Release cannot deploy active or transitioning recovery. Use the protected digest-only recovery transition workflow after independent production review."
+            exit 1
+          fi
+
   # Step 3: Deploy/reconcile infrastructure (ensures ACR, ACA env, storage exist)
   infra:
-    needs: [ci]
+    needs: [ci, recovery-release-gate]
     uses: ./.github/workflows/reusable-deploy-azure.yml
     with:
       deploy_vnet: ${{ inputs.deploy_vnet }}

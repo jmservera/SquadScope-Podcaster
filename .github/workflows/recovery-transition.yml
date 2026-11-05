@@ -1,0 +1,67 @@
+# Explicit operator-only digest route; never run the tagged release for a recovery transition.
+name: Recovery transition (reviewed digests)
+
+on:
+  workflow_dispatch:
+    inputs:
+      synthesis_image:
+        description: 'Reviewed synthesis image registry/repository@sha256:digest'
+        required: true
+        type: string
+      api_image:
+        description: 'Reviewed API image registry/repository@sha256:digest'
+        required: true
+        type: string
+      ui_image:
+        description: 'Reviewed UI image registry/repository@sha256:digest'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prod-release
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    environment: prod
+    env:
+      DESIRED: ${{ vars.PODCASTER_VIDEO_RECOVERY_STATE }}
+      EXPECTED: ${{ vars.PODCASTER_VIDEO_RECOVERY_EXPECTED_LIVE_STATE }}
+      APPROVED: ${{ vars.PODCASTER_VIDEO_RECOVERY_TRANSITION_APPROVED }}
+      SYNTHESIS_IMAGE: ${{ inputs.synthesis_image }}
+      API_IMAGE: ${{ inputs.api_image }}
+      UI_IMAGE: ${{ inputs.ui_image }}
+    steps:
+      - name: Require approved transition and three immutable images
+        run: |
+          set -euo pipefail
+          if [[ ! "$DESIRED" =~ ^(active|inactive)$ ]] ||
+             [[ ! "$EXPECTED" =~ ^(active|inactive)$ ]] ||
+             [ "$DESIRED" = "$EXPECTED" ] || [ "$APPROVED" != true ]; then
+            echo "::error::Protected recovery transition state or approval is missing."
+            exit 1
+          fi
+          for image in "$SYNTHESIS_IMAGE" "$API_IMAGE" "$UI_IMAGE"; do
+            if [[ ! "$image" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+@sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::All three reviewed images must be immutable registry/repository@sha256 digests."
+              exit 1
+            fi
+          done
+
+  deploy:
+    needs: [preflight]
+    uses: ./.github/workflows/reusable-deploy-azure.yml
+    with:
+      synthesis_image: ${{ inputs.synthesis_image }}
+      api_image: ${{ inputs.api_image }}
+      ui_image: ${{ inputs.ui_image }}
+      deploy_vnet: 'true'
+      storage_public_network_access: Disabled
+    permissions:
+      contents: read
+      id-token: write
+    secrets: inherit
