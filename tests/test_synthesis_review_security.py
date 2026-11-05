@@ -173,6 +173,8 @@ def prepared_exact_video(reviewed_stage, monkeypatch, tmp_path, request):
         spotify_video_publish_mode="live" if target in {"spotify_live", "both_live"} else "draft",
         dry_run=False,
     )
+    if isinstance(parameters, dict) and parameters.get("defer_video"):
+        return storage, job_id, DistributionOutboxRepository(storage), None, config, composer
     outcome = run_video_generation(job_id, storage, config=config, fanout=False)
     assert outcome.status == STATUS_COMPLETED
     assert outcome.distribution.public_delivery_status == "awaiting_review"
@@ -312,6 +314,150 @@ def _run_reviewed_worker(storage, document):
         queue=MemoryQueue(),
         mutation_enabled=True,
     )
+
+
+@pytest.mark.parametrize(
+    "prepared_exact_video", [{"target": "both", "defer_video": True}], indirect=True
+)
+def test_recovery_delivery_archives_private_mp4_and_resumed_worker_never_uploads(
+    prepared_exact_video, monkeypatch
+):
+    from dataclasses import asdict
+    from unittest.mock import MagicMock
+
+    from podcaster import distribution_worker, publish
+    from podcaster.distribution_outbox import outbox_path
+    from podcaster.publication_state import publication_identity
+    from podcaster.queue import QueueMessage, encode_distribution_message
+    from podcaster.video import distribution, recovery
+    from podcaster.video.budget import VideoStageBudget
+    from podcaster.video.job_runner import process_message as process_video_message
+    from tests.test_distribution_worker import MemoryQueue, _message
+
+    storage, job_id, repository, _document, config, composer = prepared_exact_video
+    manifest = load_manifest(storage, job_id)
+    audio = manifest["generation"]["synthesis_runner"]["audio"]
+    monkeypatch.setattr(recovery, "CANDIDATES", frozenset({job_id}))
+    monkeypatch.setattr(recovery, "EXPECTED_MP3_SIZES", {job_id: audio["size_bytes"]})
+    now = datetime.now(timezone.utc)
+    old_start = now - timedelta(seconds=6000)
+    budget = VideoStageBudget.start(now_utc=old_start, utcnow=lambda: old_start).to_dict()
+    manifest["generation"]["video_budget"] = budget
+    manifest["generation"]["video_runner"] = {"status": "failed", "reason": "original_expiry"}
+    storage.put_bytes(
+        f"jobs/{job_id}/manifest.json", json.dumps(manifest).encode(), "application/json"
+    )
+    storage.put_bytes(
+        f"jobs/{job_id}/video-budget.json", json.dumps(budget).encode(), "application/json"
+    )
+    identity = asdict(publication_identity(manifest, job_id, manifest["request"]["publish_run_id"]))
+    inventory = {
+        "identity": identity,
+        "youtube": {
+            "status": "reconciled_absent",
+            "channel_id": "offline-channel",
+            "states": ["private", "processing", "unlisted"],
+        },
+        "spotify": {
+            "status": "reconciled_absent",
+            "show_ids": ["offline-show"],
+            "states": ["draft", "live", "scheduled"],
+        },
+        "checked_by": "offline-reviewer",
+        "checked_at": now.isoformat(),
+    }
+    entry = recovery.reserve(
+        storage,
+        job_id,
+        request_id="offline-recovery",
+        identity=identity,
+        operator="offline-reviewer",
+        inventory=inventory,
+        now=now,
+    )
+    producer = MagicMock()
+    recovery.dispatch(storage, producer, job_id, entry["id"], now=now)
+    body = producer.send_message.call_args.args[0]
+    assert recovery.parse_message(body) == (job_id, entry["id"])
+    video_queue = MagicMock()
+    video_message = QueueMessage(
+        "recovery-message",
+        "receipt-1",
+        body,
+        1,
+        now + timedelta(seconds=recovery.VISIBILITY_SECONDS),
+    )
+    result = process_video_message(
+        video_message, storage=storage, queue=video_queue, config=config, now=now
+    )
+    assert result.status == STATUS_COMPLETED
+    composer.assert_called_once()
+    saved = load_manifest(storage, job_id)
+    runner = saved["generation"]["video_runner"]
+    assert runner["epoch_id"] == entry["id"]
+    assert runner["distribution"]["outbox_id"] == result.distribution.outbox_id
+    held = repository.read(result.distribution.outbox_id)
+    assert held["publication_identity"] == identity
+    assert held["media_review"]["status"] == "pending"
+    assert held["artifact"]["sha256"] == runner["media_sha256"]
+    assert storage.get_bytes(held["artifact"]["path"]) == b"V" * 2048
+    assert saved["generation"]["video_recovery"]["epochs"][-1]["outbox_id"] == held["outbox_id"]
+    assert set(held["providers"]) == {"youtube", "spotify"}
+    video_queue.delete_message.assert_called_once_with(video_message)
+
+    adapters = [
+        (distribution, "upload_to_youtube"),
+        (distribution, "upload_to_spotify_episode"),
+        (publish, "upload_video_to_episode"),
+    ]
+    calls = [
+        MagicMock(side_effect=AssertionError(f"{name} crossed held recovery"))
+        for _, name in adapters
+    ]
+    for (module, name), spy in zip(adapters, calls):
+        monkeypatch.setattr(module, name, spy)
+    monkeypatch.setattr(distribution.VideoDistributionConfig, "from_env", lambda: config)
+    monkeypatch.setattr(
+        distribution_worker, "DistributionOutboxRepository", lambda _storage: repository
+    )
+    for condition in ("script_only", "lost_epoch", "absent_receipt_id", "unknown_outcome"):
+        # A fresh queue delivery re-reads the durable outbox, not the video runner's memory.
+        current = json.loads(json.dumps(held))
+        if condition == "lost_epoch":
+            missing_epoch = json.loads(json.dumps(saved))
+            missing_epoch["generation"]["video_recovery"].pop("epochs")
+            storage.put_bytes(
+                f"jobs/{job_id}/manifest.json",
+                json.dumps(missing_epoch).encode(),
+                "application/json",
+            )
+        elif condition == "absent_receipt_id":
+            for leg in current["providers"].values():
+                leg["receipts"] = []
+                leg["provider_item_id"] = None
+                leg["intent"] = {
+                    "intent_id": "unreceipted-intent",
+                    "consumed_at": now.isoformat(),
+                }
+        elif condition == "unknown_outcome":
+            for leg in current["providers"].values():
+                leg["result"] = "publication_unknown"
+        storage.put_bytes(
+            outbox_path(held["outbox_id"]), json.dumps(current).encode(), "application/json"
+        )
+        delivery = distribution_worker.process_message(
+            _message(encode_distribution_message(held["outbox_id"]), message_id=condition),
+            storage=storage,
+            queue=MemoryQueue(),
+            mutation_enabled=True,
+        )
+        assert delivery.reason == "media_review_required"
+        for spy in calls:
+            spy.assert_not_called()
+        if condition == "lost_epoch":
+            storage.put_bytes(
+                f"jobs/{job_id}/manifest.json", json.dumps(saved).encode(), "application/json"
+            )
 
 
 def test_real_dispatcher_uploads_exact_reviewed_mp4_then_promotes_once(
