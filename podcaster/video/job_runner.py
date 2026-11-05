@@ -1093,20 +1093,35 @@ class _RecoveryQueueLease:
         self._thread: threading.Thread | None = None
 
     def beat(self) -> None:
-        from podcaster.video.recovery import claim_epoch
+        from podcaster.orchestration import load_manifest
+        from podcaster.video.recovery import RecoveryDenied, claim_epoch, read_selected
 
         updated = self.queue.update_message(
             self.message, visibility_timeout=RECOVERY_VIDEO_VISIBILITY_TIMEOUT
         )
         self.message = updated
-        claim_epoch(
-            self.storage,
-            self.claim.job_id,
-            self.claim.epoch_id,
-            self.claim.owner,
-            now=self.clock,
-            visibility_expires_at=updated.next_visible_on,
-        )
+        try:
+            claim_epoch(
+                self.storage,
+                self.claim.job_id,
+                self.claim.epoch_id,
+                self.claim.owner,
+                now=self.clock,
+                visibility_expires_at=updated.next_visible_on,
+            )
+        except RecoveryDenied:
+            try:
+                selected = read_selected(self.storage, self.claim.job_id)
+                epochs = load_manifest(self.storage, self.claim.job_id)["generation"][
+                    "video_recovery"
+                ]["epochs"]
+                epoch = next(e for e in epochs if e["epoch_id"] == self.claim.epoch_id)
+            except (RecoveryDenied, KeyError, StopIteration, TypeError):
+                raise
+            if selected["epoch_id"] != self.claim.epoch_id or epoch["owner"] != self.claim.owner:
+                raise
+            self._stop.set()
+            return
         if self.ownership_guard is not None:
             self.ownership_guard.refresh_visibility(updated.next_visible_on)
 
@@ -1114,6 +1129,8 @@ class _RecoveryQueueLease:
         while not self._stop.wait(RECOVERY_VIDEO_RENEW_INTERVAL):
             try:
                 self.beat()
+                if self._stop.is_set():
+                    return
             except Exception as exc:
                 self.error = exc
                 logger.warning("recovery queue/owner renewal failed job_id=%s", self.claim.job_id)

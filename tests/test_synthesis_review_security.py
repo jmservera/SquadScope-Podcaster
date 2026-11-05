@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
-from threading import Event
+from threading import Condition, Event
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -574,6 +575,242 @@ def test_recovery_queue_renewal_rotates_receipt_and_fences_old_owner(recovery_or
     assert record["deadline_at_utc"] == (at + timedelta(seconds=5100)).isoformat().replace(
         "+00:00", "Z"
     )
+
+
+class _OfflineRotatingQueueClient:
+    """In-memory transport for the actual connection-string queue adapter."""
+
+    def __init__(self, at):
+        self.clock = at
+        self.visible = at
+        self.body = None
+        self.receipt = 0
+        self.updates = []
+        self.deleted = []
+        self.receives = []
+        self.changed = Condition()
+        self.on_update = None
+
+    def send_message(self, body):
+        self.body = body
+
+    def receive_messages(self, *, messages_per_page, visibility_timeout):
+        assert messages_per_page == 1
+        self.receives.append(visibility_timeout)
+        if self.body is None or self.clock < self.visible:
+            return []
+        self.receipt += 1
+        self.visible = self.clock + timedelta(seconds=visibility_timeout)
+        return [
+            SimpleNamespace(
+                id="offline-id",
+                pop_receipt=f"receipt-{self.receipt}",
+                content=self.body,
+                dequeue_count=self.receipt,
+                next_visible_on=self.visible,
+            )
+        ]
+
+    def update_message(self, message_id, receipt, *, visibility_timeout):
+        assert message_id == "offline-id"
+        assert receipt == f"receipt-{self.receipt}"
+        assert visibility_timeout == 900
+        with self.changed:
+            self.clock += timedelta(seconds=300)
+            self.receipt += 1
+            self.visible = self.clock + timedelta(seconds=visibility_timeout)
+            self.updates.append(self.visible)
+            self.changed.notify_all()
+        if self.on_update is not None:
+            self.on_update()
+        return SimpleNamespace(pop_receipt=f"receipt-{self.receipt}", next_visible_on=self.visible)
+
+    def delete_message(self, message_id, receipt):
+        assert message_id == "offline-id"
+        assert receipt == f"receipt-{self.receipt}"
+        self.deleted.append(receipt)
+        self.body = None
+
+    def wait_for_updates(self, count):
+        with self.changed:
+            assert self.changed.wait_for(lambda: len(self.updates) >= count, timeout=10)
+
+
+def _offline_recovery_queue(storage, job_id, identity, mp3_sha, at):
+    from podcaster.queue import ConnectionStringQueueBackend
+    from podcaster.video import recovery
+
+    epoch = recovery.reserve_epoch(
+        storage,
+        job_id,
+        expected_identity=identity,
+        expected_audio_sha256=mp3_sha,
+        inventory_reference="threaded-adapter-readback",
+        now=lambda: at,
+    )
+    client = _OfflineRotatingQueueClient(at)
+    backend = ConnectionStringQueueBackend.__new__(ConnectionStringQueueBackend)
+    backend._client = client
+    recovery.reconcile_dispatch(storage, job_id, epoch, backend.send_message, now=lambda: at)
+    return epoch, backend, client
+
+
+def test_threaded_sdk_heartbeat_survives_recording_crash_and_reclaims(
+    recovery_original, monkeypatch
+):
+    from podcaster.video import job_runner, recovery
+
+    storage, job_id, identity, mp3_sha, at = recovery_original
+    epoch, queue, client = _offline_recovery_queue(storage, job_id, identity, mp3_sha, at)
+    monkeypatch.setattr(job_runner, "RECOVERY_VIDEO_RENEW_INTERVAL", 0.01)
+    original_process = job_runner.process_message
+    monkeypatch.setattr(
+        job_runner,
+        "process_message",
+        lambda msg, **kwargs: original_process(msg, now=client.clock, **kwargs),
+    )
+    original_init = job_runner._RecoveryQueueLease.__init__
+
+    def init(lease, *args, **kwargs):
+        original_init(lease, *args, **kwargs)
+        lease.clock = lambda: client.clock
+
+    monkeypatch.setattr(job_runner._RecoveryQueueLease, "__init__", init)
+
+    def blocked_recording(*_args, **_kwargs):
+        client.wait_for_updates(5)
+        raise SystemExit("offline process crashed during recording")
+
+    monkeypatch.setattr("podcaster.video.video_gen.record_episode", blocked_recording)
+    monkeypatch.setattr(job_runner, "_probe_audio_duration", lambda _: 60.0)
+    with pytest.raises(SystemExit, match="process crashed"):
+        job_runner.drain(queue, storage, max_messages=1)
+    assert client.receives == [900]
+    original = load_manifest(storage, job_id)["generation"]["video_recovery"]["epochs"][0]
+    assert original["owner"] == "offline-id:receipt-1"
+    assert (
+        datetime.fromisoformat(original["lease_expires_at_utc"].replace("Z", "+00:00"))
+        <= client.visible
+    )
+    assert len(client.updates) >= 5
+    with pytest.raises(recovery.RecoveryDenied):
+        recovery.claim_epoch(
+            storage,
+            job_id,
+            epoch,
+            "stale-owner",
+            now=lambda: client.clock,
+            visibility_expires_at=client.visible,
+        )
+    client.clock = client.visible - timedelta(seconds=1)
+    assert job_runner.drain(queue, storage, max_messages=1) == []
+    client.clock = client.visible
+    monkeypatch.setattr(
+        job_runner,
+        "run_video_generation",
+        Mock(
+            return_value=job_runner.VideoOutcome(job_id, job_runner.STATUS_FAILED, reason="offline")
+        ),
+    )
+    outcomes = job_runner.drain(queue, storage, max_messages=1)
+    assert outcomes[0].reason == "offline"
+    assert client.deleted == [f"receipt-{client.receipt}"]
+    reclaimed = load_manifest(storage, job_id)["generation"]["video_recovery"]["epochs"][0]
+    assert reclaimed["owner"] == f"offline-id:receipt-{client.receipt}"
+    assert reclaimed["deadline_at_utc"] == original["deadline_at_utc"]
+    assert client.clock < datetime.fromisoformat(
+        reclaimed["deadline_at_utc"].replace("Z", "+00:00")
+    )
+
+
+def test_threaded_sdk_heartbeat_selection_overlap_replays_selected_output(
+    recovery_original, monkeypatch
+):
+    from podcaster.video import job_runner, recovery
+    from podcaster.video.distribution import VideoDistributionConfig
+
+    storage, job_id, identity, mp3_sha, at = recovery_original
+    epoch, queue, client = _offline_recovery_queue(storage, job_id, identity, mp3_sha, at)
+    monkeypatch.setattr(job_runner, "RECOVERY_VIDEO_RENEW_INTERVAL", 0.01)
+    original_init = job_runner._RecoveryQueueLease.__init__
+
+    def init(lease, *args, **kwargs):
+        original_init(lease, *args, **kwargs)
+        lease.clock = lambda: client.clock
+
+    monkeypatch.setattr(job_runner._RecoveryQueueLease, "__init__", init)
+    monkeypatch.setattr(job_runner, "_probe_audio_duration", lambda _: 60.0)
+    monkeypatch.setattr(job_runner, "_resolve_dog_logo", lambda *args: None)
+    monkeypatch.setattr("podcaster.video.sync_plan.check_repo_removed", lambda *args, **kw: False)
+    provider = Mock(side_effect=AssertionError("provider called during private recovery"))
+    monkeypatch.setattr(job_runner, "distribute_video", provider)
+    monkeypatch.setattr(job_runner, "enqueue_distribution_job", provider)
+
+    def record(*_args, **_kwargs):
+        client.wait_for_updates(2)
+        assert (
+            load_manifest(storage, job_id)["generation"]["video_recovery"]["epochs"][0]["owner"]
+            == "offline-id:receipt-1"
+        )
+        return Mock(recorded=[])
+
+    def compose(*_args, output_path, **_kwargs):
+        client.wait_for_updates(4)
+        client.on_update = overlap
+        output_path.write_bytes(b"R" * 2048)
+        return Mock(duration_seconds=60.0, segment_count=1)
+
+    monkeypatch.setattr("podcaster.video.video_gen.record_episode", record)
+    monkeypatch.setattr("podcaster.video.video_compose.compose_video", compose)
+    selected = Event()
+    renewed = Event()
+    original_select = recovery.select_private_output
+
+    def select(*args, **kwargs):
+        result = original_select(*args, **kwargs)
+        selected.set()
+        assert renewed.wait(10)
+        return result
+
+    monkeypatch.setattr(recovery, "select_private_output", select)
+
+    def overlap():
+        assert selected.wait(10)
+        renewed.set()
+
+    outcome = job_runner.drain(
+        queue, storage, config=VideoDistributionConfig(youtube_enabled=True), max_messages=1
+    )[0]
+    assert outcome.status == "completed"
+    assert outcome.distribution.public_delivery_status == "awaiting_review"
+    assert client.receives == [900]
+    assert len(client.updates) >= 4
+    assert client.deleted == [f"receipt-{client.receipt}"]
+    assert recovery.read_selected(storage, job_id)["epoch_id"] == epoch
+    record_state = load_manifest(storage, job_id)["generation"]["video_recovery"]["epochs"][0]
+    assert record_state["status"] == "selected"
+    assert (
+        datetime.fromisoformat(record_state["lease_expires_at_utc"].replace("Z", "+00:00"))
+        <= client.visible
+    )
+    from podcaster.video.ownership import ownership_path
+
+    guard = json.loads(storage.get_bytes(ownership_path(f"{job_id}-epoch-{epoch}")))
+    assert guard["claim"]["execution_id"] == "offline-id:receipt-1"
+    assert (
+        datetime.fromisoformat(guard["claim"]["visibility_expires_at"].replace("Z", "+00:00"))
+        >= client.updates[1]
+    )
+    provider.assert_not_called()
+    # A duplicate delivery after the selection CAS must replay without rendering.
+    replay = recovery.message(job_id, epoch)
+    client.body = replay
+    client.visible = client.clock
+    monkeypatch.setattr(
+        job_runner, "run_video_generation", Mock(side_effect=AssertionError("rerender"))
+    )
+    assert job_runner.drain(queue, storage, max_messages=1)[0].status == "completed"
+    assert client.deleted[-1] == f"receipt-{client.receipt}"
 
 
 def test_dispatch_send_before_ack_reconciles_from_running_claim(recovery_original):
