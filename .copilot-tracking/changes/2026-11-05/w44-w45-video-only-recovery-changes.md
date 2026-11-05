@@ -90,3 +90,13 @@ stopped when review corrections changed its source; it is not acceptance
 evidence. The baseline Docker failure remains an open release gate, not a
 test waiver. Independent re-review and PR CI are pending; no merge or
 deployment occurs in this offline-only handoff.
+
+The targeted re-review caught a second-order expiry case: after a crash
+between manifest completion and epoch completion, normal 5400-second queue
+redelivery comes *after* the 5100-second epoch deadline. Expired messages
+now settle to `completed` **only** when the original manifest, immutable
+held outbox, private artifact bytes and epoch digest all match; they never
+restart generation or renew the expired budget. A focused late-redelivery
+test exercises this real ordering. Updated focused suite: **359 passed**;
+Ruff check/format and diff whitespace passed. The previous concurrently
+running full suite was stopped after this correction changed its source.

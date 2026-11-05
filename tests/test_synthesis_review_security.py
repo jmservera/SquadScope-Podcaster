@@ -305,6 +305,35 @@ def test_recovery_completed_manifest_replay_finishes_epoch(prepared_exact_video,
 
 
 @pytest.mark.parametrize("prepared_exact_video", [{"target": "recovery"}], indirect=True)
+def test_recovery_expired_queue_redelivery_only_settles_proven_private_media(
+    prepared_exact_video, monkeypatch
+):
+    from podcaster.queue import QueueMessage, encode_video_recovery_message
+    from podcaster.video import recovery
+    from podcaster.video.job_runner import STATUS_COMPLETED, process_message
+
+    storage, job_id, _repository, _document, config, _composer = prepared_exact_video
+    epoch = recovery.current_epoch(storage, job_id)
+    deadline = datetime.fromisoformat(epoch["budget"]["deadline_at_utc"].replace("Z", "+00:00"))
+    delivered = deadline + timedelta(seconds=300)
+    never_restart = Mock(side_effect=AssertionError("expired generation restarted"))
+    monkeypatch.setattr("podcaster.video.job_runner.run_video_generation", never_restart)
+    queue = Mock()
+    message = QueueMessage(
+        message_id="late-redelivery",
+        pop_receipt="new-receipt",
+        body=encode_video_recovery_message(job_id, epoch["epoch_id"]),
+        dequeue_count=2,
+        next_visible_on=delivered + timedelta(seconds=5400),
+    )
+    outcome = process_message(message, storage=storage, queue=queue, config=config, now=delivered)
+    assert outcome.status == STATUS_COMPLETED
+    assert recovery.current_epoch(storage, job_id)["state"] == "completed"
+    never_restart.assert_not_called()
+    queue.delete_message.assert_called_once_with(message)
+
+
+@pytest.mark.parametrize("prepared_exact_video", [{"target": "recovery"}], indirect=True)
 def test_recovery_adapters_deny_missing_storage_and_direct_distribution(
     prepared_exact_video, monkeypatch, tmp_path
 ):

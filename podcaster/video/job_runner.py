@@ -2524,6 +2524,18 @@ def process_message(
         except RecoveryError as exc:
             if "owned by another worker" in str(exc):
                 return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_EDITOR_LEASE_HELD)
+            if "recovery epoch has expired" in str(exc):
+                from podcaster.video.recovery import complete_prepared_after_expiry
+
+                try:
+                    complete_prepared_after_expiry(storage, job_id, recovery_epoch_id)
+                except RecoveryError:
+                    pass
+                else:
+                    queue.delete_message(message)
+                    return VideoOutcome(
+                        job_id, STATUS_COMPLETED, reason="recovery_private_prepared"
+                    )
             logger.warning("recovery message fenced job_id=%s reason=%s", job_id, exc)
             queue.delete_message(message)
             return VideoOutcome(job_id, STATUS_FAILED, reason="recovery_fenced")

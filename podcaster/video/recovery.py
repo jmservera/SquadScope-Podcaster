@@ -525,7 +525,7 @@ def fail_epoch(storage: Any, job_id: str, epoch_id: str, owner: str, reason: str
     _update(storage, job_id, change)
 
 
-def complete(storage: Any, job_id: str, epoch_id: str, owner: str) -> None:
+def _verified_completion_digest(storage: Any, job_id: str, epoch_id: str) -> str:
     from podcaster.distribution_outbox import DistributionOutboxRepository
 
     entry = current_epoch(storage, job_id)
@@ -556,12 +556,33 @@ def complete(storage: Any, job_id: str, epoch_id: str, owner: str) -> None:
             raise RecoveryError("recovery completion evidence is incomplete")
     except (TypeError, KeyError, ValueError, AttributeError) as exc:
         raise RecoveryError("recovery completion evidence is unavailable") from exc
+    return artifact["sha256"]
+
+
+def complete_prepared_after_expiry(storage: Any, job_id: str, epoch_id: str) -> None:
+    """Settle an already archived private MP4 without restarting an expired attempt."""
+    digest = _verified_completion_digest(storage, job_id, epoch_id)
+
+    def change(document: dict[str, Any]) -> None:
+        entry = _epoch(document, epoch_id)
+        if document["epochs"][-1] is not entry or entry["state"] != "expired":
+            raise RecoveryError("expired recovery completion epoch is stale")
+        if entry.get("media_sha256") != digest:
+            raise RecoveryError("recovery completion media changed")
+        entry["state"] = "completed"
+        entry["terminal_at"] = _utc(datetime.now(timezone.utc))
+
+    _update(storage, job_id, change)
+
+
+def complete(storage: Any, job_id: str, epoch_id: str, owner: str) -> None:
+    digest = _verified_completion_digest(storage, job_id, epoch_id)
 
     def change(document: dict[str, Any]) -> None:
         entry = _epoch(document, epoch_id)
         if entry["state"] != "running" or entry.get("owner") != owner:
             raise RecoveryError("recovery completion owner is stale")
-        if entry.get("media_sha256") != artifact["sha256"]:
+        if entry.get("media_sha256") != digest:
             raise RecoveryError("recovery completion media changed")
         entry["state"] = "completed"
         entry["terminal_at"] = _utc(datetime.now(timezone.utc))
