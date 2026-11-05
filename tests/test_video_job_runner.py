@@ -439,6 +439,75 @@ def test_missing_queue_visibility_terminalizes_before_render(recovery_cas, monke
     queue.delete_message.assert_called_once_with(message)
 
 
+def test_recovery_proof_refuses_wrong_candidate_size_or_divergent_historical_budget(
+    monkeypatch,
+):
+    from podcaster.review import VerifiedSynthesisAudio
+    from podcaster.video import recovery
+    from podcaster.video.budget import VideoStageBudget
+
+    job = "podcast-2026-W44-00bc06dfb6e2"
+    first = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    budget = VideoStageBudget.start(now_utc=first, utcnow=lambda: first).to_dict()
+    storage = FakeStorage()
+    doc = {
+        "job_id": job,
+        "request": {"publish_run_id": "1"},
+        "review": {"snapshot": {"script_sha256": "a" * 64}},
+        "generation": {
+            "video_budget": budget,
+            "synthesis_runner": {
+                "audio": {
+                    "artifacts": {
+                        "mp3": {"sha256": "a" * 64, "size_bytes": 1},
+                        "wav": {"sha256": "b" * 64, "size_bytes": 2},
+                    }
+                }
+            },
+            "video_runner": {"status": "failed"},
+        },
+    }
+    storage.put_bytes(
+        f"jobs/{job}/video-budget.json", json.dumps(budget).encode(), "application/json"
+    )
+    monkeypatch.setattr(recovery, "is_exact_script_job", lambda manifest: True)
+    monkeypatch.setattr(
+        recovery,
+        "publication_identity",
+        lambda manifest, job_id, run_id: PublicationIdentity(
+            job_id, "2026-W44", "1", "c" * 64, "d" * 64
+        ),
+    )
+    monkeypatch.setattr(
+        recovery,
+        "validate_private_media_inputs",
+        lambda manifest, backend, job_id: VerifiedSynthesisAudio(
+            path=f"jobs/{job}/audio.mp3", content=b"placeholder"
+        ),
+    )
+    with pytest.raises(recovery.RecoveryDenied):
+        recovery._proof(doc, storage, job)
+    monkeypatch.setattr(
+        recovery,
+        "validate_private_media_inputs",
+        lambda manifest, backend, job_id: VerifiedSynthesisAudio(
+            path=f"jobs/{job}/audio.mp3",
+            content=b"x" * recovery.EXPECTED_MP3_SIZES[job],
+        ),
+    )
+    storage.put_bytes(
+        f"jobs/{job}/video-budget.json",
+        json.dumps({**budget, "deadline_at_utc": "2026-01-01T00:00:00Z"}).encode(),
+        "application/json",
+    )
+    with pytest.raises(recovery.RecoveryDenied):
+        recovery._proof(doc, storage, job)
+    storage.put_bytes(
+        f"jobs/{job}/video-budget.json", json.dumps(budget).encode(), "application/json"
+    )
+    assert recovery._proof(doc, storage, job)["mp3_size"] == recovery.EXPECTED_MP3_SIZES[job]
+
+
 def test_recovery_dispatch_crash_replay_and_fixed_5400_deadline(recovery_cas, monkeypatch):
     from podcaster.video import recovery
 

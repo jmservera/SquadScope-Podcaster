@@ -20,6 +20,10 @@ QUEUE_SCHEMA = "private-video-recovery-queue-v1"
 CONTENT_TYPE = "application/json; charset=utf-8"
 LEASE_SECONDS = 1800
 CANDIDATES = frozenset({"podcast-2026-W44-00bc06dfb6e2", "podcast-2026-W45-9798e93edc06"})
+EXPECTED_MP3_SIZES = {
+    "podcast-2026-W44-00bc06dfb6e2": 11_664_239,
+    "podcast-2026-W45-9798e93edc06": 12_170_805,
+}
 LEGACY_LEDGER = "jobs/{job_id}/recovery-epochs.json"
 
 
@@ -112,6 +116,13 @@ def _proof(
         artifacts = doc["generation"]["synthesis_runner"]["audio"]["artifacts"]
         budget = doc["generation"]["video_budget"]
         VideoStageBudget.from_dict(budget)
+        original_budget_bytes = storage.get_bytes(f"jobs/{job_id}/video-budget.json")
+        if (
+            original_budget_bytes is None
+            or json.loads(original_budget_bytes) != budget
+            or len(audio.content) != EXPECTED_MP3_SIZES[job_id]
+        ):
+            raise RecoveryDenied("historical budget or candidate MP3 size differs")
         if (
             not allow_completed
             and doc["generation"].get("video_runner", {}).get("status") == "completed"
@@ -158,6 +169,7 @@ def _validate_inventory(inventory: Any, identity: dict[str, str], now: datetime)
     if (
         not isinstance(checked_by, str)
         or not checked_by.strip()
+        or checked_by.lower().startswith("system:")
         or not isinstance(youtube, dict)
         or youtube.get("status") != "reconciled_absent"
         or not isinstance(youtube.get("channel_id"), str)

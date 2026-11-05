@@ -227,7 +227,7 @@ class LocalStorageBackend:
                             size_bytes=len(updated),
                             content_type=content_type,
                         )
-                    staging_name = f"{target_name}-{os.urandom(16).hex()}.cas"
+                    staging_name = f"recovery-{os.urandom(16).hex()}.cas"
                     write_fd = _open_local_leaf(
                         target_parent_fd,
                         staging_name,
@@ -241,7 +241,7 @@ class LocalStorageBackend:
                             os.fsync(target_file.fileno())
                         os.replace(
                             staging_name,
-                            target_name,
+                            "manifest.json",
                             src_dir_fd=target_parent_fd,
                             dst_dir_fd=target_parent_fd,
                         )

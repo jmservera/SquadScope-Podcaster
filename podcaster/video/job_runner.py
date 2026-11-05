@@ -594,6 +594,7 @@ def _append_video_timing_evidence(
         details={
             "elapsed_seconds": f"{budget.elapsed_seconds():.3f}",
             **{str(key): str(value) for key, value in (details or {}).items()},
+            **({"epoch_id": recovery_authority.epoch_id} if recovery_authority is not None else {}),
         },
     ).to_dict()
 
