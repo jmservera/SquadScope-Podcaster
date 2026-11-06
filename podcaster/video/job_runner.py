@@ -1136,9 +1136,22 @@ class _RenderAuthority:
             ]
         )
 
-    def remaining(self, *, force_renew: bool = False) -> float:
+    def _refresh_due(self) -> bool:
+        return time.monotonic() >= self.next_heartbeat or (
+            self.refreshable_deadlines
+            and any(deadline - time.monotonic() <= 5 for deadline in self.deadlines)
+        )
+
+    def remaining(self, *, force_renew: bool = False, force_refresh: bool = False) -> float:
         acquired = False
         try:
+            if self._remaining(include_cached=False) <= 0:
+                raise OwnershipError("render lifecycle authority has expired")
+            if not force_renew and not force_refresh and not self._refresh_due():
+                remaining = self._remaining()
+                if remaining <= 5:
+                    raise OwnershipError("render lifecycle authority has expired")
+                return remaining
             # Recovery heartbeats can supersede cached visibility; only a bounded
             # live fence/epoch read may establish whether that authority still exists.
             timeout = min(20.0, self._remaining(include_cached=False))
@@ -1151,15 +1164,13 @@ class _RenderAuthority:
             )
             if timeout <= 0:
                 raise OwnershipError("render authority renewal exceeded its bound")
-            # Followers reuse the successful renewal, but still read the current fence.
-            due = (
-                force_renew
-                or time.monotonic() >= self.next_heartbeat
-                or (
-                    self.refreshable_deadlines
-                    and any(deadline - time.monotonic() <= 5 for deadline in self.deadlines)
-                )
-            )
+            # Publish the entire refresh under this lock; periodic followers do no I/O.
+            due = force_renew or self._refresh_due()
+            if not due and not force_refresh:
+                remaining = self._remaining()
+                if remaining <= 5:
+                    raise OwnershipError("render lifecycle authority has expired")
+                return remaining
 
             def operation() -> tuple[float, ...]:
                 if self.refreshable_deadlines:
@@ -1187,6 +1198,12 @@ class _RenderAuthority:
 
     def authorize(self) -> None:
         self.remaining()
+
+    def __call__(self) -> None:
+        self.remaining(force_refresh=True)
+
+    def poll(self) -> None:
+        self.authorize()
 
 
 class _RecoveryQueueLease:
@@ -1515,11 +1532,6 @@ def run_video_generation(
         if render_authority is None:
             raise OwnershipError("render ownership guard is unavailable")
         return render_authority.remaining(force_renew=True)
-
-    def _render_authority() -> None:
-        if render_authority is None:
-            raise OwnershipError("render ownership guard is unavailable")
-        render_authority.authorize()
 
     # Claim pipeline lock — prevent concurrent audio synthesis on same job
     if not claim_pipeline(storage, job_id, PIPELINE_VIDEO, now=current):
@@ -1876,7 +1888,7 @@ def run_video_generation(
                     intermediates=intermediates,
                     task_reporter=normalize_reporter,
                     budget=stage_budget,
-                    authorize=_render_authority,
+                    authorize=render_authority,
                     media_validation_budget=(
                         _remaining_media_validation_budget
                         if lifecycle_deadline_monotonic is not None or fanout_enabled

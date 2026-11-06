@@ -109,7 +109,7 @@ def test_slow_concurrent_render_renewals_coalesce_inside_lock(render_authority_c
         results = list(pool.map(lambda _: authority.remaining(), range(4)))
     assert results == [72.0] * 4
     assert renew.call_count == 1
-    assert guard.assert_current.call_count == 4
+    assert guard.assert_current.call_count == 1
     assert len(waits) == 4 and max(waits) == 20
     assert authority.next_heartbeat == 138
 
@@ -193,7 +193,7 @@ def test_throttled_render_checks_loss_fence_and_fixed_deadlines(render_authority
     else:
         authority.deadlines = (99.0,)
     with pytest.raises(runner.OwnershipError):
-        authority.authorize()
+        authority() if loss == "fence" else authority.authorize()
     assert renew.call_count == 1
     live.side_effect = None
     guard.assert_current.side_effect = None
@@ -317,7 +317,8 @@ def test_final_validation_kills_hung_authority_io():
     guard.renewal_lock.release()
 
 
-def test_concurrent_render_threads_share_real_forked_renewal():
+@pytest.mark.parametrize("recovery", [False, True])
+def test_concurrent_render_threads_share_real_forked_renewal(recovery):
     from podcaster.video import job_runner as runner
 
     renewals = multiprocessing.get_context("fork").Value("i", 0)
@@ -351,13 +352,124 @@ def test_concurrent_render_threads_share_real_forked_renewal():
 
     guard = SimpleNamespace(renewal_lock=ContendedLock(), assert_current=assert_current)
     authority = runner._RenderAuthority(
-        guard, SimpleNamespace(remaining_seconds=lambda stage: 100.0), renew
+        guard,
+        SimpleNamespace(remaining_seconds=lambda stage: 100.0),
+        renew,
+        refreshable_deadlines=recovery,
     )
+
+    def poll_worker(_index):
+        for _ in range(100):
+            remaining = authority.remaining()
+        return remaining
+
     with ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(lambda _: authority.remaining(), range(4)))
+        results = list(pool.map(poll_worker, range(4)))
     assert all(5 < remaining <= 60 for remaining in results)
     assert renewals.value == 1
-    assert fences.value == 4
+    assert fences.value == (2 if recovery else 1)
+
+
+@pytest.mark.parametrize("recovery", [False, True])
+def test_healthy_poll_frequency_is_bounded_by_successful_refresh(
+    render_authority_control, monkeypatch, recovery
+):
+    runner, authority, guard, renew, live, clock = render_authority_control
+    authority.refreshable_deadlines = recovery
+    operations = MagicMock(side_effect=lambda call, timeout: call())
+    monkeypatch.setattr(runner, "run_storage_operation", operations)
+    for _ in range(100):
+        authority.authorize()
+    assert operations.call_count == 1
+    assert guard.assert_current.call_count == (2 if recovery else 1)
+    assert renew.call_count == 1
+    assert live.call_count >= 100
+    clock[0] = 129.999
+    authority.authorize()
+    assert operations.call_count == 1
+    clock[0] = 130
+    authority.authorize()
+    assert operations.call_count == 2
+    assert renew.call_count == 2
+    assert authority.next_heartbeat == 160
+
+
+def test_command_boundary_reads_fence_without_redundant_renewal(render_authority_control):
+    runner, authority, guard, renew, _live, _clock = render_authority_control
+    authority()
+    for _ in range(100):
+        authority.poll()
+    guard.assert_current.side_effect = runner.OwnershipError("boundary fence lost")
+    with pytest.raises(runner.OwnershipError, match="boundary fence lost"):
+        authority()
+    assert renew.call_count == 1
+    assert guard.assert_current.call_count == 2
+    with pytest.raises(runner.OwnershipError, match="was lost"):
+        authority.poll()
+
+
+def test_failed_periodic_refresh_does_not_publish_success(render_authority_control):
+    runner, authority, guard, _renew, _live, clock = render_authority_control
+    authority.authorize()
+    next_refresh = authority.next_heartbeat
+    clock[0] += 30
+    guard.assert_current.side_effect = runner.OwnershipError("refresh fence lost")
+    with pytest.raises(runner.OwnershipError, match="refresh fence lost"):
+        authority.poll()
+    assert authority.next_heartbeat == next_refresh
+    guard.assert_current.side_effect = None
+    with pytest.raises(runner.OwnershipError, match="was lost"):
+        authority.poll()
+
+
+def test_poll_cancellation_kills_only_owned_child(tmp_path):
+    import os
+    import sys
+
+    from podcaster.video import job_runner as runner
+    from podcaster.video.process import run_owned_process
+    from podcaster.video.recovery import RecoveryDenied
+
+    heartbeat = runner._RecoveryQueueLease(None, None, None, None)
+    guard = SimpleNamespace(renewal_lock=threading.RLock(), assert_current=lambda: None)
+    authority = runner._RenderAuthority(
+        guard,
+        SimpleNamespace(remaining_seconds=lambda stage: 60.0),
+        lambda: (time.monotonic() + 60,),
+        heartbeat.check_live,
+    )
+    pid_path = tmp_path / "owned.pid"
+    unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"])
+
+    def lose_heartbeat():
+        deadline = time.monotonic() + 5
+        while not pid_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        heartbeat.error = RuntimeError("lease lost")
+
+    watcher = threading.Thread(target=lose_heartbeat)
+    watcher.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(RecoveryDenied, match="heartbeat lost authority"):
+            run_owned_process(
+                [
+                    sys.executable,
+                    "-c",
+                    "import os,time,pathlib; "
+                    f"pathlib.Path({str(pid_path)!r}).write_text(str(os.getpid())); "
+                    "time.sleep(20)",
+                ],
+                authorize=authority,
+            )
+        assert time.monotonic() - started < 5
+        with pytest.raises(ProcessLookupError):
+            os.kill(int(pid_path.read_text()), 0)
+        assert unrelated.poll() is None
+    finally:
+        watcher.join(timeout=5)
+        unrelated.terminate()
+        unrelated.wait(timeout=5)
 
 
 @pytest.fixture(autouse=True)

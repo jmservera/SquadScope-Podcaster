@@ -508,9 +508,10 @@ def _wait_with_descendant_capture(
     if timeout is None and authorize is None and sample is None:
         return process.wait()
     deadline = time.monotonic() + max(0.0, timeout) if timeout is not None else float("inf")
+    poll_authorize = getattr(authorize, "poll", authorize)
     while process.poll() is None:
-        if authorize is not None:
-            authorize()
+        if poll_authorize is not None:
+            poll_authorize()
         if sample is not None:
             sample()
         _capture_descendants((process.pid,), descendants)
@@ -553,7 +554,11 @@ def run_owned_process(
     authorize: Callable[[], None] | None = None,
     on_metrics: Callable[[Mapping[str, float]], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a command in an owned session and kill/reap its process tree on timeout."""
+    """Run a command in an owned session and kill/reap its process tree on timeout.
+
+    Authority callbacks run fresh at command boundaries. An optional ``poll``
+    method supplies frequent local checks and bounded periodic remote refreshes.
+    """
 
     if not command:
         raise ValueError("command must not be empty")

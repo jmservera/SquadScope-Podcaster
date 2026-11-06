@@ -269,6 +269,16 @@ Legacy or malformed validation records are cache misses. Provider work begins on
 after a verified `rendered_pending_distribution` record is durable; ambiguous
 provider mutations remain `publication_unknown` and are never blindly repeated.
 
+Composition checks local heartbeat loss and the fixed render/job budget on every
+owned-process poll. Healthy polls reuse the last successful remote authority
+refresh for at most 30 seconds; concurrent workers coalesce that refresh under
+the renewal lock. Queue visibility cached near expiry requires a live read,
+never an extension of the fixed job deadline. Each command boundary still reads
+the current ownership fence, and final media validation forces renewal and a
+fresh fence read. Lock wait and storage I/O share one bound of at most 20 seconds,
+also capped by the remaining fixed budget. Any authority failure is latched and
+cancels only the owned media process tree.
+
 ### Operational triage
 
 1. Inspect the manifest's `generation.video_budget`, `generation.video_runner`,

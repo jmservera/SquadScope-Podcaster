@@ -1,5 +1,72 @@
 # W44/W45 video-only recovery — Leela implementation evidence
 
+## ACTIVE Farnsworth first-time revision — 2026-11-06T15:52:31Z
+
+Sole source mutator independently addresses healthy-poll remote-operation
+frequency. Preserve all earlier evidence and dirty scratch; no locked-out
+author contributions or implementation delegation. Frequent local checks,
+coalesced bounded periodic remote checks, fresh command/final fencing and
+owned-process cancellation must be verified before full pytest/Ruff, actual
+whole-cumulative independent review, exact-head CI/thread resolution and normal
+merge. No production mutation; parent continues release/media after merge.
+
+At15:55:28Z the minimal authority/process callback split passes **223 coupled
+runner/process/budget tests**, whole-tree Ruff check/format227 and whitespace.
+Deterministic100poll/fake-clock controls prove1remote operation/1renewal and
+1normal or2recovery readbacks until30seconds; real4threads×100polls also share
+1forked renewal and1/2readbacks. Fresh command-boundary fence loss and forced
+final validation remain checked; heartbeat loss cancels the exact owned PID
+within5seconds while an unrelated PID survives. No actual production CPU/IOwait
+measurement is claimed. Existing test read-count assertions now require the
+reduced remote frequency, not weaker fencing/fixtures.
+
+Initial full-suite collection failed on the known missing azure.keyvault module;
+existing sanctioned `.scratch/basher-test-deps` from the prior source worktree
+restored solely via PYTHONPATH. Normal full pytest is active, not PASS; no source
+or gate/dependency manifest change. Actual independent cumulative review and
+exact-head CI/thread resolution/merge remain pending.
+
+## CURRENT fresh genuine Medium rejection / Leela lockout — 2026-11-06T15:50:44Z
+
+Actual fresh Copilot review5802792627 submitted15:48:42Z rejects exactb5caa178
+with Medium at`podcaster/video/job_runner.py:1171`, discussion4494405161,
+thread`PRRT_kwDOSzuis860k7JA` unresolved: every healthy authorize poll still
+spawns a storage worker and reads ownership despite the30-second renewal
+throttle; recovery reads twice. Unchanged committed class extracted by AST into
+process memory,100healthy authorizecalls withzero fakeclock advance:
+100bounded-storage-workers,200ownership-readbacks,1renewal/noauthorityerror.
+This proves call frequency, not measuredproductionCPU/IOwait.
+
+The same actual review explicitly confirms both prior High findings RESOLVED.
+Author full6257PASS/Ruff227 and actual independent Livingston APPROVE/894+105PASS
+are preserved facts, not acceptance overriding this new genuine rejection.
+Leela immediately stops source/advice/coauthor/contributions/push/threadresolution/
+merge/deployment on this rejected revision. Parent must assign a different
+eligible author; Frank/Basher/Rusty remain excluded from their rejectedlineage.
+Only ownlocal `leela-pr784-ci` ghwatch stopped; remoteCI retainedrunning,
+12of13visiblechecksPASS/ci-testactive at15:50:44Z. PR784OPEN/BLOCKEDb5caa178,
+no merge/deployment/admission. Prior sourceworktree/dirtyrecord/scratch preserved.
+No newconsent/CAS/identitygate. Evidence-only working-copy update, no newsource.
+
+## PR784 exact b5caa178 full validation / normal push — 2026-11-06T15:43:51Z
+
+Full normal pytest: **6257 passed,4 existing skipped,2 configured deselected,
+30 warnings in1149.97s** (`.scratch/leela-full.log`, attached command exit0).
+Whole-tree Ruff check/format227 and whitespace diff passed before normal push.
+Actual independent READONLY Livingston APPROVED the whole cumulative exact
+b5caa178 vs e66ac9c, independently894 related+105 focused/editor/intermediates
+passed. Earlier broader1027pass/1transient fork-shutdown error passed isolation,
+integrated rerun and unchanged-base control; preserved honestly.
+
+Both unchanged original regressions pass. The untouched prior Rusty full suite
+finished6243pass/2sameFAIL,4skipped/2deselected; not acceptance for this revision.
+Normal fast-forward push updated existing PR784 to b5caa178. Both legitimate
+threads have substantive replies4494344085/4494344144 and are resolved.
+Fresh exact-head strict CI/CodeQL/Copilot review/comments and normal matched-head
+squash remain mandatory before merge. No production mutation or deployment/
+successor admission. This evidence-only working-copy update does not alter the
+reviewed/pushed code head or claim completed CI.
+
 ## P04 Leela fourth-author current-visibility correction — 2026-11-06
 
 Working independently from local76fdaa80 in isolated
