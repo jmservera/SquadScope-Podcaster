@@ -959,7 +959,13 @@ def collect_media_evidence(
     expected: MediaEvidence | None = None,
     hash_runner: Callable[[Callable[[], Any], float], Any] = run_owned_callable,
 ) -> MediaEvidence:
-    """Collect size, SHA-256 and bounded probe evidence, rejecting incomplete media."""
+    """Collect size, SHA-256 and probe evidence under one shared deadline."""
+
+    deadline = time.monotonic() + timeout_seconds
+
+    def remaining() -> float:
+        timeout = max(0.0, deadline - time.monotonic())
+        return timeout if budget is None else budget.operation_timeout(stage, timeout)
 
     media_path = Path(path)
     if not media_path.is_file():
@@ -973,9 +979,7 @@ def collect_media_evidence(
             f"media size mismatch for {media_path}: expected {expected.size_bytes}, got {size}",
         )
 
-    hash_timeout = timeout_seconds
-    if budget is not None:
-        hash_timeout = budget.operation_timeout(stage, timeout_seconds)
+    hash_timeout = remaining()
     if hash_timeout <= 0:
         raise MediaValidationError(
             MediaValidationReason.DEADLINE_REACHED,
@@ -1001,9 +1005,7 @@ def collect_media_evidence(
             MediaValidationReason.SHA256_MISMATCH, f"media SHA-256 mismatch for {media_path}"
         )
 
-    effective_timeout = timeout_seconds
-    if budget is not None:
-        effective_timeout = budget.operation_timeout(stage, timeout_seconds)
+    effective_timeout = remaining()
     if effective_timeout <= 0:
         raise MediaValidationError(
             MediaValidationReason.DEADLINE_REACHED,
@@ -1021,10 +1023,20 @@ def collect_media_evidence(
             probe_evidence = probe(media_path, effective_timeout)
     except MediaValidationError:
         raise
+    except TimeoutError as exc:
+        raise MediaValidationError(
+            MediaValidationReason.DEADLINE_REACHED,
+            f"media probe exceeded its deadline for {media_path}",
+        ) from exc
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         raise MediaValidationError(
             MediaValidationReason.PROBE_FAILED, f"media probe failed for {media_path}"
         ) from exc
+    if remaining() <= 0:
+        raise MediaValidationError(
+            MediaValidationReason.DEADLINE_REACHED,
+            f"media validation exceeded its deadline for {media_path}",
+        )
     if expected is not None:
         if not (
             _format_aliases(probe_evidence.format_name)

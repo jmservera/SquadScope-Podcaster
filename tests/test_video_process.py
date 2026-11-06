@@ -311,7 +311,7 @@ def test_media_evidence_collects_size_sha256_and_probe(tmp_path):
     assert evidence.size_bytes == len(b"valid-media")
     assert len(evidence.sha256) == 64
     assert evidence.probe == ProbeEvidence("mov,mp4", 12.5)
-    assert timeouts == [7]
+    assert 0 < timeouts[0] <= 7
     assert MediaEvidence.from_dict(evidence.to_dict()) == evidence
 
 
@@ -353,6 +353,66 @@ def test_media_hashing_uses_owned_stage_timeout_and_stops_before_probe(tmp_path)
 
     assert captured.value.reason is MediaValidationReason.DEADLINE_REACHED
     assert probe_called is False
+
+
+@pytest.mark.parametrize("honor_probe_timeout", [True, False])
+def test_media_hash_and_probe_share_one_deadline(tmp_path, monkeypatch, honor_probe_timeout):
+    media = tmp_path / "clip.webm"
+    media.write_bytes(b"valid-media")
+    clock = [0.0]
+    monkeypatch.setattr("podcaster.video.process.time.monotonic", lambda: clock[0])
+    timeouts = []
+
+    def hash_runner(call, timeout):
+        timeouts.append(timeout)
+        clock[0] += 6
+        return call()
+
+    def probe(path, timeout):
+        timeouts.append(timeout)
+        if honor_probe_timeout and timeout < 6:
+            clock[0] += timeout
+            raise TimeoutError("probe cancelled at shared deadline")
+        clock[0] += 6
+        return ProbeEvidence("matroska,webm", 1)
+
+    with pytest.raises(MediaValidationError) as captured:
+        collect_media_evidence(media, timeout_seconds=10, hash_runner=hash_runner, probe=probe)
+    assert captured.value.reason is MediaValidationReason.DEADLINE_REACHED
+    assert timeouts == [10, 4]
+    assert clock[0] == (10 if honor_probe_timeout else 12)
+
+
+def test_media_validation_cancels_owned_probe_after_hash_consumes_budget(tmp_path):
+    media = tmp_path / "clip.webm"
+    media.write_bytes(b"valid-media")
+    pid_file = tmp_path / "probe.pid"
+    timeouts = []
+
+    def hash_runner(call, timeout):
+        time.sleep(0.15)
+        return call()
+
+    def probe(path, timeout):
+        timeouts.append(timeout)
+        run_owned_process(
+            [
+                sys.executable,
+                "-c",
+                f"import os,time; open({str(pid_file)!r},'w').write(str(os.getpid())); "
+                "time.sleep(5)",
+            ],
+            timeout_seconds=timeout,
+        )
+        return ProbeEvidence("webm", 1)
+
+    started = time.monotonic()
+    with pytest.raises(MediaValidationError):
+        collect_media_evidence(media, timeout_seconds=0.5, hash_runner=hash_runner, probe=probe)
+    assert 0 < timeouts[0] < 0.4
+    assert time.monotonic() - started < 2
+    assert pid_file.exists()
+    assert not _is_running(int(pid_file.read_text()))
 
 
 @pytest.mark.parametrize(

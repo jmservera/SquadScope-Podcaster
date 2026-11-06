@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import PurePosixPath
@@ -216,7 +217,11 @@ def private_media_input_sha256(manifest: dict[str, Any]) -> str:
 
 
 def validate_private_media_inputs(
-    manifest: dict[str, Any], storage: StorageBackend, job_id: str
+    manifest: dict[str, Any],
+    storage: StorageBackend,
+    job_id: str,
+    *,
+    artifact_reader: Callable[[str, str, int], bytes] | None = None,
 ) -> VerifiedSynthesisAudio:
     """Admit private video preparation only from completed, exact-reviewed audio."""
     try:
@@ -272,7 +277,11 @@ def validate_private_media_inputs(
                 or any(staged[field] != artifact[field] for field in ("sha256", "size_bytes"))
             ):
                 raise ReviewBindingError("staged media does not match complete synthesis proof")
-            content = storage.get_bytes(path)
+            content = (
+                artifact_reader(path, artifact["sha256"], artifact["size_bytes"])
+                if artifact_reader is not None
+                else storage.get_bytes(path)
+            )
             if (
                 not content
                 or checksum(content) != artifact["sha256"]
