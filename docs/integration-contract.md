@@ -421,7 +421,7 @@ establish a supported safe preparation/publication route for these jobs or
 implement that later review. Video/provider mutation therefore remains blocked;
 generic `/api/review` approval, `publish_on_approval`, and a configured video target
 do not unblock it. Existing unrelated legacy publication behavior is unchanged.
-The manual video enqueue endpoint returns `409` for these jobs, and the direct video
+The manual video enqueue endpoint returns `409` for other exact-script jobs, and the direct video
 worker rejects any missing/invalid completed-media proof before creating scratch
 stores, clip clients, or mutable budgets. Exact-reviewed completed audio can be
 prepared privately on the ordinary video queue; neither that queue nor an
@@ -429,27 +429,25 @@ approved script enables a provider upload.
 
 ### Private-only expired video attempt continuation (W44/W45 originals)
 
-The manually enqueued exact-script video endpoint still returns `409`. A separate
-`POST /api/jobs/{job_id}/video/private-recovery` boundary requires both normal
-API authentication and the independently configured
-`X-Video-Recovery-Operator-Key` (`PODCASTER_VIDEO_RECOVERY_OPERATOR_KEY`).
-Without that key configured the boundary is disabled. The request names the
-original job in the path and provides `week`, `publish_run_id`,
-`article_sha256`, `manifest_sha256`, `audio_sha256`, and a nonempty
-`inventory_reference` for the owner-visible provider inventory. Only
+For the owner's scoped private-only directive dated 2026-11-05, the existing
+authenticated `POST /api/jobs/{job_id}/video/generate` route admits only
 `podcast-2026-W44-00bc06dfb6e2` (11,664,239-byte MP3) and
-`podcast-2026-W45-9798e93edc06` (12,170,805-byte MP3) are eligible,
-and only after exact review/script/completed-claim/WAV/MP3 revalidation and
-expiry of their first durable video attempt. Later unknown-claim or placeholder
-jobs cannot enter this route. This is **private video preparation only**.
+`podcast-2026-W45-9798e93edc06` (12,170,805-byte MP3),
+and only after exact four-field publication identity, review/script/completed-claim/
+WAV/MP3 bytes and SHA revalidation and expiry of the first durable video attempt.
+Later unknown-claim or placeholder jobs cannot enter. Authentication grants no
+general recovery role: the operation scope is fixed server-side to one epoch per
+original identity, and caller-supplied inventory/approval strings have no authority.
+The development auth-disabled mode cannot admit these jobs. The former
+`/video/private-recovery` operator and dispatch endpoints are removed. Provider
+inventory is deferred only for private rendering, not evidence that it occurred.
 
 Reservation atomically records an epoch and pending dispatch in the original
-manifest. When the operator key is configured, the API reconciles pending
+manifest. Without a Vault/operator key, the API reconciles only already-authorized pending
 dispatches at startup and every 60 seconds; if the queue backend is unavailable,
 the intent remains pending until it can be sent or its deadline expires. Expired,
 unselected epochs are made terminal rather than re-enqueued. An authenticated
-operator can also reconcile the same intent with
-`POST /api/jobs/{job_id}/video/private-recovery/{epoch_id}/dispatch`;
+caller can retry the same `/video/generate` request;
 repeated sends carry the same epoch identity and cannot extend its deadline.
 Old ordinary messages are fenced; a recovery epoch uses its own clip namespace
 and immutable MP4/held-outbox candidate paths. Only one candidate selected by

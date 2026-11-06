@@ -30,6 +30,21 @@ PRIVATE_ORIGINALS = {
     "podcast-2026-W44-00bc06dfb6e2": 11_664_239,
     "podcast-2026-W45-9798e93edc06": 12_170_805,
 }
+SCOPED_PRIVATE_DIRECTIVE = "owner-2026-11-05-w44-w45-original-private-only"
+SCOPED_IDENTITIES = {
+    "podcast-2026-W44-00bc06dfb6e2": (
+        "2026-W44",
+        "40269058395",
+        "2a34575cd7be0d0a6ec36b4a808a1909ae7f793d00a8511da464ec063cf2bfa0",
+        "5c1fc333deb75ea2bfff990c1222f97a12acb2c3234e19df26717a27e8ff6f56",
+    ),
+    "podcast-2026-W45-9798e93edc06": (
+        "2026-W45",
+        "41395629030",
+        "fc4023679d8b2ba90481f783ebb9c57e61e059db3790c9c9d3c4a996b0242e34",
+        "a64c9c664a510b94207a566c92c3cc0465af241a5304109b845d1317284f5d3b",
+    ),
+}
 
 
 class RecoveryDenied(ValueError):
@@ -53,6 +68,13 @@ class RecoveryClaim:
 def private_original(job_id: str, audio_size: int | None = None) -> bool:
     expected = PRIVATE_ORIGINALS.get(job_id)
     return expected is not None and (audio_size is None or expected == audio_size)
+
+
+def scoped_identity(job_id: str) -> PublicationIdentity:
+    fields = SCOPED_IDENTITIES.get(job_id)
+    if fields is None:
+        raise RecoveryDenied("job is not an owner-authorized original")
+    return PublicationIdentity(job_id, *fields)
 
 
 def _now() -> datetime:
@@ -236,6 +258,7 @@ def reserve_epoch(
     expected_identity: PublicationIdentity,
     expected_audio_sha256: str,
     inventory_reference: str,
+    scoped_private: bool = False,
     now: Clock = _now,
 ) -> str:
     """Reserve one epoch with a durable send intent; no queue send occurs here."""
@@ -270,16 +293,12 @@ def reserve_epoch(
         state = _state(document)
         if state.get("selected_private_output") is not None:
             raise RecoveryDenied("private output already selected")
-        if any(
-            isinstance(item, dict) and item.get("status") not in {"terminal"}
-            for item in state["epochs"]
+        if scoped_private and (
+            identity != scoped_identity(job_id) or inventory_reference != SCOPED_PRIVATE_DIRECTIVE
         ):
+            raise RecoveryDenied("owner-authorized private scope does not match")
+        if state["epochs"]:
             raise RecoveryDenied("an epoch already exists; reconcile it instead")
-        # A later epoch must have a different explicit authorization and inventory readback.
-        if state["epochs"] and any(
-            item.get("inventory_reference") == inventory_reference for item in state["epochs"]
-        ):
-            raise RecoveryDenied("inventory authorization was already used")
         previous = state.pop("pending_selection_attempt", None)
         if previous is not None:
             abandoned = state.setdefault("abandoned_selection_attempts", [])
@@ -294,6 +313,7 @@ def reserve_epoch(
                 "identity": asdict(identity),
                 "proof_sha256": proof,
                 "inventory_reference": inventory_reference,
+                **({"authority": SCOPED_PRIVATE_DIRECTIVE} if scoped_private else {}),
                 "started_at_utc": started,
                 "deadline_at_utc": deadline,
                 "status": "reserved",
@@ -310,6 +330,53 @@ def reserve_epoch(
     if not captured:
         raise RecoveryDenied("epoch reservation did not commit")
     return captured["epoch_id"]
+
+
+def scoped_epoch(storage: StorageBackend, job_id: str, *, now: Clock = _now) -> str:
+    """Reserve once or return the existing pending epoch under the same immutable proof."""
+    at = _utc(now())
+    expected = scoped_identity(job_id)
+    raw = storage.get_bytes(f"jobs/{job_id}/manifest.json")
+    document = _read(raw, job_id)
+    identity, proof = _proof(document, storage, job_id)
+    if identity != expected:
+        raise RecoveryDenied("original publication identity does not match owner directive")
+    _budget(storage, job_id, at)
+    _assert_provider_quiet(document, storage, job_id)
+    audio_sha = document["generation"]["synthesis_runner"]["audio"]["sha256"]
+    state = _state(document)
+    if not state["epochs"]:
+        try:
+            return reserve_epoch(
+                storage,
+                job_id,
+                expected_identity=expected,
+                expected_audio_sha256=audio_sha,
+                inventory_reference=SCOPED_PRIVATE_DIRECTIVE,
+                scoped_private=True,
+                now=lambda: at,
+            )
+        except RecoveryDenied:
+            # A concurrent CAS winner may have reserved the same immutable operation.
+            document = _read(storage.get_bytes(f"jobs/{job_id}/manifest.json"), job_id)
+            state = _state(document)
+            if not state["epochs"]:
+                raise
+    if len(state["epochs"]) != 1 or state.get("selected_private_output") is not None:
+        raise RecoveryDenied("original already has an epoch or selected output")
+    epoch = state["epochs"][0]
+    if (
+        epoch.get("authority") != SCOPED_PRIVATE_DIRECTIVE
+        or epoch.get("inventory_reference") != SCOPED_PRIVATE_DIRECTIVE
+        or epoch.get("identity") != asdict(expected)
+        or epoch.get("proof_sha256") != proof
+        or epoch.get("status") not in {"reserved", "dispatched", "running"}
+        or at >= _parse(epoch["deadline_at_utc"])
+    ):
+        raise RecoveryDenied("existing epoch cannot be retried under owner directive")
+    _same_proof(document, storage, job_id, epoch)
+    _assert_provider_quiet(document, storage, job_id)
+    return epoch["epoch_id"]
 
 
 def message(job_id: str, epoch_id: str) -> str:
@@ -389,12 +456,17 @@ def reconcile_dispatch(
         raise RecoveryDenied("epoch is no longer dispatchable")
     if epoch["dispatch"]["status"] == "accepted":
         return
+    _assert_provider_quiet(document, storage, job_id)
     send(message(job_id, epoch_id))
     apply("accepted")
 
 
 def reconcile_pending(
-    storage: StorageBackend, send: Callable[[str], None], *, now: Clock = _now
+    storage: StorageBackend,
+    send: Callable[[str], None],
+    *,
+    now: Clock = _now,
+    scoped_only: bool = False,
 ) -> None:
     """Revisit reserved intentions after API restarts; expiry becomes terminal."""
     at = _utc(now())
@@ -410,6 +482,13 @@ def reconcile_pending(
         for epoch in epochs:
             epoch_id = epoch.get("epoch_id")
             try:
+                if scoped_only and (
+                    len(epochs) != 1
+                    or epoch.get("authority") != SCOPED_PRIVATE_DIRECTIVE
+                    or epoch.get("inventory_reference") != SCOPED_PRIVATE_DIRECTIVE
+                    or epoch.get("identity") != asdict(scoped_identity(job_id))
+                ):
+                    continue
                 status = epoch.get("status")
                 dispatch = epoch.get("dispatch")
                 pending = isinstance(dispatch, dict) and dispatch.get("status") == "pending"

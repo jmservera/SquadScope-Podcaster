@@ -198,7 +198,7 @@ def test_timed_out_fetch_never_authorizes_late_old_value(configured, provider, m
         assert provider.get() == NEW_SECRET
 
 
-def test_reconciler_fetch_failure_never_opens_storage(configured):
+def test_scoped_reconciler_does_not_depend_on_vault_key(configured):
     with (
         patch.object(
             recovery.recovery_operator_key, "get", side_effect=recovery.RecoveryKeyUnavailable
@@ -207,7 +207,8 @@ def test_reconciler_fetch_failure_never_opens_storage(configured):
     ):
         with TestClient(app):
             time.sleep(0.05)
-        storage.assert_not_called()
+        assert storage.call_count >= 1
+        recovery.recovery_operator_key.get.assert_not_called()
 
 
 def test_guard_rejects_drift_partial_and_unsafe_network(monkeypatch):

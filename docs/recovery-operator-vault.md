@@ -1,5 +1,13 @@
 # Private recovery operator credential boundary
 
+**Retired design (historical reference only).** The operator recovery routes
+described below were removed in the owner-approved 2026-11-05 private-only
+original-queue amendment. Do not execute this staging or create a vault,
+identity, key, secret, or transition. The only current private-render admission
+is the existing authenticated `/api/jobs/{job_id}/video/generate` route for
+the two immutable originals, with a server-owned one-epoch directive; see
+`docs/integration-contract.md`. Deployment and provider mutation remain gated.
+
 The two private video-recovery endpoints require both normal API authentication and a separate operator header. The old `PODCASTER_VIDEO_RECOVERY_OPERATOR_KEY` environment setting is **rejected**, including when the new settings are present. No recovery key belongs in application or workflow environment, ARM parameter files, ACA secrets, shell arguments, logs, or repository files. A fetched key necessarily exists transiently in API process memory for comparison; privileged API deployers/RG Owners are not cryptographically excluded.
 
 ## Reviewed staging (no automatic activation)

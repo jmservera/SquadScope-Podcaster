@@ -756,6 +756,9 @@ def _terminalize_spent_attempt(
         generation = document.get("generation")
         if not isinstance(generation, dict):
             raise TransientVideoError(f"invalid generation for job_id={job_id}")
+        from podcaster.video.recovery import guard_manifest
+
+        guard_manifest(document, claim=None)
         existing = generation.get("video_budget")
         if existing is not None and existing != budget.to_dict():
             raise TransientVideoError(f"video budget changed for job_id={job_id}")

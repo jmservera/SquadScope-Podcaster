@@ -960,7 +960,7 @@ def test_actual_managed_identity_status_boundary(
     else:
         assert status == 503
         assert body == {"error": "status_unavailable"}
-        assert len(calls) == 2
+        assert len(calls) == (4 if handler == "fastapi" else 2)
         assert all(urlsplit(url).netloc == "offline.invalid" for url in calls)
     assert token not in json.dumps(body) + caplog.text
     assert "UnicodeEncodeError" not in json.dumps(body) + caplog.text
@@ -2317,6 +2317,7 @@ def test_production_fastapi_entrypoint_contract_and_auth(accepted, monkeypatch, 
         partial(publication_status, now=NOW, youtube_readback=ready),
     )
     with TestClient(app) as client:
+        startup_storage_calls = factory.call_count
         response = client.get(
             "/api/publication-status",
             params=query,
@@ -2333,4 +2334,4 @@ def test_production_fastapi_entrypoint_contract_and_auth(accepted, monkeypatch, 
         assert payload["video"]["state"] == payload["synthesis"]["state"] == "succeeded"
         assert storage.data == before
     else:
-        factory.assert_not_called()
+        assert factory.call_count == startup_storage_calls

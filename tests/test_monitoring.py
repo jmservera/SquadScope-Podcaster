@@ -581,6 +581,20 @@ class TestStructuredJobLogs:
 
 
 class TestEnqueueVideo:
+    def test_scoped_original_rejects_dev_auth_disabled(self, client, storage, monkeypatch):
+        job_id = "podcast-2026-W44-00bc06dfb6e2"
+        monkeypatch.setenv("MONITORING_AUTH_DISABLED", "true")
+        monkeypatch.delenv("PODCASTER_API_KEY", raising=False)
+        monkeypatch.delenv("MONITORING_API_KEY", raising=False)
+        manifest = _make_manifest(job_id)
+        storage.put_bytes(
+            f"jobs/{job_id}/manifest.json", json.dumps(manifest).encode(), "application/json"
+        )
+        with patch("podcaster.video.recovery.scoped_epoch") as reserve:
+            response = client.post(f"/api/jobs/{job_id}/video/generate")
+        assert response.status_code == 403
+        reserve.assert_not_called()
+
     @pytest.mark.parametrize("snapshot", [{"script_sha256": "a" * 64}, None, "corrupt", []])
     def test_exact_script_job_is_refused_before_manual_video_enqueue(
         self, client, storage, snapshot
@@ -646,65 +660,10 @@ class TestEnqueueVideo:
 
 
 class TestPrivateVideoRecoveryBoundary:
-    def test_non_ascii_header_is_denied_not_server_error(self):
-        from fastapi import HTTPException
-
-        from podcaster.monitoring import _require_video_recovery_operator
-
-        with patch("podcaster.monitoring.recovery_operator_key.get", return_value="valid"):
-            with pytest.raises(HTTPException) as failure:
-                _require_video_recovery_operator("non-ascii-☂")
-        assert failure.value.status_code == 403
-
-    def test_api_auth_remains_first_on_both_routes(self, client, monkeypatch):
-        monkeypatch.setenv("PODCASTER_API_KEY", "existing-api-key")
-        for route in ("", "/epoch/dispatch"):
-            with patch("podcaster.monitoring.recovery_operator_key.get") as fetch:
-                response = client.post(
-                    f"/api/jobs/job/video/private-recovery{route}",
-                    json={},
-                    headers={"X-Video-Recovery-Operator-Key": "valid"},
-                )
-            assert response.status_code == 401
-            fetch.assert_not_called()
-
-    @pytest.mark.parametrize("route", ["", "/epoch/dispatch"])
-    @pytest.mark.parametrize("failure", [None, "vault", "wrong"])
-    def test_operator_key_denies_before_reservation_or_queue(
-        self, client, monkeypatch, route, failure
-    ):
-        from podcaster.recovery_operator_key import RecoveryKeyUnavailable
-
-        monkeypatch.delenv("PODCASTER_VIDEO_RECOVERY_OPERATOR_KEY", raising=False)
-        headers = {"X-Video-Recovery-Operator-Key": "wrong" if failure == "wrong" else "valid"}
-        payload = {
-            "week": "2026-W44",
-            "publish_run_id": "1",
-            "article_sha256": "a" * 64,
-            "manifest_sha256": "b" * 64,
-            "audio_sha256": "c" * 64,
-            "inventory_reference": "owner-readback",
-        }
-        with (
-            patch("podcaster.video.recovery.reserve_epoch") as reserve,
-            patch("podcaster.monitoring._dispatch_private_recovery") as dispatch,
-            patch("podcaster.monitoring.get_storage") as get_storage,
-            patch("podcaster.monitoring.recovery_operator_key.get") as fetch,
-        ):
-            if failure in {None, "vault"}:
-                fetch.side_effect = RecoveryKeyUnavailable("sensitive-secret")
-            elif failure is not None:
-                fetch.return_value = "valid"
-            response = client.post(
-                f"/api/jobs/podcast-2026-W44-00bc06dfb6e2/video/private-recovery{route}",
-                json=payload,
-                headers=headers,
-            )
-        assert response.status_code == (403 if failure == "wrong" else 503)
-        assert "sensitive-secret" not in response.text
-        reserve.assert_not_called()
-        dispatch.assert_not_called()
-        get_storage.assert_not_called()
+    @pytest.mark.parametrize("suffix", ["", "/epoch/dispatch"])
+    def test_superseded_operator_routes_are_absent(self, client, suffix):
+        response = client.post(f"/api/jobs/job/video/private-recovery{suffix}", json={})
+        assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------
