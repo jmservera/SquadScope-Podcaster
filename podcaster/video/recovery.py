@@ -110,6 +110,18 @@ def _iso(value: datetime) -> str:
     return _utc(value).isoformat().replace("+00:00", "Z")
 
 
+def _evidence_time(value: Any) -> tuple[datetime, str]:
+    """Compare UTC receipts exactly, including Azure's sub-microsecond precision."""
+    match = (
+        re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d+))?(?:Z|\+00:00)", value)
+        if isinstance(value, str)
+        else None
+    )
+    if match is None:
+        raise RecoveryDenied("worker evidence timestamp must be canonical UTC")
+    return _parse(value).replace(microsecond=0), (match[1] or "").rstrip("0")
+
+
 def _read(raw: bytes | None, job_id: str) -> dict[str, Any]:
     if raw is None:
         raise RecoveryDenied("original job manifest is missing")
@@ -332,7 +344,7 @@ def _successor_evidence(
         raise RecoveryDenied("trusted worker quiescence evidence is invalid") from exc
     if not isinstance(evidence, dict):
         raise RecoveryDenied("fresh trusted worker quiescence evidence is required")
-    observed = _parse(evidence.get("observed_at"))
+    observed = _evidence_time(evidence.get("observed_at"))
     executions = evidence.get("executions")
     if (
         evidence.get("schema_version")
@@ -344,7 +356,7 @@ def _successor_evidence(
         or evidence.get("proof_sha256") != proof
         or evidence.get("historical_budget_sha256")
         != hashlib.sha256(storage.get_bytes(f"jobs/{job_id}/video-budget.json") or b"").hexdigest()
-        or observed < _parse(prior["deadline_at_utc"])
+        or observed < _evidence_time(prior["deadline_at_utc"])
         or evidence.get("execution_inventory_complete") is not True
         or evidence.get("native_redeliveries_accounted") is not True
         or evidence.get("competing_writer_absent") is not True
@@ -359,12 +371,14 @@ def _successor_evidence(
         or evidence.get("editor_authority_absent") is not True
         or evidence.get("shared_capacity_conflict_absent") is not True
         or any(
-            epoch.get("lease_expires_at_utc") and _parse(epoch["lease_expires_at_utc"]) > observed
+            epoch.get("lease_expires_at_utc")
+            and _evidence_time(epoch["lease_expires_at_utc"]) > observed
             for epoch in state["epochs"]
         )
     ):
         raise RecoveryDenied("final disposition requires current ledger, budget and quiescence")
     names = set()
+    receipt_times = {}
     for execution in executions:
         if (
             not isinstance(execution, dict)
@@ -378,6 +392,7 @@ def _successor_evidence(
             raise RecoveryDenied("prior execution termination is unknown")
         names.add(execution["name"])
         replicas = set()
+        receipt_times[execution["name"]] = []
         for replica in execution["replicas"]:
             if (
                 not isinstance(replica, dict)
@@ -385,15 +400,24 @@ def _successor_evidence(
                 or replica["name"] in replicas
                 or type(replica.get("exit_code")) is not int
                 or not observed
-                >= _parse(replica.get("finished_at"))
-                >= _parse(state["epochs"][0]["started_at_utc"])
+                >= _evidence_time(replica.get("finished_at"))
+                >= _evidence_time(state["epochs"][0]["started_at_utc"])
             ):
                 raise RecoveryDenied("prior replica termination is unknown")
             replicas.add(replica["name"])
-        if execution["name"] == "podcaster-yqabcnkm2junu-video-98kpp" and not {
-            "9rmfj",
-            "9c562",
-        }.issubset({name.rsplit("-", 1)[-1] for name in replicas}):
+            receipt_times[execution["name"]].append(_evidence_time(replica["finished_at"]))
+        known_replicas = {
+            "podcaster-yqabcnkm2junu-video-98kpp": {"9rmfj", "9c562"},
+            **(
+                {
+                    "podcaster-yqabcnkm2junu-video-f6rll": {"ncgdn", "k7fw6"},
+                    "podcaster-yqabcnkm2junu-video-mjn7b": {"7mflp", "zsxkn"},
+                }
+                if final
+                else {}
+            ),
+        }.get(execution["name"], set())
+        if not known_replicas.issubset({name.rsplit("-", 1)[-1] for name in replicas}):
             raise RecoveryDenied("known prior replicas are missing from trusted inventory")
     if not {
         "podcaster-yqabcnkm2junu-video-98kpp",
@@ -408,7 +432,8 @@ def _successor_evidence(
         }:
             raise RecoveryDenied("both prior epoch worker inventories are required")
         inventoried = set()
-        for inventory in inventories.values():
+        for epoch in state["epochs"]:
+            inventory = inventories[epoch["epoch_id"]]
             if (
                 not isinstance(inventory, dict)
                 or inventory.get("native_redeliveries_accounted") is not True
@@ -430,11 +455,22 @@ def _successor_evidence(
                     or len(set(workers)) != len(workers)
                 ):
                     raise RecoveryDenied("prior worker termination receipts are incomplete")
+                if any(
+                    finished < _evidence_time(epoch["started_at_utc"])
+                    for name in workers
+                    for finished in receipt_times[name]
+                ):
+                    raise RecoveryDenied("prior worker receipt predates its persisted epoch")
                 inventoried.update(workers)
-        if inventoried != names or not {
-            "podcaster-yqabcnkm2junu-video-f6rll",
-            "podcaster-yqabcnkm2junu-video-mjn7b",
-        }.issubset(set(inventories[W44_SUCCESSOR]["video"])):
+        if inventoried != names or any(
+            not {f"podcaster-yqabcnkm2junu-video-{name}" for name in known}.issubset(
+                set(inventories[epoch_id]["video"])
+            )
+            for epoch_id, known in (
+                (W44_PREDECESSOR, ("98kpp", "zb8dm")),
+                (W44_SUCCESSOR, ("f6rll", "mjn7b")),
+            )
+        ):
             raise RecoveryDenied("known successor workers or discovered receipts are missing")
     return evidence
 
@@ -521,9 +557,9 @@ def reserve_epoch(
         # Proof/storage reads may block, and CAS retries must not reuse request time.
         reserved_at = _utc(now())
         if successor_evidence is not None and not (
-            timedelta(0)
-            <= reserved_at - _parse(successor_evidence["observed_at"])
-            <= timedelta(seconds=120)
+            _evidence_time(_iso(reserved_at - timedelta(seconds=120)))
+            <= _evidence_time(successor_evidence["observed_at"])
+            <= _evidence_time(_iso(reserved_at))
         ):
             raise RecoveryDenied("trusted prior-worker inventory is stale or future-dated")
         document["generation"].setdefault(

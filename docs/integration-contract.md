@@ -558,6 +558,17 @@ apply. Additionally:
   Include known successor executions `podcaster-yqabcnkm2junu-video-f6rll` and
   `podcaster-yqabcnkm2junu-video-mjn7b`, all prior known workers, and every
   discovered recorder/native retry. Missing retained evidence is not an exit.
+  The known original video executions must belong to the original inventory,
+  and both known successor executions to the successor inventory. Required
+  successor replica suffixes are `ncgdn`/`k7fw6` and `7mflp`/`zsxkn`, respectively;
+  declaring inventory complete cannot substitute for any known receipt.
+* Every replica `finished_at` must be at or after its **own persisted epoch's**
+  `started_at_utc`, not merely the original epoch's start or the new request time,
+  and at or before `observed_at`. Equal start/finish is valid, including failures.
+  Timestamps use UTC RFC3339 (`T`, `Z` or `+00:00`); naive, noncanonical and
+  future evidence is rejected. Azure fractional-second precision is compared
+  exactly rather than truncated to Python microseconds. The current manifest
+  and all receipt associations are revalidated on every CAS callback.
 
 Freshness is checked with the real clock after storage reads on **every** CAS
 callback: observation must follow the latest deadline and be between 0 and 120

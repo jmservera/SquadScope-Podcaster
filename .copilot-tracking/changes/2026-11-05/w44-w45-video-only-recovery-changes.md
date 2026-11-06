@@ -1,5 +1,33 @@
 # W44/W45 video-only recovery — Leela implementation evidence
 
+## P05-T08 Leela sole-author revision — 2026-11-06
+
+WORKTREE_PATH `/home/azureuser/source/SquadScope-Podcaster/.worktrees/leela-w44-final-epoch-20261106`,
+frozen rejected1d2b00e/basec96a704. Basher is locked out of this revision/advice/
+coauthoring; original worktree and all evidence preserved. Correct actual per-epoch
+worker/native/recorder receipt chronology through both direct/scoped admission.
+Full normal tests with existing locked dependencies restored environment-only,
+Ruff, independent WHOLE cumulative acceptance and exact-head CI/normal merge
+required. Source-only: return at APP_SOURCE_MERGE for parent immediate new-source
+build/pins/protected deploy/fresh runtime guard and one final W44 private attempt.
+Conditional coordinator disposition is not new owner consent. W45/private holds
+untouched. Prior rejection/failed collection and scope approval remain historical.
+
+Correction binds every replica receipt to the corresponding persisted epoch
+inside each manifest CAS callback; known video execution memberships and all
+four observed successor main/native replica suffixes are mandatory. Canonical
+UTC comparisons retain Azure sub-microsecond precision, reject future receipts/
+observations and permit finish==start. Both entry-point reproducers, recorders,
+native retries, equal-start failures, earlier valid original receipts, fresh
+post-read clocks and changed-start CAS retry have regression coverage.
+Actual W44/successor controls: 101 passed; whole-tree Ruff check/format228 and
+diff hygiene PASS. In-memory unchanged rejected-source control: 20 failures/
+7 passes/262 deselected, confirming unsafe admissions without touching frozen
+source or independent evidence. Existing locked dependencies restored only in
+this isolated worktree `.venv` via `uv sync --frozen --extra dev --extra video`;
+keyvault import verified, no manifest/lock/deployment/secret-lifecycle change.
+Full normal pytest and exact-head independent review/CI/merge remain pending.
+
 ## P05-T08 Basher diagnosed final W44 source — 2026-11-06
 
 WORKTREE_PATH `/home/azureuser/source/SquadScope-Podcaster/.worktrees/basher-w44-final-epoch-20261106`,

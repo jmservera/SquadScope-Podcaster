@@ -970,18 +970,207 @@ def _w44_final_fixture(recovery_original, monkeypatch):
         "podcaster-yqabcnkm2junu-recorder-old-recorder",
         "podcaster-yqabcnkm2junu-recorder-successor-recorder",
     ):
+        replicas = {
+            "podcaster-yqabcnkm2junu-video-f6rll": ("ncgdn", "k7fw6"),
+            "podcaster-yqabcnkm2junu-video-mjn7b": ("7mflp", "zsxkn"),
+        }.get(name, ("main", "native"))
         evidence["executions"].append(
             {
                 "name": name,
                 "status": "Succeeded" if "-recorder-" in name else "Failed",
                 "replica_inventory_complete": True,
                 "replicas": [
-                    {"name": name + "-main", "exit_code": 0, "finished_at": at.isoformat()},
-                    {"name": name + "-native", "exit_code": 1, "finished_at": at.isoformat()},
+                    {"name": name + "-" + replica, "exit_code": 1, "finished_at": at.isoformat()}
+                    for replica in replicas
                 ],
             }
         )
     return storage, job_id, at, deepcopy(state), evidence, (old_claim, second_claim)
+
+
+@pytest.mark.parametrize("recovery_original", ["podcast-2026-W44-00bc06dfb6e2"], indirect=True)
+@pytest.mark.parametrize("entry", ["direct", "scoped"])
+@pytest.mark.parametrize("kind", ["video", "recorder"])
+@pytest.mark.parametrize("replica_index", [0, 1])
+def test_final_w44_receipts_cannot_predate_their_actual_epoch(
+    recovery_original, monkeypatch, entry, kind, replica_index
+):
+    from podcaster.generation import manifest_bytes
+    from podcaster.video import recovery
+
+    storage, job_id, at, before, evidence, _ = _w44_final_fixture(recovery_original, monkeypatch)
+    names = evidence["epoch_execution_inventories"][recovery.W44_SUCCESSOR][kind]
+    for execution in evidence["executions"]:
+        if execution["name"] in names:
+            execution["replicas"][replica_index]["finished_at"] = before["epochs"][0][
+                "started_at_utc"
+            ]
+    storage.put_bytes(recovery.FINAL_QUIESCENCE_PATH, manifest_bytes(evidence), "application/json")
+    original = storage.get_bytes(f"jobs/{job_id}/manifest.json")
+    with pytest.raises(recovery.RecoveryDenied):
+        if entry == "scoped":
+            recovery.scoped_epoch(storage, job_id, now=lambda: at)
+        else:
+            recovery.reserve_epoch(
+                storage,
+                job_id,
+                expected_identity=recovery.scoped_identity(job_id),
+                expected_audio_sha256=recovery.W44_AUDIO_SHA256,
+                inventory_reference=recovery.SCOPED_PRIVATE_DIRECTIVE,
+                predecessor=recovery.W44_SUCCESSOR,
+                scoped_private=True,
+                now=lambda: at,
+            )
+    assert storage.get_bytes(f"jobs/{job_id}/manifest.json") == original
+
+
+@pytest.mark.parametrize("recovery_original", ["podcast-2026-W44-00bc06dfb6e2"], indirect=True)
+@pytest.mark.parametrize(
+    "receipt",
+    ["at_start", "before_start", "future", "submicro_future", "naive", "noncanonical"],
+)
+@pytest.mark.parametrize("epoch_index", [0, 1])
+def test_final_w44_receipt_chronology_uses_each_persisted_epoch(
+    recovery_original, monkeypatch, receipt, epoch_index
+):
+    from podcaster.generation import manifest_bytes
+    from podcaster.video import recovery
+
+    storage, job_id, at, before, evidence, _ = _w44_final_fixture(recovery_original, monkeypatch)
+    epoch = before["epochs"][epoch_index]
+    start = recovery._parse(epoch["started_at_utc"])
+    finished = {
+        "at_start": epoch["started_at_utc"],
+        "before_start": (start - timedelta(microseconds=1)).isoformat(),
+        "future": (at + timedelta(microseconds=1)).isoformat(),
+        "submicro_future": at.strftime("%Y-%m-%dT%H:%M:%S.%f") + "1Z",
+        "naive": start.replace(tzinfo=None).isoformat(),
+        "noncanonical": start.isoformat().replace("T", " "),
+    }[receipt]
+    names = {
+        name
+        for kind in ("video", "recorder")
+        for name in evidence["epoch_execution_inventories"][epoch["epoch_id"]][kind]
+    }
+    for execution in evidence["executions"]:
+        if execution["name"] in names:
+            for replica in execution["replicas"]:
+                replica["finished_at"] = finished
+    storage.put_bytes(recovery.FINAL_QUIESCENCE_PATH, manifest_bytes(evidence), "application/json")
+    if receipt == "at_start":
+        recovery.scoped_epoch(storage, job_id, now=lambda: at)
+        state = load_manifest(storage, job_id)["generation"]["video_recovery"]
+        assert state["epochs"][:2] == before["epochs"]
+        assert len(state["epochs"]) == 3
+    else:
+        with pytest.raises(recovery.RecoveryDenied):
+            recovery.scoped_epoch(storage, job_id, now=lambda: at)
+        assert load_manifest(storage, job_id)["generation"]["video_recovery"] == before
+
+
+@pytest.mark.parametrize("recovery_original", ["podcast-2026-W44-00bc06dfb6e2"], indirect=True)
+def test_final_w44_known_workers_cannot_be_reassigned_to_earlier_inventory(
+    recovery_original, monkeypatch
+):
+    from podcaster.generation import manifest_bytes
+    from podcaster.video import recovery
+
+    storage, job_id, at, before, evidence, _ = _w44_final_fixture(recovery_original, monkeypatch)
+    inventories = evidence["epoch_execution_inventories"]
+    successor_name = inventories[recovery.W44_SUCCESSOR]["video"].pop()
+    inventories[recovery.W44_PREDECESSOR]["video"].append(successor_name)
+    for execution in evidence["executions"]:
+        if execution["name"] == successor_name:
+            for replica in execution["replicas"]:
+                replica["finished_at"] = before["epochs"][0]["started_at_utc"]
+    storage.put_bytes(recovery.FINAL_QUIESCENCE_PATH, manifest_bytes(evidence), "application/json")
+    with pytest.raises(recovery.RecoveryDenied):
+        recovery.scoped_epoch(storage, job_id, now=lambda: at)
+    assert load_manifest(storage, job_id)["generation"]["video_recovery"] == before
+
+
+@pytest.mark.parametrize("recovery_original", ["podcast-2026-W44-00bc06dfb6e2"], indirect=True)
+@pytest.mark.parametrize("suffix", ["ncgdn", "k7fw6", "7mflp", "zsxkn"])
+def test_final_w44_requires_every_known_successor_native_receipt(
+    recovery_original, monkeypatch, suffix
+):
+    from podcaster.generation import manifest_bytes
+    from podcaster.video import recovery
+
+    storage, job_id, at, before, evidence, _ = _w44_final_fixture(recovery_original, monkeypatch)
+    for execution in evidence["executions"]:
+        execution["replicas"] = [
+            replica
+            for replica in execution["replicas"]
+            if not replica["name"].endswith("-" + suffix)
+        ]
+    storage.put_bytes(recovery.FINAL_QUIESCENCE_PATH, manifest_bytes(evidence), "application/json")
+    with pytest.raises(recovery.RecoveryDenied):
+        recovery.scoped_epoch(storage, job_id, now=lambda: at)
+    assert load_manifest(storage, job_id)["generation"]["video_recovery"] == before
+
+
+@pytest.mark.parametrize("recovery_original", ["podcast-2026-W44-00bc06dfb6e2"], indirect=True)
+@pytest.mark.parametrize("stage", ["first_successor", "final"])
+def test_w44_observation_cannot_be_fractionally_future_after_storage(
+    recovery_original, monkeypatch, stage
+):
+    from podcaster.generation import manifest_bytes
+    from podcaster.video import recovery
+
+    if stage == "final":
+        storage, job_id, at, _, evidence, _ = _w44_final_fixture(recovery_original, monkeypatch)
+        path = recovery.FINAL_QUIESCENCE_PATH
+    else:
+        storage, job_id, at, _, evidence, _ = _w44_successor_fixture(recovery_original, monkeypatch)
+        path = recovery.SUCCESSOR_QUIESCENCE_PATH
+    evidence["observed_at"] = at.strftime("%Y-%m-%dT%H:%M:%S.%f") + "1Z"
+    storage.put_bytes(path, manifest_bytes(evidence), "application/json")
+    original = storage.get_bytes(f"jobs/{job_id}/manifest.json")
+    with pytest.raises(recovery.RecoveryDenied):
+        recovery.scoped_epoch(storage, job_id, now=lambda: at)
+    assert storage.get_bytes(f"jobs/{job_id}/manifest.json") == original
+
+
+@pytest.mark.parametrize("recovery_original", ["podcast-2026-W44-00bc06dfb6e2"], indirect=True)
+def test_final_w44_cas_retry_uses_latest_persisted_worker_start(recovery_original, monkeypatch):
+    from podcaster.generation import manifest_bytes
+    from podcaster.video import recovery
+
+    storage, job_id, at, before, evidence, _ = _w44_final_fixture(recovery_original, monkeypatch)
+    epoch = before["epochs"][1]
+    for execution in evidence["executions"]:
+        if (
+            execution["name"]
+            in evidence["epoch_execution_inventories"][recovery.W44_SUCCESSOR]["video"]
+        ):
+            for replica in execution["replicas"]:
+                replica["finished_at"] = epoch["started_at_utc"]
+    storage.put_bytes(recovery.FINAL_QUIESCENCE_PATH, manifest_bytes(evidence), "application/json")
+    path = f"jobs/{job_id}/manifest.json"
+    update = storage.update_bytes
+
+    def retry(name, content_type, callback):
+        if name == path:
+            callback(storage.get_bytes(path))
+            document = load_manifest(storage, job_id)
+            current = document["generation"]["video_recovery"]
+            latest = current["epochs"][1]
+            for field in ("started_at_utc", "deadline_at_utc"):
+                latest[field] = recovery._iso(recovery._parse(latest[field]) + timedelta(seconds=1))
+            evidence["ledger_sha256"] = recovery._digest(current)
+            evidence["predecessor_epochs_sha256"] = recovery._digest(current["epochs"])
+            evidence["predecessor_sha256"] = recovery._digest(latest)
+            storage.put_bytes(path, manifest_bytes(document), "application/json")
+            storage.put_bytes(
+                recovery.FINAL_QUIESCENCE_PATH, manifest_bytes(evidence), "application/json"
+            )
+        return update(name, content_type, callback)
+
+    monkeypatch.setattr(storage, "update_bytes", retry)
+    with pytest.raises(recovery.RecoveryDenied):
+        recovery.scoped_epoch(storage, job_id, now=lambda: at)
+    assert len(load_manifest(storage, job_id)["generation"]["video_recovery"]["epochs"]) == 2
 
 
 @pytest.mark.parametrize("recovery_original", ["podcast-2026-W44-00bc06dfb6e2"], indirect=True)
