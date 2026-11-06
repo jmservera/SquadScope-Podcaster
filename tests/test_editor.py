@@ -44,7 +44,7 @@ from podcaster.video.editor import (
     wait_for_fanin,
 )
 from podcaster.video.intermediates import StorageOperationTimeout
-from podcaster.video.process import MediaEvidence, ProbeEvidence
+from podcaster.video.process import MediaEvidence, MediaValidationError, ProbeEvidence
 from podcaster.video.sync_plan import RepoReference, VideoSegment
 from podcaster.video.video_gen import RecordedSegment
 
@@ -241,6 +241,57 @@ def test_same_epoch_resume_after_fallback_reads_only_complete_validated_checkpoi
     assert storage._data == before
     assert checks
     assert budget.elapsed_seconds() >= 1600
+
+
+@pytest.mark.parametrize("missing", ["clipset", "authority"])
+def test_completed_resume_missing_preconditions_keep_domain_error_across_real_fork(
+    tmp_path, missing
+):
+    storage, job, budget = _completed_resume_fixture()
+    if missing == "clipset":
+        storage._data.pop(clipset_blob_path(job))
+    before = dict(storage._data)
+    with pytest.raises(RecordingInsufficientError) as captured:
+        record_via_fanout(
+            job,
+            _segments(2),
+            tmp_path,
+            scratch=storage,
+            budget=budget,
+            resume_completed=True,
+            authority_check=None if missing == "authority" else lambda: None,
+        )
+    assert captured.value.job_id == job
+    assert captured.value.clip_index == 0
+    assert captured.value.reason == (
+        "completed clipset is missing"
+        if missing == "clipset"
+        else "checkpoint resume lacks live authority"
+    )
+    assert storage._data == before
+
+
+def test_completed_resume_real_fork_retains_media_validation_failure(tmp_path):
+    from podcaster.video.process import MediaValidationReason
+
+    storage, job, budget = _completed_resume_fixture()
+
+    def invalid_media(path, expected, timeout):
+        raise MediaValidationError(MediaValidationReason.SHA256_MISMATCH, "invalid bytes")
+
+    with pytest.raises(RecordingInsufficientError, match="sha256_mismatch") as captured:
+        record_via_fanout(
+            job,
+            _segments(2),
+            tmp_path,
+            scratch=storage,
+            budget=budget,
+            resume_completed=True,
+            authority_check=lambda: None,
+            media_validator=invalid_media,
+        )
+    assert isinstance(captured.value.__cause__, MediaValidationError)
+    assert not (tmp_path / "clip_000.webm").exists()
 
 
 @pytest.mark.parametrize(

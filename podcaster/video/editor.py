@@ -817,21 +817,17 @@ def record_via_fanout(
         timeout = budget.operation_timeout(VideoStage.RENDER, 30.0)
         if timeout <= 0:
             raise RecordingInsufficientError(job_id, 0, "original render deadline reached")
+        if authority_check is None:
+            raise RecordingInsufficientError(job_id, 0, "checkpoint resume lacks live authority")
 
-        def load_completed() -> bytes:
-            if authority_check is None:
-                raise RecordingInsufficientError(
-                    job_id, 0, "checkpoint resume lacks live authority"
-                )
+        def load_completed() -> bytes | None:
             authority_check()
-            raw = scratch.get_bytes(clipset_blob_path(job_id))
-            if not raw:
-                raise RecordingInsufficientError(job_id, 0, "completed clipset is missing")
-            return raw
+            return scratch.get_bytes(clipset_blob_path(job_id))
 
-        clipset = Clipset.from_bytes(
-            operation_runner(load_completed, timeout), expected_job_id=job_id
-        )
+        raw = operation_runner(load_completed, timeout)
+        if not raw:
+            raise RecordingInsufficientError(job_id, 0, "completed clipset is missing")
+        clipset = Clipset.from_bytes(raw, expected_job_id=job_id)
         if clipset.schema_version != CLIPSET_SCHEMA_VERSION or clipset.budget != budget.projection:
             raise ClipsetBudgetError("completed clipset differs from original epoch budget")
         return assemble_recording(

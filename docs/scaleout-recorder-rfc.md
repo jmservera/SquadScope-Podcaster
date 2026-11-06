@@ -295,6 +295,10 @@ clipset and terminal clips using the remaining original T+55 render budget.
 The clipset's epoch namespace and persisted budget must match; every terminal
 timestamp must precede the original T+25 cutoff, and every content-addressed clip
 must pass size/hash/media validation with live recovery/editor ownership checks.
+Hashing and ffprobe consume one shared validation deadline, capped by the
+original remaining render time; completion is checked again after probing.
+Missing clipsets and absent authority are rejected in the editor parent, so
+the owned storage fork cannot turn their domain error into an unpickling error.
 Missing, corrupt or late checkpoints fail closed: no new capture, fallback,
 clipset migration, enqueue, epoch or stage-clock reset occurs on this path.
 
