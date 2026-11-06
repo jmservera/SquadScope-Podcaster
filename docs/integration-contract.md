@@ -517,7 +517,13 @@ the committed expiry in its still-current downstream claim. These operations are
 serialized with queue/epoch/downstream renewal. Neither expiry nor terminal claims
 can be revived; no stage deadline or epoch deadline changes. Queue heartbeat failure
 is checked during subprocess execution; editor/downstream authority is checked at
-most 30 seconds apart, with finite 20-second authority-operation/lock bounds.
+most 30 seconds apart. Worker and final-validation callbacks share one finite
+20-second bound across lock wait and cancellable storage operations, shortened by
+the remaining render budget. Concurrent workers recheck the renewal throttle
+inside the lock and publish successful authority before unlocking; followers still
+verify the current fence. Final validation forces a fresh renewal through that
+same bounded path. Returned budgets are recomputed after all waits, and any lost
+authority is latched so other workers cancel rather than reuse an earlier success.
 Loss stops the specifically owned process tree and discards
 partial output. All compose commands use the original render-stage budget
 (3300 seconds from epoch start), leaving the existing downstream reserves intact.
