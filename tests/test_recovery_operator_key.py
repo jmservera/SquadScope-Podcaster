@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import subprocess
@@ -12,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import httpx2 as httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -209,6 +211,111 @@ def test_scoped_reconciler_does_not_depend_on_vault_key(configured):
             time.sleep(0.05)
         assert storage.call_count >= 1
         recovery.recovery_operator_key.get.assert_not_called()
+
+
+@pytest.mark.parametrize("blocked_stage", ["queue", "storage", "reconcile"])
+def test_scoped_reconciler_initialization_keeps_startup_and_health_responsive(
+    monkeypatch, blocked_stage
+):
+    from podcaster import monitoring, queue
+    from podcaster.video import recovery as video_recovery
+
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    backend = Mock()
+    storage = Mock()
+    threads = {}
+
+    def operation(stage, result):
+        threads[stage] = threading.get_ident()
+        if stage == blocked_stage:
+            started.set()
+            try:
+                assert release.wait(3), "test must release the blocked Azure operation"
+            finally:
+                finished.set()
+        return result
+
+    monkeypatch.setattr(queue, "create_video_queue_backend", lambda: operation("queue", backend))
+    monkeypatch.setattr(monitoring, "get_storage", lambda: operation("storage", storage))
+    monkeypatch.setattr(
+        video_recovery, "reconcile_pending", lambda *_args, **_kwargs: operation("reconcile", None)
+    )
+
+    async def exercise():
+        event_loop_thread = threading.get_ident()
+        try:
+            async with monitoring._private_recovery_lifespan(app):
+                assert await asyncio.to_thread(started.wait, 2)
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await asyncio.wait_for(client.get("/healthz"), timeout=1)
+                assert response.status_code == 200
+                assert response.json() == {"status": "healthy"}
+                assert not finished.is_set()
+                assert all(thread != event_loop_thread for thread in threads.values())
+        finally:
+            release.set()
+            assert await asyncio.to_thread(finished.wait, 2)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("failed_stage", ["queue", "storage", "reconcile"])
+def test_scoped_reconciler_retries_initialization_and_reconciliation(monkeypatch, failed_stage):
+    from podcaster import monitoring, queue
+    from podcaster.video import recovery as video_recovery
+
+    backend = Mock()
+    storage = Mock()
+    rounds = []
+    completed = threading.Event()
+    sleep_calls = []
+    original_sleep = asyncio.sleep
+    factories = {}
+    for stage, result in (("queue", backend), ("storage", storage)):
+        factories[stage] = Mock(
+            side_effect=[RuntimeError("storage unavailable"), result]
+            if stage == failed_stage
+            else [result, result]
+        )
+    monkeypatch.setattr(queue, "create_video_queue_backend", factories["queue"])
+    monkeypatch.setattr(monitoring, "get_storage", factories["storage"])
+
+    def reconcile(actual_storage, send, *, scoped_only):
+        assert actual_storage is storage
+        assert scoped_only is True
+        rounds.append(send)
+        if failed_stage == "queue" and len(rounds) == 1:
+            with pytest.raises(RuntimeError, match="video queue backend unavailable"):
+                send("same pending epoch")
+        elif failed_stage == "reconcile" and len(rounds) == 1:
+            raise RuntimeError("storage unavailable")
+        else:
+            send("same pending epoch")
+            completed.set()
+
+    async def retry_sleep(seconds):
+        sleep_calls.append(seconds)
+        if len(sleep_calls) == 1:
+            await original_sleep(0)
+        else:
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(video_recovery, "reconcile_pending", reconcile)
+    monkeypatch.setattr(monitoring.asyncio, "sleep", retry_sleep)
+
+    async def exercise():
+        async with monitoring._private_recovery_lifespan(app):
+            assert await asyncio.to_thread(completed.wait, 2)
+
+    asyncio.run(exercise())
+    assert factories["queue"].call_count == 2
+    assert factories["storage"].call_count == 2
+    assert sleep_calls == [60, 60]
+    backend.send_message.assert_called_once_with("same pending epoch")
 
 
 def test_guard_rejects_drift_partial_and_unsafe_network(monkeypatch):

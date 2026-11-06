@@ -89,22 +89,25 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def _private_recovery_lifespan(_app: FastAPI):
-    async def reconcile_loop():
+    def reconcile_once():
         from podcaster.queue import create_video_queue_backend
         from podcaster.video.recovery import reconcile_pending
 
         def queue_unavailable(_message: str) -> None:
             raise RuntimeError("video queue backend unavailable")
 
+        try:
+            backend = create_video_queue_backend()
+        except Exception:
+            logger.warning("private recovery queue backend unavailable")
+            backend = None
+        send = backend.send_message if backend is not None else queue_unavailable
+        reconcile_pending(get_storage(), send, scoped_only=True)
+
+    async def reconcile_loop():
         while True:
             try:
-                try:
-                    backend = create_video_queue_backend()
-                except Exception:
-                    logger.warning("private recovery queue backend unavailable")
-                    backend = None
-                send = backend.send_message if backend is not None else queue_unavailable
-                await asyncio.to_thread(reconcile_pending, get_storage(), send, scoped_only=True)
+                await asyncio.to_thread(reconcile_once)
             except Exception:
                 logger.warning("private recovery dispatch reconciliation failed")
             await asyncio.sleep(60)

@@ -1,5 +1,19 @@
 # W44/W45 video-only recovery — Leela implementation evidence
 
+## 2026-11-06T09:10:35Z — Basher different-author startup correction
+
+Owner reassigned the valid PR782 startup artifact to Basher, sole mutation
+operator; Leela supplied no revision advice. Moved queue factory, storage
+construction and scoped pending reconciliation into one worker-thread operation.
+The existing 60-second serial retry, unavailable-queue callback, scoped-only
+authorization and shutdown cancellation are retained; no epoch/vault change.
+Six regressions cover blocked queue/storage/reconciliation with responsive
+startup and `/healthz`, and retry of each failed stage with the original pending
+message. All 21 operator-key/startup tests passed; changed-file Ruff check/format
+passed. Complete pytest is running; corrected-head CI and independent non-author
+review are required before resolving the valid thread and merging. No production
+write, provider action or TTS call.
+
 ## 2026-11-06 preserved implementation resumption — P02-T01 / P02-T02 PR boundary
 
 Canonical current scope: resume the existing dirty implementation on base
@@ -53,6 +67,50 @@ clean full-suite result. Retain both logs; exact-head CI remains mandatory.
 No scanner/build definition, dependency, workflow or infrastructure changed.
 Current full-run/CI/review status is maintained in the canonical coordinator
 checkpoint, not inferred from historical results below.
+
+## Completed local validation and exact-head review — P02-T01 / P02-T02
+
+Evidence-only post-commit update; production source remains exactly
+`b8fa498b19beea91a4c750387658f59280d036d0` in normal
+jmservera/SquadScope-Podcaster#782. The unchanged complete rerun passed
+**6030 tests, 5 skipped, 2 deselected, 2 warnings in 853.85 seconds**. Final
+focused selection passed **1210**; scoped selectors **15**; whole-tree Ruff
+check/format and diff whitespace passed. P02-T01 is complete in the canonical
+plan/details; P02-T02 release remains unchecked.
+
+The sole permitted independent non-author read-only Hermes correctness/security
+review **APPROVED this exact head**, with no blocking finding or new author
+lockout. Review report is `hermes-original-queue-final-head-review-20261106.md`
+in the authorized coordinator artifact directory and a transparent PR comment.
+No approving human GitHub review was impersonated. At 09:03:19Z, only `ci / test`
+remained running; integration/synthesis-image/lockfile/lint/infrastructure/UI/
+intro-outro/test/CodeQL passed. No source was changed after review.
+
+## Final exact-head CI and late review correction gate — P02-T02
+
+All **13 exact-head checks passed** at
+`b8fa498b19beea91a4c750387658f59280d036d0`. CI run `42190376516`
+reported **6138 passed, 3 skipped, 2 deselected** (853.97s); integration run
+`42190376704` passed. Effective required approving review count remains zero.
+
+Final GitHub thread readback revealed one valid medium Copilot
+**COMMENTED / changes recommended** finding: the newly unconditional lifespan
+reconciler still constructs queue/storage synchronously on the event-loop
+thread, potentially blocking unrelated requests and `/healthz` when storage is
+slow/unavailable. Thread
+https://github.com/jmservera/SquadScope-Podcaster/pull/782#discussion_r4490649641
+remains unresolved; merge state is BLOCKED. Green CI and Hermes' earlier
+independent APPROVE do not erase this correctness issue.
+
+Accepted as a required correction and conservatively treated as rejection of
+the startup-reconciliation artifact for the strict author-lockout rule.
+Leela made **no source revision or thread resolution** and returns to the parent
+for different-author reassignment. No new mutation agent or extra review agent
+was launched. This evidence-only log update is intentionally uncommitted to
+preserve the exact reviewed/CI head. After corrected exact-head acceptance,
+Basher must validate the existing-pipeline code-only release, new immutable
+API/five-worker provenance and unchanged non-image settings/readback. No merge,
+deployment, production recovery, provider mutation or TTS replay occurred.
 
 ## Historical 2026-11-05 resumption — owner-approved immutable private scope
 

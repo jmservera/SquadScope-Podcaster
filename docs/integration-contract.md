@@ -444,7 +444,9 @@ inventory is deferred only for private rendering, not evidence that it occurred.
 
 Reservation atomically records an epoch and pending dispatch in the original
 manifest. Without a Vault/operator key, the API reconciles only already-authorized pending
-dispatches at startup and every 60 seconds; if the queue backend is unavailable,
+dispatches at startup and every 60 seconds. Queue/storage construction and
+reconciliation run together off the API event loop, keeping startup and health
+checks responsive during slow storage initialization. If the queue backend is unavailable,
 the intent remains pending until it can be sent or its deadline expires. Expired,
 unselected epochs are made terminal rather than re-enqueued. An authenticated
 caller can retry the same `/video/generate` request;
