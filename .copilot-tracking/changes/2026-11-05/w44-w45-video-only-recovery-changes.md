@@ -1,5 +1,22 @@
 # W44/W45 video-only recovery — Leela implementation evidence
 
+## P05-T08 Basher diagnosed final W44 source — 2026-11-06
+
+WORKTREE_PATH `/home/azureuser/source/SquadScope-Podcaster/.worktrees/basher-w44-final-epoch-20261106`,
+base c96a704. Actual Hermes independent scope APPROVE conditional recorded in
+coordinator `hermes-w44-final-epoch-scope-20261106.md`; not new owner consent,
+code approval, or admission. Source extends existing private operator attestation
+and CAS path only for exact two ordered terminal W44 IDs/max3 total, fixed proof
+and historical budget, current full ledger/latest predecessor binding, fresh full
+native/recorder exit inventories, expired persisted leases/noeditor/capacity.
+No fourth, W45 change, TTS, provider/public write, route/service/key/infra change.
+Existing pending-send/startup/same-epoch retry and deadline fences retained.
+70 focused successor/final tests PASS; initial test setup failed because the
+new worktree scratch parent did not exist, corrected by creating project-local
+scratch and rerunning unchanged behavior. Full suite/Ruff/independent cumulative
+review/exact-head required CI/normal merge still pending. Return at source merge;
+no production mutation under this bounded milestone.
+
 ## Basher exact-source release — 2026-11-06T16:47:30.017334+00:00
 
 Actual WORKTREE_PATH:

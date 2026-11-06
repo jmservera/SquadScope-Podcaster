@@ -461,8 +461,9 @@ reviewed-media proof and persisted private MP4 digest. Candidates alone are iner
 
 The coordinator's explicit disposition under the owner's actual 14:02 instruction
 permits **one** successor to W44 epoch `29080a3a502d40729a59e7eb440b3681`,
-not a generic retry or a new owner message. W45 remains first-epoch-only and the
-operator must wait for W44's selected private MP4 PASS before admitting W45.
+not a generic retry or a new owner message. W45 remains first-epoch-only; the
+later 18:52 owner instruction permits its independent private execution after
+the diagnosed correction is deployed and shared-capacity conflicts are excluded.
 The same authenticated route takes no new authority-bearing arguments.
 Only the exact W44 original and original MP3 SHA256
 `5933fdecc6c76d80c81e2c845206fd0655a983713c2b20f204377ac3823153c1`
@@ -506,8 +507,72 @@ the complete attestation and prior runner/terminal/timing audit; old ledger,
 historical budget and abandoned candidate evidence remain preserved. A single
 manifest CAS appends at most one successor with a new fixed 5100-second deadline
 persisted once. Concurrent/repeated calls reconcile that same successor; terminal,
-expired or unknown successors cannot become a third epoch. Existing old-writer,
+expired or unknown successors cannot become a third epoch except under the exact
+diagnosed final disposition below. Existing old-writer,
 selection and identity-wide provider fences still apply across both epochs.
+
+#### Diagnosed final W44 disposition (2026-11-06 22:12)
+
+The original epoch and its authorized successor
+`f6460bef50d9440099e30df5c84d8a66` were both consumed and naturally terminal
+(`deadline_elapsed`), without selected media. Their clocks cannot be reused.
+Under the actual owner's 18:52 diagnosis/fix/run instruction, the coordinator
+recorded `coordinator-w44-diagnosed-final-epoch-disposition-20261106-221215`.
+Independent scope review conditionally accepted that interpretation; this is
+**not a new owner message**, caller approval, or a global deadline extension.
+The historical failing storage verb/request ID remain unknown. The deployed
+strong-ETag verified-original cache, shared bounded request/token/retry deadline,
+checkpoint validation, editor renewal and durable terminalization were exercised
+by the successful W45 private render. This supports mitigation, not a guarantee.
+
+Exactly one final epoch is permitted for the same W44 original: **three total,
+never a fourth**. W45 and other identities are unchanged. Admission uses only the
+existing authenticated route, and validates the original full proof
+`8c3b1ce8e0273de7c54e743688ee3490845fe5a062dad1e5fe6f6a521afac96f`,
+original MP3 digest above and unchanged historical budget SHA256
+`d1244992060e7f7d47949c3dc4d625e3ad1cbf4da45ac6102a4836c65b9197ec`.
+Both exact ordered predecessors must retain their identities, original authority,
+proof, fixed 5100-second clocks, terminal reasons, and the successor's binding to
+the first predecessor. Existing history, failures, claims, media and receipts are
+preserved rather than rewritten.
+
+The same trusted private storage operator channel is reused at
+`jobs/podcast-2026-W44-00bc06dfb6e2/video-recovery/f6460bef50d9440099e30df5c84d8a66/quiescence.json`;
+no new key, route, service, infrastructure or caller-controlled evidence is added.
+Use schema `w44-final-quiescence-v1`, the new disposition above and latest
+`predecessor_epoch_id`. All earlier attestation fields/termination receipt checks
+apply. Additionally:
+
+* `ledger_sha256` hashes canonical current `generation.video_recovery`;
+  `predecessor_epochs_sha256` hashes its complete ordered `epochs` list.
+  `predecessor_sha256` binds the latest predecessor. Changes during CAS require
+  new evidence; old evidence cannot authorize another epoch.
+* `editor_authority_absent` and `shared_capacity_conflict_absent` must be true,
+  backed by fresh actual checks including scratch editor leases and shared work.
+  Both persisted epoch leases must also be expired at observation time.
+* `epoch_execution_inventories` has exactly the two predecessor IDs as keys.
+  Each value contains `native_redeliveries_accounted: true`,
+  `recorder_inventory_complete: true`, and nonempty `video` and `recorder`
+  execution-name lists. Every listed execution requires complete actual replica
+  exit receipts in `executions`; every receipt must be inventoried exactly once.
+  Include known successor executions `podcaster-yqabcnkm2junu-video-f6rll` and
+  `podcaster-yqabcnkm2junu-video-mjn7b`, all prior known workers, and every
+  discovered recorder/native retry. Missing retained evidence is not an exit.
+
+Freshness is checked with the real clock after storage reads on **every** CAS
+callback: observation must follow the latest deadline and be between 0 and 120
+seconds old. Reservation appends one new epoch; retries, pending-send startup
+reconciliation and worker reclaim use that same epoch and never reset its fixed
+5100-second hard/3300-second render/1500-second fallback clocks. Selection and
+identity-wide provider holds remain unchanged; original validated audio is reused,
+never synthesized. No provider upload or public promotion is authorized.
+
+Source approval/merge alone is not runtime admission. Exact-source image proofs,
+reviewed protected deployment, independent preservation/health checks and **fresh**
+runtime originals/holds/complete worker exits/editor/capacity observations remain
+required before the operator writes the attestation and requests one admission.
+An owner objection or failed scope condition stops admission; do not fabricate
+consent. The source milestone itself performs no admission.
 
 #### Live editor authority and finite composition
 
