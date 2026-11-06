@@ -3302,6 +3302,8 @@ class TestFanoutGating:
         promoted = []
 
         def compose(*_args, output_path, **kwargs):
+            kwargs["authorize"]()
+            assert kwargs["budget"].remaining_seconds() > 0
             source = output_path.parent / "video-only.mp4"
             source.write_bytes(b"source")
 
@@ -3353,7 +3355,9 @@ class TestFanoutGating:
 
         mock_compose.side_effect = compose
 
-        with pytest.raises(TransientVideoError, match="video generation failed"):
+        from podcaster.video.ownership import OwnershipError
+
+        with pytest.raises(OwnershipError, match="editor lease lost"):
             run_video_generation(
                 job_id,
                 storage,

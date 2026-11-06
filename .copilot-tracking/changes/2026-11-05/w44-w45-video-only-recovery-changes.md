@@ -323,3 +323,36 @@ independent review and release remain pending.
 Open issue #777 concerns the lockfile gate; it must not be waived or patched
 in this focused change. No merge, deployment, production epoch, provider write
 or public promotion occurred.
+# P04 resumed corrective implementation — 2026-11-06T14:10Z
+
+Frank sole source operator, WORKTREE_PATH=/home/azureuser/source/SquadScope-Coordinator/.worktrees/frank-render-renewal-20261106, branch squad/w44-render-renewal, base origin/main e66ac9cd78d60636ccdb4ac9c91e75abd3999f50. All previous dirty state preserved. Actual owner14:02 instruction and runtime coordinator single-successor disposition reconcile the historical one-epoch scope narrowly for exact W44 predecessor29080a3a502d40729a59e7eb440b3681; W45 first epoch unchanged. P04-T01 live explicit editor renewal/cancellation/budget/performance; T02 trusted bounded successor admission/history/fencing; T03 complete tests/review/exact-head CI/normal merge. No cloud mutation, deployment, render, TTS or provider action. Parent continues release immediately after actual merge. Historical rejection evidence retained above.
+
+## P04-T01/T02 implementation and finite evidence
+
+Explicit same-live-editor CAS heartbeat records committed editor expiry independently
+of queue visibility and serializes downstream authority refresh. Production media
+commands receive the unchanged render budget; authority loss cancels/reaps owned
+media process trees, and final full decode uses the same live cancellation.
+Authority storage operations and lock acquisition are finite20s; heartbeat shutdown
+join is35s, never indefinite. Fixed3300s render and5100s epoch deadlines remain.
+
+Only exact W44 predecessor29080a3a502d40729a59e7eb440b3681 may have one successor.
+The existing private-storage operator channel requires <=120s fresh complete
+execution/replica/native-redelivery termination evidence, bound to predecessor/
+original proof/historical budget; no API can provide or write it. The original
+terminal ledger and prior runner audit are preserved by the same manifest CAS.
+This explicitly trusts existing privileged storage operators and does not assert
+new owner identity, fresh owner message, or mathematical absence from a404.
+Production attestation/admission remains absent and must be established by parent.
+
+Focused712 tests passed, then integrated bounded-authority/process/lease/recovery246
+passed after tightening. Whole-tree Ruff228 clean; full suite running.
+Finite offline12s moving1080p30/CRF12/slow control on4CPU affinity:
+legacy canonical encode14.7288wall/50.87sampledchildCPU vs canonical-video copy
+0.1336wall/0.11CPU, both~20MBwrite, identical compressed video hash, bothfull-decode
+PASS. ChildCPU/read/write samples are not parentCPU or exactI/Owait. This isolates
+two redundant full-length encodes; full486s W44 budget completion remains unproven.
+First benchmark rendered successfully but bounded stdout truncated packet JSON;
+small aggregate video hash fixed that evidence method without weakening the gate.
+Files/scripts and complete report remain in `.scratch/canonical-benchmark-v2`.
+P04-T03 independent exact-head review/full suite/CI/normal merge still pending.

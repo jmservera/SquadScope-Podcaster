@@ -9,6 +9,7 @@ import math
 import multiprocessing
 import os
 import pickle
+import re
 import shutil
 import signal
 import subprocess
@@ -501,17 +502,39 @@ def _wait_with_descendant_capture(
     process: subprocess.Popen[Any],
     timeout: float | None,
     descendants: dict[int, _TrackedProcess],
+    authorize: Callable[[], None] | None = None,
+    sample: Callable[[], None] | None = None,
 ) -> int:
-    if timeout is None:
+    if timeout is None and authorize is None and sample is None:
         return process.wait()
-    deadline = time.monotonic() + max(0.0, timeout)
+    deadline = time.monotonic() + max(0.0, timeout) if timeout is not None else float("inf")
     while process.poll() is None:
+        if authorize is not None:
+            authorize()
+        if sample is not None:
+            sample()
         _capture_descendants((process.pid,), descendants)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise subprocess.TimeoutExpired(process.args, timeout)
         time.sleep(min(0.05, remaining))
     return int(process.returncode or 0)
+
+
+def _sample_process_resources(pid: int) -> dict[str, float]:
+    """Linux process-local samples, not parent CPU or inferred I/O wait time."""
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        io = dict(line.split(": ", 1) for line in Path(f"/proc/{pid}/io").read_text().splitlines())
+        return {
+            "child_cpu_seconds": (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK"),
+            "read_bytes": float(io["read_bytes"]),
+            "write_bytes": float(io["write_bytes"]),
+            "read_chars": float(io["rchar"]),
+            "write_chars": float(io["wchar"]),
+        }
+    except (OSError, ValueError, IndexError, KeyError):
+        return {}
 
 
 def run_owned_process(
@@ -527,6 +550,8 @@ def run_owned_process(
     env: Mapping[str, str] | None = None,
     input_text: str | None = None,
     check: bool = False,
+    authorize: Callable[[], None] | None = None,
+    on_metrics: Callable[[Mapping[str, float]], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a command in an owned session and kill/reap its process tree on timeout."""
 
@@ -538,7 +563,11 @@ def run_owned_process(
     if effective_timeout is not None and effective_timeout <= 0:
         _remove_outputs(output_paths)
         raise OwnedProcessTimeout(command, 0.0, reason=TimeoutReason.STAGE_DEADLINE)
+    if authorize is not None:
+        authorize()
 
+    started = time.monotonic()
+    samples: dict[str, float] = {}
     subreaper_enabled = _enable_child_subreaper()
     nested_in_owned_callable = os.environ.get(_OWNED_CALLABLE_SESSION_ENV) == "1"
     process = subprocess.Popen(
@@ -553,6 +582,15 @@ def run_owned_process(
     capture = _BoundedPipeCapture(process.stdout, process.stderr)
     capture.start()
     descendants: dict[int, _TrackedProcess] = {}
+    next_report = started + 30.0
+
+    def sample() -> None:
+        nonlocal next_report
+        samples.update(_sample_process_resources(process.pid))
+        if on_metrics is not None and time.monotonic() >= next_report:
+            on_metrics({**samples, "elapsed_seconds": time.monotonic() - started})
+            next_report = time.monotonic() + 30.0
+
     try:
         if input_text is not None and process.stdin is not None:
             try:
@@ -560,8 +598,14 @@ def run_owned_process(
                 process.stdin.close()
             except (BrokenPipeError, OSError):
                 pass
-        _wait_with_descendant_capture(process, effective_timeout, descendants)
-    except subprocess.TimeoutExpired as exc:
+        _wait_with_descendant_capture(
+            process,
+            effective_timeout,
+            descendants,
+            authorize,
+            sample if on_metrics is not None else None,
+        )
+    except BaseException as exc:
         _capture_pipe_holders((process.stdout, process.stderr), descendants)
         _signal_process_tree(process, signal.SIGTERM, descendants)
         if not nested_in_owned_callable:
@@ -590,6 +634,8 @@ def run_owned_process(
         capture.join(reap_grace_seconds)
         capture.close_pipes()
         _remove_outputs(output_paths)
+        if not isinstance(exc, subprocess.TimeoutExpired):
+            raise
         raise OwnedProcessTimeout(
             command,
             float(effective_timeout or 0.0),
@@ -605,7 +651,30 @@ def run_owned_process(
         if process.poll() is not None:
             capture.join(DEFAULT_REAP_GRACE_SECONDS)
             capture.close_pipes()
+        _close_tracked_processes(descendants)
+        if on_metrics is not None:
+            try:
+                progress = re.findall(r"frame=\s*(\d+)\s+fps=\s*([\d.]+)", capture.text(1))
+                if progress:
+                    samples.update(frames=float(progress[-1][0]), fps=float(progress[-1][1]))
+                on_metrics(
+                    {
+                        **samples,
+                        "elapsed_seconds": time.monotonic() - started,
+                        "output_bytes": float(
+                            sum(Path(p).stat().st_size for p in output_paths if Path(p).is_file())
+                        ),
+                    }
+                )
+            except Exception:
+                pass
 
+    if authorize is not None:
+        try:
+            authorize()
+        except BaseException:
+            _remove_outputs(output_paths)
+            raise
     completed = subprocess.CompletedProcess(
         args=list(command),
         returncode=process.returncode,

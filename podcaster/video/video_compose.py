@@ -1198,6 +1198,7 @@ def _command_output(command: Sequence[str]) -> Path | None:
 def _budgeted_runner(
     runner: CommandRunner | None,
     budget: VideoStageBudget,
+    authorize: Callable[[], None] | None = None,
 ) -> CommandRunner:
     """Wrap every media command in the render admission and cleanup boundary."""
 
@@ -1212,16 +1213,34 @@ def _budgeted_runner(
                 reason=TimeoutReason.STAGE_DEADLINE,
             )
         try:
+            if authorize is not None:
+                authorize()
             if runner is None:
+
+                def report(metrics: Mapping[str, float]) -> None:
+                    logger.info(
+                        "media stage=%s resource_sample=%s",
+                        output.stem if output is not None else "probe",
+                        json.dumps(metrics, sort_keys=True),
+                    )
+
                 result = run_owned_process(
-                    command,
+                    (
+                        [command[0], "-stats", "-stats_period", "5", *command[1:]]
+                        if Path(command[0]).name.startswith("ffmpeg")
+                        else command
+                    ),
                     budget=budget,
                     stage=VideoStage.RENDER,
                     output_paths=(output,) if output is not None else (),
                     check=True,
+                    authorize=authorize,
+                    on_metrics=report,
                 )
             else:
                 result = runner(command)
+            if authorize is not None:
+                authorize()
         except BaseException:
             if output is not None:
                 output.unlink(missing_ok=True)
@@ -1731,6 +1750,7 @@ def _build_canonical_av_cmd(
     output_path: Path,
     *,
     has_audio: bool,
+    canonical_video: bool = False,
 ) -> list[str]:
     """Re-encode *input_path* to the canonical 1080p/30fps + stereo-AAC format.
 
@@ -1760,14 +1780,12 @@ def _build_canonical_av_cmd(
             f"anullsrc=channel_layout=stereo:sample_rate={CONCAT_AUDIO_SAMPLE_RATE}",
         ]
     audio_map = "0:a:0" if has_audio else "1:a"
-    cmd += [
-        "-filter_complex",
-        f"[0:v]{vf}[v]",
+    cmd += ([] if canonical_video else ["-filter_complex", f"[0:v]{vf}[v]"]) + [
         "-map",
-        "[v]",
+        "0:v:0" if canonical_video else "[v]",
         "-map",
         audio_map,
-        *_video_encode_args(ENCODE_PRESET),
+        *(["-c:v", "copy"] if canonical_video else _video_encode_args(ENCODE_PRESET)),
         "-colorspace",
         "bt709",
         "-color_trc",
@@ -2018,6 +2036,7 @@ def _join_intro_outro(
     dog_logo_path: Path | None = None,
     transition_duration: float = TRANSITION_DURATION,
     outro_transition: str = TRANSITION_FADE,
+    content_is_canonical: bool = False,
 ) -> float:
     """Prepend *intro_path* and append *outro_path* around *content_path*.
 
@@ -2070,7 +2089,11 @@ def _join_intro_outro(
     # 2. Canonicalise the content.
     content_canon = canon_dir / "content.mp4"
     logger.info("Canonicalizing content clip for concat: %s", content_path)
-    run(_build_canonical_av_cmd(content_path, content_canon, has_audio=False))
+    run(
+        _build_canonical_av_cmd(
+            content_path, content_canon, has_audio=False, canonical_video=content_is_canonical
+        )
+    )
 
     # 3. Resolve the tail clip(s) representing content (+ crossfaded outro).
     #    ``tail_clips`` is concatenated after the intro.
@@ -2105,10 +2128,13 @@ def _join_intro_outro(
                     content_outro_v,
                 )
             )
-            # Re-canonicalise so the crossfaded clip carries the uniform
-            # silent-audio layout the concat demuxer needs.
+            # xfade already encoded canonical video; add only silent audio.
             content_outro = canon_dir / "content_outro.mp4"
-            run(_build_canonical_av_cmd(content_outro_v, content_outro, has_audio=False))
+            run(
+                _build_canonical_av_cmd(
+                    content_outro_v, content_outro, has_audio=False, canonical_video=True
+                )
+            )
             tail_clips = [content_outro]
             added_duration += outro_dur - td
         else:
@@ -3031,6 +3057,7 @@ def _finalize_output(
     decode: "Callable[[Path], None] | None" = None,
     media_validation_budget: "Callable[[], float] | None" = None,
     before_final_promotion: "Callable[[], None] | None" = None,
+    authorize: Callable[[], None] | None = None,
 ) -> ComposeResult:
     """Mux the podcast audio (if any) over the composed video and finalise.
 
@@ -3117,6 +3144,7 @@ def _finalize_output(
             require_audio=needs_audio,
             decode=decode,
             media_validation_budget=media_validation_budget,
+            authorize=authorize,
         )
         commands = getattr(run, "commands", None)
         if (
@@ -3158,6 +3186,7 @@ def _validate_final_media(
     require_audio: bool,
     decode: "Callable[[Path], None] | None" = None,
     media_validation_budget: "Callable[[], float] | None" = None,
+    authorize: Callable[[], None] | None = None,
 ) -> None:
     """Require exact metadata and a complete media decode before publication."""
     if not path.is_file() or path.stat().st_size <= 0:
@@ -3206,7 +3235,8 @@ def _validate_final_media(
                 "for complete decode and bounded cleanup"
             )
     if decode is None:
-        _decode_final_media(path, timeout_seconds=decode_timeout)
+        kwargs = {"authorize": authorize} if authorize is not None else {}
+        _decode_final_media(path, timeout_seconds=decode_timeout, **kwargs)
     else:
         decode(path)
     if media_validation_budget is not None:
@@ -3226,7 +3256,12 @@ def _bounded_stderr_tail(stream: Any) -> str:
     return stream.read(FINAL_MEDIA_DECODE_STDERR_BYTES).decode("utf-8", errors="replace").strip()
 
 
-def _decode_final_media(path: Path, *, timeout_seconds: float | None = None) -> None:
+def _decode_final_media(
+    path: Path,
+    *,
+    timeout_seconds: float | None = None,
+    authorize: Callable[[], None] | None = None,
+) -> None:
     """Decode every audio/video stream completely and fail on the first corruption."""
     timeout = (
         float(FINAL_MEDIA_DECODE_TIMEOUT_SECONDS)
@@ -3259,6 +3294,9 @@ def _decode_final_media(path: Path, *, timeout_seconds: float | None = None) -> 
         "null",
         "-",
     ]
+    if authorize is not None:
+        run_owned_process(cmd, timeout_seconds=timeout, authorize=authorize, check=True)
+        return
     with tempfile.TemporaryFile() as stderr:
         process: subprocess.Popen[bytes] | None = None
         try:
@@ -3337,6 +3375,7 @@ def compose_video(
     media_probe: Callable[[Path, float], ProbeEvidence] | None = None,
     media_validation_budget: "Callable[[], float] | None" = None,
     before_final_promotion: "Callable[[], None] | None" = None,
+    authorize: Callable[[], None] | None = None,
 ) -> ComposeResult:
     """Compose recorded segments into a single MP4 with transitions and overlays.
 
@@ -3446,7 +3485,11 @@ def compose_video(
             0.0,
             reason=TimeoutReason.STAGE_DEADLINE,
         )
-    run = _budgeted_runner(runner, budget) if budget is not None else (runner or _default_runner)
+    run = (
+        _budgeted_runner(runner, budget, authorize)
+        if budget is not None
+        else (runner or _default_runner)
+    )
 
     # Per-worker task progress (issue #482): no-op when no reporter is supplied
     # so the composition path stays unchanged for callers that don't observe it.
@@ -3610,6 +3653,7 @@ def compose_video(
                 media_probe=media_probe,
                 media_validation_budget=media_validation_budget,
                 before_final_promotion=before_final_promotion,
+                authorize=authorize,
             )
             return result
 
@@ -4049,6 +4093,7 @@ def compose_video(
             dog_logo=dog_logo,
             dog_logo_path=dog_logo_path,
             transition_duration=transition_duration,
+            content_is_canonical=True,
         )
         video_duration += added
         video_only_path = joined_target
@@ -4096,6 +4141,7 @@ def compose_video(
         media_probe=media_probe,
         media_validation_budget=media_validation_budget,
         before_final_promotion=before_final_promotion,
+        authorize=authorize,
     )
     return result
 

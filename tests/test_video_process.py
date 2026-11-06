@@ -41,6 +41,58 @@ def test_runner_keeps_optional_unbounded_compatibility():
     assert result.stdout.strip() == "ok"
 
 
+def test_lost_render_authority_promptly_cancels_the_owned_tree(tmp_path):
+    pid_file = tmp_path / "encoder-child.pid"
+    partial = tmp_path / "partial.mp4"
+    code = (
+        "import pathlib,subprocess,sys,time;"
+        "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(p.pid));"
+        f"pathlib.Path({str(partial)!r}).write_bytes(b'partial');"
+        "time.sleep(60)"
+    )
+
+    def authorize():
+        if pid_file.exists() and partial.exists():
+            raise RuntimeError("editor authority lost")
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="editor authority lost"):
+        run_owned_process(
+            [sys.executable, "-c", code],
+            timeout_seconds=30,
+            authorize=authorize,
+            output_paths=[partial],
+            terminate_grace_seconds=0.1,
+            reap_grace_seconds=0.2,
+        )
+    assert time.monotonic() - started < 5
+    assert not _is_running(int(pid_file.read_text()))
+    assert not partial.exists()
+
+
+def test_owned_encoder_reports_child_not_parent_resources(tmp_path):
+    output = tmp_path / "encoded.bin"
+    metrics = []
+    run_owned_process(
+        [
+            sys.executable,
+            "-c",
+            "import time,pathlib;"
+            "end=time.monotonic()+0.3;"
+            "exec('while time.monotonic()<end: pass');"
+            f"pathlib.Path({str(output)!r}).write_bytes(b'x'*4096)",
+        ],
+        timeout_seconds=5,
+        output_paths=[output],
+        on_metrics=metrics.append,
+    )
+    assert len(metrics) == 1
+    assert metrics[0]["elapsed_seconds"] >= 0.3
+    assert metrics[0]["child_cpu_seconds"] > 0.1
+    assert metrics[0]["output_bytes"] == 4096
+
+
 def test_ffprobe_prerequisite_fails_fast_when_missing(monkeypatch):
     monkeypatch.setattr("podcaster.video.process.shutil.which", lambda _name: None)
 
