@@ -4,6 +4,7 @@ import copy
 import hashlib
 import io
 import json
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from http.client import HTTPConnection, HTTPResponse
 from types import MappingProxyType
@@ -58,6 +59,19 @@ class ReadOnlyStorage:
     def download_file(self, path, target):
         target.write_bytes(self.data[path])
         return True
+
+
+@pytest.fixture
+def request_only_status_app(monkeypatch):
+    from podcaster.monitoring import app
+
+    @asynccontextmanager
+    async def request_only_lifespan(_app):
+        yield
+
+    # These boundary tests measure request I/O; recovery startup has its own tests.
+    monkeypatch.setattr(app.router, "lifespan_context", request_only_lifespan)
+    return app
 
 
 @pytest.fixture
@@ -935,7 +949,7 @@ def _managed_identity_status_backend(monkeypatch, storage, token):
     ],
 )
 def test_actual_managed_identity_status_boundary(
-    accepted, monkeypatch, caplog, handler, token, valid
+    accepted, monkeypatch, caplog, handler, token, valid, request_only_status_app
 ):
     storage, _, query = accepted
     before = copy.deepcopy(storage.data)
@@ -2295,12 +2309,12 @@ def test_http_api_terminal_status_contract_is_read_only(accepted, monkeypatch):
 
 @pytest.mark.integration
 @pytest.mark.parametrize("authorized", [False, True])
-def test_production_fastapi_entrypoint_contract_and_auth(accepted, monkeypatch, authorized):
+def test_production_fastapi_entrypoint_contract_and_auth(
+    accepted, monkeypatch, authorized, request_only_status_app
+):
     from functools import partial
 
     from fastapi.testclient import TestClient
-
-    from podcaster.monitoring import app
 
     storage, manifest, query = accepted
     manifest["generation"].update(
@@ -2316,7 +2330,7 @@ def test_production_fastapi_entrypoint_contract_and_auth(accepted, monkeypatch, 
         "podcaster.monitoring.publication_status",
         partial(publication_status, now=NOW, youtube_readback=ready),
     )
-    with TestClient(app) as client:
+    with TestClient(request_only_status_app) as client:
         response = client.get(
             "/api/publication-status",
             params=query,
@@ -2324,6 +2338,7 @@ def test_production_fastapi_entrypoint_contract_and_auth(accepted, monkeypatch, 
         )
     assert response.status_code == (200 if authorized else 401)
     if authorized:
+        factory.assert_called_once_with()
         assert response.headers["Cache-Control"] == "no-store"
         payload = response.json()
         assert payload["schema_version"] == "podcast_publication_status_v1"

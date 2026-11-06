@@ -1,6 +1,231 @@
 # W44/W45 video-only recovery — Leela implementation evidence
 
-## Current scope and boundary
+## 2026-11-06T09:10:35Z — Basher different-author startup correction
+
+Owner reassigned the valid PR782 startup artifact to Basher, sole mutation
+operator; Leela supplied no revision advice. Moved queue factory, storage
+construction and scoped pending reconciliation into one worker-thread operation.
+The existing 60-second serial retry, unavailable-queue callback, scoped-only
+authorization and shutdown cancellation are retained; no epoch/vault change.
+Six regressions cover blocked queue/storage/reconciliation with responsive
+startup and `/healthz`, and retry of each failed stage with the original pending
+message. All 21 operator-key/startup tests passed; changed-file Ruff check/format
+passed. Complete pytest is running; corrected-head CI and independent non-author
+review are required before resolving the valid thread and merging. No production
+write, provider action or TTS call.
+
+## 2026-11-06 preserved implementation resumption — P02-T01 / P02-T02 PR boundary
+
+Canonical current scope: resume the existing dirty implementation on base
+`3d2b558e5f10de9a6dfa747b4414b02717e8a78a` without reset/branch switch.
+Owner already authorized fix/merge/deploy/private render; Hermes' 23:19 scope
+acceptance is the authorization basis, not caller references or owner identity.
+Live effective rules require zero approving reviews, but required checks and
+thread resolution remain. Provider inventory is deferred only for private
+rendering. Reconciled stale active coordinator plan/details before source edits;
+historical critique and withdrawn/rejected evidence below remain historical.
+
+Write boundary: surviving monitoring/recovery/runner implementation, focused
+existing tests, integration documentation and tracking artifacts. Run focused
+and full pytest, Ruff check/format, then normal child PR/exact-head CI and one
+independent non-author read-only review. Return before deployment for Basher's
+release-specialist validation. No cloud/queue/provider/TTS mutations, new
+infrastructure, credentials, job or runner. No owner decision blocker.
+
+## Resumed admission hardening and semantic tests — P02-T01
+
+Completed the surviving source batch with queue-constructor failure returning a
+safe 503 carrying the durable epoch ID, retaining pending intent for retry.
+Startup now rejects unscoped, caller-reference, wrong-identity and multi-epoch
+records rather than sending them. Added real validator tests using synthetic
+MP3 bytes at each production original's exact size and full immutable identity,
+changed four-field identity/actual bytes rejection, concurrent scoped CAS,
+Bearer/API-key parity, invalid auth, queue factory/send failure and restart
+authority rejection. These are offline synthetic media, not a live-original
+SHA attestation. Live MP3 SHA/bytes must still be freshly read at release.
+
+Final scoped selectors: 15 passed. Whole-tree Ruff check/format and diff
+whitespace pass. Initial combined run passed 1201 tests; its trailing Ruff
+observed an intermediate misplaced queue-failure handler, corrected immediately
+and covered by the final selectors. The earlier full run was stopped because
+its imported source predated this completed batch; final full run is active with
+90-second faulthandler diagnostics. No gates/tests were skipped or weakened.
+
+## Final source validation before PR — P02-T01 / P02-T02
+
+The final combined monitoring/recovery/runner/budget/publication/Vault-regression
+selection passed **1210 tests** (one existing httpx deprecation warning); final
+whole-tree Ruff check/format and `git diff --check` passed.
+
+The first final full suite completed: **6029 passed, 1 failed, 5 skipped,
+2 deselected** in 903.15 seconds. The failure was the existing Docker scaleout
+fixture's three recorder containers exiting 2 at their ffprobe startup
+prerequisite, not a recovery assertion. The same unmodified integration test
+subsequently passed **1 test in 22.26 seconds**; a complete unchanged rerun is
+running without the earlier parallel focused load. This is not recorded as a
+clean full-suite result. Retain both logs; exact-head CI remains mandatory.
+No scanner/build definition, dependency, workflow or infrastructure changed.
+Current full-run/CI/review status is maintained in the canonical coordinator
+checkpoint, not inferred from historical results below.
+
+## Completed local validation and exact-head review — P02-T01 / P02-T02
+
+Evidence-only post-commit update; production source remains exactly
+`b8fa498b19beea91a4c750387658f59280d036d0` in normal
+jmservera/SquadScope-Podcaster#782. The unchanged complete rerun passed
+**6030 tests, 5 skipped, 2 deselected, 2 warnings in 853.85 seconds**. Final
+focused selection passed **1210**; scoped selectors **15**; whole-tree Ruff
+check/format and diff whitespace passed. P02-T01 is complete in the canonical
+plan/details; P02-T02 release remains unchecked.
+
+The sole permitted independent non-author read-only Hermes correctness/security
+review **APPROVED this exact head**, with no blocking finding or new author
+lockout. Review report is `hermes-original-queue-final-head-review-20261106.md`
+in the authorized coordinator artifact directory and a transparent PR comment.
+No approving human GitHub review was impersonated. At 09:03:19Z, only `ci / test`
+remained running; integration/synthesis-image/lockfile/lint/infrastructure/UI/
+intro-outro/test/CodeQL passed. No source was changed after review.
+
+## Final exact-head CI and late review correction gate — P02-T02
+
+All **13 exact-head checks passed** at
+`b8fa498b19beea91a4c750387658f59280d036d0`. CI run `42190376516`
+reported **6138 passed, 3 skipped, 2 deselected** (853.97s); integration run
+`42190376704` passed. Effective required approving review count remains zero.
+
+Final GitHub thread readback revealed one valid medium Copilot
+**COMMENTED / changes recommended** finding: the newly unconditional lifespan
+reconciler still constructs queue/storage synchronously on the event-loop
+thread, potentially blocking unrelated requests and `/healthz` when storage is
+slow/unavailable. Thread
+https://github.com/jmservera/SquadScope-Podcaster/pull/782#discussion_r4490649641
+remains unresolved; merge state is BLOCKED. Green CI and Hermes' earlier
+independent APPROVE do not erase this correctness issue.
+
+Accepted as a required correction and conservatively treated as rejection of
+the startup-reconciliation artifact for the strict author-lockout rule.
+Leela made **no source revision or thread resolution** and returns to the parent
+for different-author reassignment. No new mutation agent or extra review agent
+was launched. This evidence-only log update is intentionally uncommitted to
+preserve the exact reviewed/CI head. After corrected exact-head acceptance,
+Basher must validate the existing-pipeline code-only release, new immutable
+API/five-worker provenance and unchanged non-image settings/readback. No merge,
+deployment, production recovery, provider mutation or TTS replay occurred.
+
+## Historical 2026-11-05 resumption — owner-approved immutable private scope
+
+Scope: P02-T01 only; P01 merged in #780, P02-T02 remains gated by exact-head
+CI, independent security/QA review, release and human approval. Owner's 23:19
+instruction and Hermes' independent verdict replace the prior authorization
+blocker. Implement in this isolated child branch only: existing authenticated
+manual-video route, exactly the two original publication identities, actual
+manifest/MP3 proof, one server-owned private-only epoch each, same-epoch queue
+reconciliation without Vault, stale ordinary callback fence, focused tests and
+integration documentation. No production dispatch, provider upload, deployment,
+new route, key, or identity. Run focused and full pytest and Ruff; review the
+exact head before release. Historical notes below describe withdrawn earlier
+work, not current authorization state.
+
+## Existing authenticated admission and immutable epoch — P02-T01
+
+`podcaster/monitoring.py` now routes only the two original job IDs through
+`scoped_epoch` after authenticated access; the local auth-disabled mode cannot
+admit them. `podcaster/video/recovery.py` binds the four immutable publication
+fields, server-owned 2026-11-05 private-only directive, original review/script/
+completed-claim WAV+MP3 checks including actual bytes and expected sizes,
+historical expired budget and identity-wide provider quietness. One epoch per
+identity is allowed, even after terminal status; concurrent same-intent callers
+can reconcile the existing pending epoch and no retry renews its deadline.
+API startup replays only already-authorized pending epochs without Vault,
+including unavailable-queue and expired-intent handling. No separate route,
+new provider action, or production invocation. Former Vault-dependent operator
+endpoints were removed rather than leaving a second request-controlled mint
+path. Existing worker claims and private selection/provider holds are retained.
+
+`podcaster/video/job_runner.py` fences the old ordinary attempt's terminal
+callback under the manifest guard before it can modify a reserved epoch.
+`docs/integration-contract.md` describes the scoped API, deferred inventory
+exception, removed routes and same-epoch retry. Tests updated in the existing
+monitoring, review/security, publication-status and Vault-key suites for
+the new startup and authorization boundary. Focused API/recovery/worker tests
+passed 420; the added scoped negative/positive tests passed in the 292-test
+monitoring/security run; publication-status/Vault startup tests passed 743.
+Ruff check and format and `git diff --check` pass. The first complete suite
+identified 11 assertions for the expected new startup storage read, not code
+failures in admission; each was reconciled in its existing tests. The corrected
+complete suite is running; exact-head CI and independent review are pending.
+
+## 2026-11-05 owner supersession — original queue continuation
+
+The original #780 implementation is merged, not reviewer-rejected; Leela is not
+locked out of this new, separately scoped amendment. #781's subsequently merged
+Key Vault/operator-key route and automatic reconciler are superseded by the
+owner's direction to use existing authenticated generation/review/video-queue
+paths. This worktree starts at current `origin/main` and must not reproduce
+historical rejected #776/#778/#779 branches.
+
+The original ordinary queue body contains only `job_id`; the #780 epoch body
+adds an epoch ID. Both original durable video budgets are expired, so resending
+the ordinary body cannot revive fan-in/fallback deadlines. The existing
+authenticated manual video enqueue explicitly rejects exact-script jobs.
+The proposed narrow alternative was to admit only the two exact original,
+validated-MP3 identities through that route, reusing #780's manifest CAS,
+immutable selection, deadline and provider hold with same-epoch operator retry.
+Admission is **blocked** pending the distinct owner-authorization decision
+below. No provider, production queue, media generation or deployment action
+is authorized.
+
+Validation intent: focused original identity, expired budget, same-request
+retry/queue failure, stale writer, CAS conflict and provider-hold regressions;
+then the repository pytest and Ruff checks. The historical #780 changes below
+remain historical, not evidence that the superseding change is complete.
+
+The existing coordinator RPI plan and phase details at
+`operational-artifacts/w45-recommendations-20261102/video-only-recovery-{plan,phase-details}-20261105.md`
+were discovered after the first offline code edit and reconciled in place:
+P01 is merged #780 evidence; P02-T01 is **blocked before source delivery**;
+P02-T02 remains blocked on P02-T01, exact-head CI/review/release. The historical
+critique remains historical.
+
+## P02-T01 — exploratory route withdrawn; authorization blocker
+
+An offline draft wired the existing manual `video/generate` route to the #780
+epoch reservation; same-inventory CAS retry was idempotent and old malformed
+originals could not fall through to ordinary enqueue. However
+`podcaster/auth.py` `verify_auth` accepts the shared machine API key, UI bearer
+or explicit local auth-disabled mode. The draft's original-job allowlist,
+caller-supplied `inventory_reference` and original audio review do **not**
+establish a *separate owner approval for private rendering*. Any holder of
+the machine key could mint an epoch. Existing `/api/review` also accepts that
+key and a caller-chosen reviewer, so routing approval through review alone
+cannot attest owner identity. #781's old operator-key route is Vault-only and
+the owner explicitly superseded that dependency; removing it without a
+replacement authorization would weaken #780's gate. This is a material
+authorization blocker, not a budget/CAS limitation.
+
+All exploratory source, test and documentation edits were **withdrawn** with
+`git restore` in the dedicated worktree. No code change, commit or PR was
+delivered; the original #780 CAS/provider hold and dormant #781 Vault paths
+remain exactly as in `origin/main`. The owner must designate an existing
+protected, distinguishable owner-only approval record and who may write it,
+or expressly accept an alternative auth scope after independent security
+review. Only then can same-epoch retry be safely wired without new
+infrastructure; if existing credentials cannot distinguish owner from machine
+callers, do not activate the route. One narrow candidate, **conditional on
+owner confirmation of exclusive UI credential custody**, is a Bearer-only
+private-render approval recorded under the original manifest CAS through the
+existing review API, then require that exact approval at epoch reservation;
+reject shared API keys on this scoped operation. Existing JWT validation alone
+is not an attestation that the token holder is the owner, so this is not yet
+an accepted implementation.
+
+Exploratory draft validation (not deliverable validation): `uv run --extra dev
+python -m pytest` on monitoring, review/security, video runner/budget and
+Vault-key unit tests **467 passed**, one httpx warning; Ruff check and format
+passed. The full-suite started, then was stopped after discovery of the
+authorization blocker. No final-source tests, exact-head CI, or PR exist.
+
+## Historical #780 implementation scope and boundary
 
 Full P01 offline implementation and P02-T01 validation on a dedicated clean worktree
 and branch `leela/private-video-recovery-20261105`, based on `origin/main`
@@ -13,14 +238,14 @@ P02-T01 full-suite and exact-head CI evidence are pending. Candidate outputs
 remain private, attempt-isolated and selected only by the original job's
 authoritative manifest CAS. Identity-wide provider intent fails closed.
 
-## Planned validation
+## Historical #780 planned validation
 
 Clock/race/proof/provider-negative tests in existing tests, targeted and complete
 `pytest -q`, `ruff check podcaster tests`, `ruff format --check podcaster tests`,
 and exact-head CI on a new draft PR. Historical PRs #776/#778/#779 are evidence,
 not accepted code or tests. The dependency lockfile is out of this PR's scope.
 
-## Blockers and status
+## Historical #780 blockers and status
 
 No unresolved owner design choice for offline implementation. Live recovery still
 requires owner-visible provider inventory; release requires independent review
