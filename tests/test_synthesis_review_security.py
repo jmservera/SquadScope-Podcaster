@@ -566,6 +566,81 @@ def test_scoped_original_rejects_second_epoch_after_terminal(recovery_original, 
     assert state["epochs"][0]["status"] == "terminal"
 
 
+@pytest.mark.parametrize("status", ["reserved", "dispatched", "running"])
+def test_spent_epoch_terminalization_needs_no_audio_io_and_preserves_history(
+    recovery_original, monkeypatch, status
+):
+    from copy import deepcopy
+
+    from podcaster.generation import manifest_bytes
+    from podcaster.video import recovery
+
+    storage, job_id, identity, audio_sha, at = recovery_original
+    epoch_id = recovery.reserve_epoch(
+        storage,
+        job_id,
+        expected_identity=identity,
+        expected_audio_sha256=audio_sha,
+        inventory_reference="existing-proof",
+        now=lambda: at,
+    )
+    document = load_manifest(storage, job_id)
+    document["generation"]["video_recovery"]["epochs"][0]["status"] = status
+    storage.put_bytes(f"jobs/{job_id}/manifest.json", manifest_bytes(document), "application/json")
+    before = deepcopy(document)
+    monkeypatch.setattr(recovery, "_same_proof", Mock(side_effect=AssertionError("no media GET")))
+    assert recovery.terminalize_expired_epoch(
+        storage, job_id, epoch_id, now=lambda: at + timedelta(seconds=5101)
+    )
+    after = load_manifest(storage, job_id)
+    result = after["generation"]["video_recovery"]["epochs"][0]
+    assert result.pop("terminal_reason") == "deadline_elapsed"
+    result["status"] = status
+    assert after == before
+
+
+@pytest.mark.parametrize("race", ["owner", "selected", "deadline"])
+def test_spent_epoch_cas_never_overwrites_changed_owner_selection_or_budget(
+    recovery_original, monkeypatch, race
+):
+    from podcaster.generation import manifest_bytes
+    from podcaster.video import recovery
+
+    storage, job_id, identity, audio_sha, at = recovery_original
+    epoch_id = recovery.reserve_epoch(
+        storage,
+        job_id,
+        expected_identity=identity,
+        expected_audio_sha256=audio_sha,
+        inventory_reference="existing-proof",
+        now=lambda: at,
+    )
+    real_update = storage.update_bytes
+    path = f"jobs/{job_id}/manifest.json"
+    raced = []
+
+    def update(key, content_type, callback):
+        document = load_manifest(storage, job_id)
+        state = document["generation"]["video_recovery"]
+        if race == "selected":
+            state["selected_private_output"] = {"preserve": "committed"}
+            state["epochs"][0]["status"] = "selected"
+        elif race == "owner":
+            state["epochs"][0]["owner"] = "successor"
+        else:
+            state["epochs"][0]["deadline_at_utc"] = (at + timedelta(seconds=5200)).isoformat()
+        payload = manifest_bytes(document)
+        storage.put_bytes(path, payload, content_type)
+        raced.append(payload)
+        return real_update(key, content_type, callback)
+
+    monkeypatch.setattr(storage, "update_bytes", update)
+    assert not recovery.terminalize_expired_epoch(
+        storage, job_id, epoch_id, now=lambda: at + timedelta(seconds=5101)
+    )
+    assert storage.get_bytes(path) == raced[0]
+
+
 def _w44_successor_fixture(recovery_original, monkeypatch):
     from dataclasses import asdict
 

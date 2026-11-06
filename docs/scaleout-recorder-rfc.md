@@ -256,7 +256,7 @@ T+20 fan-in cutoff. Recorder ACA timeout and visibility both default to 840 seco
 covering capture plus validation, uploads, readback, and terminal manifest CAS while
 still preventing a child from consuming the full parent fan-in window.
 
-After fan-in cutoff the editor never starts network or Chromium capture. It renders
+After fan-in cutoff the editor never starts network capture or Chromium. It renders
 a deterministic card from repository-owned local assets, writes media to a
 content-addressed blob, validates size/SHA-256/decodability, and CAS-creates the
 terminal manifest. A late recorder cannot replace the winning manifest or the bytes
@@ -279,6 +279,31 @@ fresh fence read. Lock wait and storage I/O share one bound of at most 20 second
 also capped by the remaining fixed budget. Any authority failure is latched and
 cancels only the owned media process tree.
 
+Recovery refreshes use conditional GETs for already SHA-256/size-verified original
+MP3/WAV bytes. A strong ETag from the same complete GET must be unchanged (HTTP
+304) before those bytes can be reused; changed, absent or unavailable objects
+never become successful proof from a cache alone. Other backends retain complete
+byte validation. No proof, owner, lease, fence or fixed deadline is relaxed.
+Within owned storage operations, raw blob and managed-identity socket timeouts
+and retry sleeps are capped by the **same remaining operation deadline**, not a
+fresh timeout per request. Safe `storage_operation` start/end facts identify only
+verb, object class, elapsed/client timeout, status, exception class and service
+request ID when received; they never contain blob URLs, credentials or headers.
+
+A same-epoch private recovery after T+25 may **read only** its existing complete
+clipset and terminal clips using the remaining original T+55 render budget.
+The clipset's epoch namespace and persisted budget must match; every terminal
+timestamp must precede the original T+25 cutoff, and every content-addressed clip
+must pass size/hash/media validation with live recovery/editor ownership checks.
+Missing, corrupt or late checkpoints fail closed: no new capture, fallback,
+clipset migration, enqueue, epoch or stage-clock reset occurs on this path.
+
+Expired recovery ledgers are terminalized by manifest CAS from their persisted
+5100-second projection, independently of media availability. The callback
+rechecks the current clock and exact observed epoch; concurrent owner/deadline/
+epoch changes or committed selection are preserved. This closes spent RUNNING
+records without inventing media success or authorizing another admission.
+
 ### Operational triage
 
 1. Inspect the manifest's `generation.video_budget`, `generation.video_runner`,
@@ -290,6 +315,10 @@ cancels only the owned media process tree.
    matching media evidence before manual recovery.
 4. Do not extend the ACA timeout to recover a slow run. Fix the failed stage or replay
    the validated checkpoint path.
+5. Distinguish the 20-second aggregate authority bound from transport timeouts
+   and native storage leases: editor/downstream leases are JSON records updated
+   with GET/conditional PUT, not Azure Blob Lease operations. Use per-request
+   diagnostic facts rather than inferring the failed verb from an outer timeout.
 
 ## 9. Local test plan — Azurite + docker-compose (fan-out/fan-in)
 

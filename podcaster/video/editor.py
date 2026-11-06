@@ -495,6 +495,8 @@ def assemble_recording(
     validation_timeout_seconds: float = 30.0,
     budget: VideoStageBudget | None = None,
     operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
+    completed_only: bool = False,
+    authority_check: Callable[[], None] | None = None,
 ) -> RecordingResult:
     """Download terminal clips into *output_dir* as a :class:`RecordingResult`.
 
@@ -512,14 +514,33 @@ def assemble_recording(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     recorded: list[RecordedSegment] = []
+    if completed_only and (
+        budget is None
+        or authority_check is None
+        or clipset.schema_version != CLIPSET_SCHEMA_VERSION
+        or clipset.budget != budget.projection
+    ):
+        raise RecordingInsufficientError(
+            clipset.job_id, 0, "completed checkpoint resume lacks bound budget or live authority"
+        )
 
     def _storage_call(call: Callable[[], Any]) -> Any:
         if budget is None:
             return call()
-        timeout = budget.operation_timeout(VideoStage.FALLBACK)
+        stage = VideoStage.RENDER if completed_only else VideoStage.FALLBACK
+        timeout = budget.operation_timeout(stage, 30.0)
         if timeout <= 0:
-            raise TimeoutError("fallback deadline reached during recording assembly")
-        return operation_runner(call, timeout)
+            raise TimeoutError("recording assembly stage deadline reached")
+
+        def guarded() -> Any:
+            if authority_check is not None:
+                authority_check()
+            value = call()
+            if authority_check is not None:
+                authority_check()
+            return value
+
+        return operation_runner(guarded, timeout)
 
     for entry in clipset.clips:
         index = entry.clip_index
@@ -544,6 +565,25 @@ def assemble_recording(
                 "terminal manifest has unknown or legacy schema",
             )
         status = str(manifest.get("status", ""))
+        if completed_only:
+            try:
+                terminal_at = datetime.fromisoformat(
+                    manifest["terminal_at_utc"].replace("Z", "+00:00")
+                )
+                if (
+                    budget is None
+                    or terminal_at.tzinfo is None
+                    or not (
+                        budget.projection.started_at_utc
+                        <= terminal_at
+                        < budget.projection.stage_deadline_at_utc(VideoStage.FALLBACK)
+                    )
+                ):
+                    raise ValueError("terminal checkpoint is outside original recording budget")
+            except (KeyError, TypeError, AttributeError, ValueError) as exc:
+                raise RecordingInsufficientError(
+                    clipset.job_id, index, "completed checkpoint has no valid original cutoff proof"
+                ) from exc
         if status == STATUS_RECORDING_INSUFFICIENT:
             raise RecordingInsufficientError(
                 clipset.job_id,
@@ -616,7 +656,19 @@ def assemble_recording(
             and _storage_call(lambda: scratch.download_file(clip_path, dest))
         ):
             try:
-                media_validator(dest, expected_media, validation_timeout_seconds)
+                timeout = validation_timeout_seconds
+                if budget is not None:
+                    timeout = min(
+                        timeout,
+                        budget.remaining_seconds(
+                            VideoStage.RENDER if completed_only else VideoStage.FALLBACK
+                        ),
+                    )
+                if timeout <= 0:
+                    raise TimeoutError("recording validation stage deadline reached")
+                media_validator(dest, expected_media, timeout)
+                if completed_only:
+                    _storage_call(lambda: None)
             except (MediaValidationError, OSError, ValueError) as exc:
                 dest.unlink(missing_ok=True)
                 reason = getattr(exc, "reason", type(exc).__name__)
@@ -634,7 +686,7 @@ def assemble_recording(
                     media_evidence=expected_media,
                 )
             )
-        elif manifest_exists and _manifest_is_fallback(manifest):
+        elif not completed_only and manifest_exists and _manifest_is_fallback(manifest):
             recorded.append(
                 _fill_terminal_fallback(
                     segment,
@@ -645,7 +697,7 @@ def assemble_recording(
                 )
             )
         else:
-            if fill_gap is not None:
+            if fill_gap is not None and not completed_only:
                 recorded.append(fill_gap(segment, output_dir, index))
                 continue
             raise RecordingInsufficientError(
@@ -750,6 +802,8 @@ def record_via_fanout(
     fallback_renderer=None,
     media_validator: MediaValidator | None = None,
     operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
+    resume_completed: bool = False,
+    authority_check: Callable[[], None] | None = None,
 ) -> RecordingResult:
     """Plan → fan out → fan in → assemble, returning a ``RecordingResult``.
 
@@ -759,6 +813,38 @@ def record_via_fanout(
     """
     if budget is None:
         raise ClipsetBudgetError("queued fan-out recording requires a shared video budget")
+    if resume_completed and not budget.admit(VideoStage.FALLBACK).allowed:
+        timeout = budget.operation_timeout(VideoStage.RENDER, 30.0)
+        if timeout <= 0:
+            raise RecordingInsufficientError(job_id, 0, "original render deadline reached")
+
+        def load_completed() -> bytes:
+            if authority_check is None:
+                raise RecordingInsufficientError(
+                    job_id, 0, "checkpoint resume lacks live authority"
+                )
+            authority_check()
+            raw = scratch.get_bytes(clipset_blob_path(job_id))
+            if not raw:
+                raise RecordingInsufficientError(job_id, 0, "completed clipset is missing")
+            return raw
+
+        clipset = Clipset.from_bytes(
+            operation_runner(load_completed, timeout), expected_job_id=job_id
+        )
+        if clipset.schema_version != CLIPSET_SCHEMA_VERSION or clipset.budget != budget.projection:
+            raise ClipsetBudgetError("completed clipset differs from original epoch budget")
+        return assemble_recording(
+            scratch,
+            clipset,
+            output_dir,
+            media_validator=media_validator,
+            validation_timeout_seconds=30.0,
+            budget=budget,
+            operation_runner=operation_runner,
+            completed_only=True,
+            authority_check=authority_check,
+        )
     clipset = plan_or_load_clipset(scratch, job_id, segments, budget=budget)
     if budget.admit(VideoStage.FANIN).allowed:
         enqueue_missing_clips(

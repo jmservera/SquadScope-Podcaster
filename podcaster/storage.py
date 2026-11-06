@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import errno
+import hashlib
+import json
 import logging
 import os
 import stat
 import subprocess
 import time
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import formatdate
@@ -25,6 +29,84 @@ DOWNLOAD_METHOD_USER_DELEGATION_SAS = "azure_ad_user_delegation_sas"
 DOWNLOAD_METHOD_LOCAL_LOCATOR = "local_filesystem_locator"
 
 logger = logging.getLogger(__name__)
+_operation_deadline: ContextVar[float | None] = ContextVar(
+    "storage_operation_deadline", default=None
+)
+
+
+@contextmanager
+def storage_operation_budget(timeout_seconds: float):
+    """Constrain nested transport/token calls to one owned operation's deadline."""
+    deadline = time.monotonic() + timeout_seconds
+    existing = _operation_deadline.get()
+    token = _operation_deadline.set(min(existing, deadline) if existing is not None else deadline)
+    try:
+        yield
+    finally:
+        _operation_deadline.reset(token)
+
+
+def _request_timeout(default: float) -> float:
+    deadline = _operation_deadline.get()
+    remaining = default if deadline is None else min(default, deadline - time.monotonic())
+    if remaining <= 0:
+        raise TimeoutError("storage transport has no remaining operation budget")
+    return remaining
+
+
+def _object_class(path: str) -> str:
+    if path.startswith("video-jobs/"):
+        if "/intermediates/" in path:
+            return "intermediate_checkpoint"
+        if path.endswith(".manifest.json"):
+            return "terminal_clip_manifest"
+        if path.endswith("clipset.json"):
+            return "immutable_clipset"
+    if path.endswith(".mp3"):
+        return "original_mp3"
+    if path.endswith(".wav"):
+        return "original_wav"
+    return {
+        "manifest.json": "job_manifest",
+        "script.txt": "reviewed_script",
+        "editor.lease.json": "editor_lease_record",
+        "downstream-ownership.json": "downstream_ownership_record",
+    }.get(path.rsplit("/", 1)[-1], "checkpoint_or_other")
+
+
+@contextmanager
+def _storage_request(verb: str, object_class: str, *, socket_timeout: float = 30):
+    """Log allowlisted request facts only; never URLs, paths, headers or errors."""
+    if _operation_deadline.get() is None:
+        yield {}
+        return
+    started = time.monotonic()
+    facts: dict[str, object] = {
+        "verb": verb,
+        "object_class": object_class,
+        "client_timeout_seconds": round(_request_timeout(socket_timeout), 3),
+    }
+    logger.info("storage_operation phase=start facts=%s", json.dumps(facts, sort_keys=True))
+    try:
+        yield facts
+    except Exception as exc:
+        facts["error_type"] = type(exc).__name__
+        raise
+    finally:
+        facts["elapsed_seconds"] = round(time.monotonic() - started, 3)
+        logger.info("storage_operation phase=end facts=%s", json.dumps(facts, sort_keys=True))
+
+
+def _response_facts(facts: dict[str, object], response: object) -> None:
+    facts["status"] = getattr(response, "status", getattr(response, "code", None))
+    headers = getattr(response, "headers", {})
+    request_id = headers.get("x-ms-request-id")
+    if (
+        isinstance(request_id, str)
+        and len(request_id) <= 128
+        and all(c.isascii() and (c.isalnum() or c == "-") for c in request_id)
+    ):
+        facts["storage_service_request_id"] = request_id
 
 
 class StorageUnavailableError(RuntimeError):
@@ -466,6 +548,7 @@ class AzureBlobStorageBackend:
         self._account_url = normalize_artifact_base_url(account_url)
         self._account_name = _account_name_from_url(self._account_url)
         self._sas_command_runner = sas_command_runner or _az_sas_command_runner
+        self._verified_reads: dict[tuple[str, str, int], tuple[str, bytes]] = {}
 
     def put_bytes(self, path: str, content: bytes, content_type: str) -> StoredArtifact:
         safe_path = _safe_blob_path(path)
@@ -506,18 +589,40 @@ class AzureBlobStorageBackend:
             method="PUT",
             headers=headers,
         )
-        try:
-            with urlopen(request, timeout=30):
-                return
-        except HTTPError as exc:
-            if exc.code == 412:
-                raise
-            detail = exc.read().decode("utf-8", errors="replace")[:500]
-            raise RuntimeError(f"blob upload failed for {path}: HTTP {exc.code} {detail}") from exc
+        with _storage_request("PUT", _object_class(path)) as facts:
+            try:
+                with urlopen(request, timeout=_request_timeout(30)) as response:
+                    _response_facts(facts, response)
+                    return
+            except HTTPError as exc:
+                _response_facts(facts, exc)
+                if exc.code == 412:
+                    raise
+                raise StorageUnavailableError(f"blob upload failed: HTTP {exc.code}") from exc
 
     def get_bytes(self, path: str) -> bytes | None:
         safe_path = _safe_blob_path(path)
         content, _etag = self._get_blob_state(safe_path)
+        return content
+
+    def get_verified_bytes(self, path: str, sha256: str, size_bytes: int) -> bytes:
+        """Reuse verified bytes only after a conditional GET proves their ETag unchanged."""
+        safe_path = _safe_blob_path(path)
+        key = (safe_path, sha256, size_bytes)
+        cached = self._verified_reads.get(key)
+        content, etag = self._get_blob_state(
+            safe_path, if_none_match=cached[0] if cached is not None else None
+        )
+        if content is None and cached is not None and etag == cached[0]:
+            return cached[1]
+        if (
+            content is None
+            or len(content) != size_bytes
+            or hashlib.sha256(content).hexdigest() != sha256
+        ):
+            raise StorageUnavailableError("verified original media is missing or changed")
+        if etag and not etag.startswith("W/"):
+            self._verified_reads[key] = (etag, content)
         return content
 
     def update_bytes(
@@ -555,7 +660,9 @@ class AzureBlobStorageBackend:
             f"conditional blob update failed for {safe_path}: concurrent updates did not settle"
         )
 
-    def _get_blob_state(self, safe_path: str) -> tuple[bytes | None, str | None]:
+    def _get_blob_state(
+        self, safe_path: str, *, if_none_match: str | None = None
+    ) -> tuple[bytes | None, str | None]:
         encoded_path = "/".join(quote(part, safe="") for part in safe_path.split("/"))
         token = self._credential.get_token("https://storage.azure.com/.default")
         request = Request(
@@ -567,15 +674,22 @@ class AzureBlobStorageBackend:
                 "x-ms-version": "2023-11-03",
             },
         )
-        try:
-            with urlopen(request, timeout=30) as response:
-                return response.read(), response.headers.get("ETag")
-        except HTTPError as exc:
-            if exc.code == 404:
-                return None, None
-            raise StorageUnavailableError(f"blob read failed: HTTP {exc.code}") from exc
-        except (OSError, HTTPException) as exc:
-            raise StorageUnavailableError("blob read failed") from exc
+        if if_none_match is not None:
+            request.add_header("If-None-Match", if_none_match)
+        with _storage_request("GET", _object_class(safe_path)) as facts:
+            try:
+                with urlopen(request, timeout=_request_timeout(30)) as response:
+                    _response_facts(facts, response)
+                    return response.read(), response.headers.get("ETag")
+            except HTTPError as exc:
+                _response_facts(facts, exc)
+                if exc.code == 304 and if_none_match is not None:
+                    return None, if_none_match
+                if exc.code == 404:
+                    return None, None
+                raise StorageUnavailableError(f"blob read failed: HTTP {exc.code}") from exc
+            except (OSError, HTTPException) as exc:
+                raise StorageUnavailableError("blob read failed") from exc
 
     def list_blobs(self, prefix: str, *, limit: int = 10) -> list[str]:
         safe_prefix = _safe_blob_prefix(prefix)
@@ -1237,8 +1351,10 @@ def _request_managed_identity_token(resource: str) -> dict[str, object]:
 
     for attempt in range(1, max_attempts + 1):
         try:
-            with urlopen(request, timeout=10) as response:
-                payload = json.loads(response.read().decode("utf-8"))
+            with _storage_request("GET", "managed_identity_token", socket_timeout=10) as facts:
+                with urlopen(request, timeout=_request_timeout(10)) as response:
+                    facts["status"] = getattr(response, "status", None)
+                    payload = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             if exc.code in retryable_status_codes and attempt < max_attempts:
                 delay = backoff_delays[attempt - 1]
@@ -1252,7 +1368,7 @@ def _request_managed_identity_token(resource: str) -> dict[str, object]:
                 )
                 if exc.fp:
                     exc.close()
-                time.sleep(delay)
+                time.sleep(min(delay, _request_timeout(delay)))
                 continue
             if exc.fp:
                 exc.close()
@@ -1269,7 +1385,7 @@ def _request_managed_identity_token(resource: str) -> dict[str, object]:
                     max_attempts,
                     delay,
                 )
-                time.sleep(delay)
+                time.sleep(min(delay, _request_timeout(delay)))
                 continue
             raise StorageUnavailableError("managed identity token request failed") from exc
         except (ValueError, UnicodeDecodeError) as exc:

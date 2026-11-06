@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from podcaster.queue import parse_clip_job
-from podcaster.video.budget import VideoStageBudget
+from podcaster.video.budget import VideoStage, VideoStageBudget
 from podcaster.video.clip_manifest import CLIP_MANIFEST_SCHEMA_VERSION
 from podcaster.video.clipset import (
     CLIPSET_SCHEMA_VERSION,
@@ -186,6 +186,130 @@ def _write_manifest(
 
 
 # --- clipset planning / immutability -----------------------------------------
+
+
+def _completed_resume_fixture():
+    at = datetime(2026, 11, 6, tzinfo=timezone.utc)
+    budget = VideoStageBudget.start(
+        now_utc=at,
+        utcnow=lambda: at + timedelta(seconds=1600),
+    )
+    storage = FakeStorage()
+    job = "original-epoch-123"
+    clipset = Clipset.from_segments(job, _segments(2), budget=budget.projection)
+    storage.put_bytes(clipset_blob_path(job), clipset.to_json_bytes(), _JSON)
+    for index in range(2):
+        _write_manifest(storage, job, index, schema_version=CLIP_MANIFEST_SCHEMA_VERSION)
+        path = clip_manifest_blob_path(job, index)
+        manifest = json.loads(storage.get_bytes(path))
+        manifest["terminal_at_utc"] = (at + timedelta(seconds=600)).isoformat()
+        storage.put_bytes(path, json.dumps(manifest).encode(), _JSON)
+    return storage, job, budget
+
+
+def _resume_validator(path, expected, timeout):
+    from podcaster.video.process import collect_media_evidence
+
+    return collect_media_evidence(
+        path,
+        expected=expected,
+        timeout_seconds=timeout,
+        probe=lambda path, timeout: expected.probe,
+        hash_runner=lambda operation, timeout: operation(),
+    )
+
+
+def test_same_epoch_resume_after_fallback_reads_only_complete_validated_checkpoints(tmp_path):
+    storage, job, budget = _completed_resume_fixture()
+    before = dict(storage._data)
+    producer = FakeProducer()
+    checks = []
+    result = record_via_fanout(
+        job,
+        _segments(2),
+        tmp_path,
+        scratch=storage,
+        producer=producer,
+        budget=budget,
+        resume_completed=True,
+        authority_check=lambda: checks.append(True),
+        media_validator=_resume_validator,
+        operation_runner=lambda operation, timeout: operation(),
+    )
+    assert len(result.recorded) == 2
+    assert producer.sent == []
+    assert storage._data == before
+    assert checks
+    assert budget.elapsed_seconds() >= 1600
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "partial",
+        "corrupt",
+        "wrong_hash",
+        "wrong_namespace",
+        "late",
+        "missing_time",
+        "budget",
+        "expired",
+        "lost_fence",
+    ],
+)
+def test_completed_resume_rejects_unproven_checkpoints_without_new_recording(tmp_path, fault):
+    from podcaster.video.process import MediaValidationError
+
+    storage, job, budget = _completed_resume_fixture()
+    path = clip_manifest_blob_path(job, 0)
+    manifest = json.loads(storage.get_bytes(path))
+    if fault == "partial":
+        storage._data.pop(path)
+    elif fault == "corrupt":
+        storage._data[manifest["media_blob_path"]] = b"CORRUPTD"
+    elif fault == "wrong_hash":
+        manifest["media"]["sha256"] = "0" * 64
+    elif fault == "wrong_namespace":
+        manifest["media_blob_path"] = manifest["media_blob_path"].replace(job, "other-epoch")
+    elif fault == "late":
+        manifest["terminal_at_utc"] = budget.projection.stage_deadline_at_utc(
+            VideoStage.FALLBACK
+        ).isoformat()
+    elif fault == "missing_time":
+        manifest.pop("terminal_at_utc")
+    elif fault == "budget":
+        clipset = json.loads(storage.get_bytes(clipset_blob_path(job)))
+        clipset["video_budget"]["started_at_utc"] = "2026-11-05T00:00:00Z"
+        storage._data[clipset_blob_path(job)] = json.dumps(clipset).encode()
+    elif fault == "expired":
+        at = budget.projection.started_at_utc + timedelta(seconds=3301)
+        budget = VideoStageBudget.from_dict(budget.to_dict(), now_utc=at, utcnow=lambda: at)
+    if fault not in {"partial"}:
+        storage._data[path] = json.dumps(manifest).encode()
+    before = dict(storage._data)
+    producer = FakeProducer()
+
+    def authority():
+        if fault == "lost_fence":
+            raise RuntimeError("recovery claim is stale")
+
+    with pytest.raises(
+        (RecordingInsufficientError, ClipsetBudgetError, MediaValidationError, RuntimeError)
+    ):
+        record_via_fanout(
+            job,
+            _segments(2),
+            tmp_path,
+            scratch=storage,
+            producer=producer,
+            budget=budget,
+            resume_completed=True,
+            authority_check=authority,
+            media_validator=_resume_validator,
+            operation_runner=lambda operation, timeout: operation(),
+        )
+    assert storage._data == before
+    assert producer.sent == []
 
 
 def test_plan_or_load_clipset_creates_when_absent():

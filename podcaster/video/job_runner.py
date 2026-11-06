@@ -1462,6 +1462,12 @@ def run_video_generation(
         return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_ALREADY_PROCESSED)
     if not admitted:
         if recovery_claim is not None:
+            from podcaster.video.recovery import terminalize_expired_epoch
+
+            run_storage_operation(
+                lambda: terminalize_expired_epoch(storage, job_id, recovery_claim.epoch_id),
+                20.0,
+            )
             return VideoOutcome(job_id, STATUS_FAILED, reason=REASON_ATTEMPT_EXPIRED)
         _terminalize_spent_attempt(storage, job_id, stage_budget)
         return VideoOutcome(job_id, STATUS_FAILED, reason=REASON_ATTEMPT_EXPIRED)
@@ -1762,6 +1768,20 @@ def run_video_generation(
                             )
                             raise TransientVideoError(f"editor lease lost for job_id={job_id}")
 
+                    def _checkpoint_authority() -> None:
+                        from podcaster.video.editor import read_lease
+
+                        if recovery_claim is None:
+                            raise OwnershipError("completed checkpoint resume requires recovery")
+                        assert_current(storage, recovery_claim)
+                        lease = read_lease(scratch, clip_job_id)
+                        if (
+                            lease is None
+                            or lease.run_id != run_id
+                            or lease.expires_at <= datetime.now(timezone.utc)
+                        ):
+                            raise OwnershipError("completed checkpoint editor authority was lost")
+
                     logger.info(
                         "video fan-out recording job_id=%s segments=%d run_id=%s",
                         job_id,
@@ -1776,6 +1796,8 @@ def run_video_generation(
                         producer=producer,
                         heartbeat=_heartbeat,
                         budget=stage_budget,
+                        resume_completed=recovery_claim is not None,
+                        authority_check=_checkpoint_authority,
                     )
                 else:
                     recording = record_episode(

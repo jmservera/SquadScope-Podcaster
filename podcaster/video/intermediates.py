@@ -81,12 +81,16 @@ def _run_bounded(call: Callable[[], Any], timeout_seconds: float) -> Any:
 
     if timeout_seconds <= 0:
         raise StorageOperationTimeout("storage operation has no remaining budget")
+
+    from podcaster.storage import storage_operation_budget
+
     try:
-        return run_owned_callable(
-            call,
-            timeout_seconds,
-            process_name="video-storage-operation",
-        )
+        with storage_operation_budget(timeout_seconds):
+            return run_owned_callable(
+                call,
+                timeout_seconds,
+                process_name="video-storage-operation",
+            )
     except OwnedCallableTimeout as exc:
         raise StorageOperationTimeout(
             f"storage operation exceeded {timeout_seconds:.3f}s deadline"

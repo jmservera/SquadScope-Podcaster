@@ -18,7 +18,7 @@ from podcaster.generation import manifest_bytes
 from podcaster.publication_state import PublicationIdentity, publication_identity, read_evidence
 from podcaster.review import ReviewBindingError, validate_private_media_inputs
 from podcaster.storage import StorageBackend
-from podcaster.video.budget import VideoStageBudget
+from podcaster.video.budget import BudgetProjection, VideoStageBudget
 
 CONTENT_TYPE = "application/json; charset=utf-8"
 SCHEMA = "private-video-recovery-v1"
@@ -144,7 +144,12 @@ def _proof(
     document: dict[str, Any], storage: StorageBackend, job_id: str
 ) -> tuple[PublicationIdentity, str]:
     try:
-        audio = validate_private_media_inputs(document, storage, job_id)
+        reader = (
+            storage.get_verified_bytes
+            if callable(getattr(type(storage), "get_verified_bytes", None))
+            else None
+        )
+        audio = validate_private_media_inputs(document, storage, job_id, artifact_reader=reader)
         if not private_original(job_id, len(audio.content)):
             raise RecoveryDenied("job is not an eligible validated-MP3 original")
         request = document["request"]
@@ -567,7 +572,6 @@ def reconcile_dispatch(
     now: Clock = _now,
 ) -> None:
     """At-least-once queue send; every duplicate has the same fenced epoch ID."""
-    at = _utc(now())
 
     def apply(status: str) -> None:
         def update(raw: bytes | None) -> bytes:
@@ -579,7 +583,7 @@ def reconcile_dispatch(
                 state.get("selected_private_output"), dict
             ):
                 epoch["dispatch"]["status"] = "accepted"
-            elif at >= _parse(epoch["deadline_at_utc"]):
+            elif _utc(now()) >= _parse(epoch["deadline_at_utc"]):
                 epoch["status"] = "terminal"
                 epoch["terminal_reason"] = "deadline_elapsed"
             elif epoch["status"] not in {"reserved", "dispatched", "running"}:
@@ -595,11 +599,15 @@ def reconcile_dispatch(
     raw = storage.get_bytes(f"jobs/{job_id}/manifest.json")
     document = _read(raw, job_id)
     epoch = _epoch(_state(document), epoch_id)
+    if _utc(now()) >= _parse(epoch["deadline_at_utc"]):
+        terminalize_expired_epoch(storage, job_id, epoch_id, now=now)
+        if epoch["status"] != "selected":
+            raise RecoveryDenied("epoch deadline elapsed before dispatch")
     _same_proof(document, storage, job_id, epoch)
     if epoch["status"] == "selected":
         apply("accepted")
         return
-    if at >= _parse(epoch["deadline_at_utc"]):
+    if _utc(now()) >= _parse(epoch["deadline_at_utc"]):
         apply("terminal")
         raise RecoveryDenied("epoch deadline elapsed before dispatch")
     if epoch["status"] == "running":
@@ -610,8 +618,62 @@ def reconcile_dispatch(
     if epoch["dispatch"]["status"] == "accepted":
         return
     _assert_provider_quiet(document, storage, job_id)
+    if _utc(now()) >= _parse(epoch["deadline_at_utc"]):
+        terminalize_expired_epoch(storage, job_id, epoch_id, now=now)
+        raise RecoveryDenied("epoch deadline elapsed before queue send")
     send(message(job_id, epoch_id))
     apply("accepted")
+
+
+def terminalize_expired_epoch(
+    storage: StorageBackend,
+    job_id: str,
+    epoch_id: str,
+    *,
+    now: Clock = _now,
+) -> bool:
+    """CAS-close only the observed expired epoch, without reading/replacing media."""
+    path = f"jobs/{job_id}/manifest.json"
+    observed = _read(storage.get_bytes(path), job_id)
+    observed_state = _state(observed)
+    expected = dict(_epoch(observed_state, epoch_id))
+    try:
+        projection = BudgetProjection.from_dict(
+            {
+                "schema_version": 1,
+                "started_at_utc": expected["started_at_utc"],
+                "deadline_at_utc": expected["deadline_at_utc"],
+            }
+        )
+    except (ValueError, KeyError, TypeError) as exc:
+        raise RecoveryDenied("epoch expiry has no valid persisted budget") from exc
+    if (
+        _utc(now()) < projection.deadline_at_utc
+        or expected.get("status") not in {"reserved", "dispatched", "running"}
+        or observed_state.get("selected_private_output") is not None
+    ):
+        return False
+    changed = False
+
+    def expire(raw: bytes | None) -> bytes:
+        nonlocal changed
+        changed = False
+        current = _read(raw, job_id)
+        state = _state(current)
+        epoch = _epoch(state, epoch_id)
+        if (
+            epoch != expected
+            or state.get("selected_private_output") is not None
+            or _utc(now()) < projection.deadline_at_utc
+        ):
+            return raw if raw is not None else b""
+        epoch["status"] = "terminal"
+        epoch["terminal_reason"] = "deadline_elapsed"
+        changed = True
+        return manifest_bytes(current)
+
+    storage.update_bytes(path, CONTENT_TYPE, expire)
+    return changed
 
 
 def reconcile_pending(
@@ -650,7 +712,10 @@ def reconcile_pending(
                 if status in {"reserved", "dispatched", "running", "selected"} and (
                     pending or expired
                 ):
-                    reconcile_dispatch(storage, job_id, epoch["epoch_id"], send, now=lambda: at)
+                    if expired:
+                        terminalize_expired_epoch(storage, job_id, epoch["epoch_id"], now=now)
+                    else:
+                        reconcile_dispatch(storage, job_id, epoch["epoch_id"], send, now=now)
             except RecoveryDenied:
                 logger.warning(
                     "private video dispatch denied job_id=%s epoch_id=%r", job_id, epoch_id
@@ -672,6 +737,8 @@ def claim_epoch(
 ) -> RecoveryClaim:
     """CAS reclaim the same epoch with an unchanged original deadline."""
     at = _utc(now())
+    if terminalize_expired_epoch(storage, job_id, epoch_id, now=now):
+        raise RecoveryDenied("epoch deadline elapsed")
     visibility = _utc(visibility_expires_at) if visibility_expires_at else None
     if visibility is None or visibility <= at + timedelta(seconds=5):
         raise RecoveryDenied("authoritative queue visibility is unavailable")
@@ -687,21 +754,24 @@ def claim_epoch(
         if epoch["status"] == "selected" and isinstance(state.get("selected_private_output"), dict):
             raise RecoveryDenied("selected output must be reused without reclaim")
         deadline = _parse(epoch["deadline_at_utc"])
-        if at >= deadline:
+        current_at = _utc(now())
+        if current_at >= deadline:
             epoch["status"] = "terminal"
             epoch["terminal_reason"] = "deadline_elapsed"
             return manifest_bytes(document)
         lease = epoch.get("lease_expires_at_utc")
+        if visibility <= current_at + timedelta(seconds=5):
+            raise RecoveryDenied("authoritative queue visibility expired during claim")
         if (
             epoch["status"] not in {"reserved", "dispatched", "running"}
-            or (lease and _parse(lease) > at and epoch.get("owner") != owner)
+            or (lease and _parse(lease) > current_at and epoch.get("owner") != owner)
             or state.get("selected_private_output") is not None
         ):
             raise RecoveryDenied("epoch is already owned, selected, or terminal")
         epoch["status"] = "running"
         epoch["owner"] = owner
         epoch["lease_expires_at_utc"] = _iso(
-            min(deadline, visibility, at + timedelta(seconds=LEASE_SECONDS))
+            min(deadline, visibility, current_at + timedelta(seconds=LEASE_SECONDS))
         )
         captured.update(epoch)
         return manifest_bytes(document)
