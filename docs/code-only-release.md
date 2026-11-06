@@ -1,23 +1,24 @@
 # Scoped W44/W45 code-only release
 
 This manual workflow is limited to the reviewed application merge
-`8e65a5355458c04a5fa659138f65b38c682ad1b2`. Build both images from that exact
+`a30fbc599700d71b37532916e5813e3c2ddf27b6`. Build both images from that exact
 source, label their full OCI revision, scan HIGH/CRITICAL OS and library
 vulnerabilities with the existing fail-on-findings policy before pushing, import
 by immutable digest, and independently verify registry manifest/config provenance
 before dispatch. The workflow commit is separately reviewed release tooling,
 not the application image source. Never pass a tag or an unverified digest.
 
-Exact-source build `cg1v` scanned both images before either push. Immutable
+Exact-source build `cg1x` scanned both images before either push. Immutable
 production imports preserve these complete manifest digests:
 
-* API: `sha256:56819d553629b39d7c4079fee6bcbb5338543a0f84f8c6c72a14796c52abb395`
-* All five workers: `sha256:678878ab19778c85e72d977fe4f6ac9f9932b87dcd4ff71c01b8411839193b95`
+* API: `sha256:76eb517d02f8b1c3a5881d416dc9074aa84deee6b5656b707a4c033aa2d7173d`
+* All five workers: `sha256:0efeb80bdeb23ee76c5411c4c9ae5f75338cbc8b1237df32cfec501247065727`
 
 Independent target-registry raw manifest/config-byte and full revision proof
 is mandatory before dispatch; an import acknowledgement is not that proof.
 The helper's original rollback references are the currently deployed
-`53cb8105…` API and `297877df…` worker digests, not the earlier release baseline.
+`56819d55…` API and `678878ab…` worker digests from reviewed source
+`8e65a5355458c04a5fa659138f65b38c682ad1b2`, not the earlier release baseline.
 
 The owner accepts an assessed exclusive deployment window rather than requiring
 unavailable ACA conditional tokens. This is supported Microsoft.App JSON Merge
@@ -45,11 +46,15 @@ and outbox. No queues/triggers/scale, UI, model deployments, VNet, secrets or
 identities are changed. Operations are polled to terminal and the API must have
 one healthy 100%-traffic revision. Independent actual postrelease readback must
 verify all six digests, protected settings, UI/model/network invariants and
-health before admitting the first W45 private recovery epoch. Both authorized
-W44 epochs are terminal and preserved; no additional W44 epoch is authorized.
-The owner's W45-first sequencing does not require a selected W44 MP4;
-fresh complete trusted execution/replica/native-redelivery termination evidence
-and unchanged original media proof are mandatory at successor admission.
+health before any recovery admission. W45's selected private output is preserved,
+not replayed. Both prior W44 epochs remain terminal and unchanged. Reviewed PR788
+supports at most one final exact-original W44 epoch under the recorded bounded
+coordinator disposition, never caller approval strings: exactly three epochs
+maximum, exact ordered predecessor history and unchanged original proof/budget,
+fresh fixed-path trusted evidence of all predecessor/native/recorder exits bound
+to each corresponding persisted epoch start, and no active editor/selection or
+provider ambiguity. New fixed 5100s hard/3300s render/1500s fallback limits are
+assigned once; no old or new deadline may be extended or reset. No fourth epoch.
 
 Successful empty PATCH responses are accepted without JSON decoding errors,
 but 202 alone never certifies deployment. The helper polls `Azure-AsyncOperation`
@@ -77,7 +82,9 @@ using the same exclusive window and current protected containers. Never replay
 old arrays, change holds, or run the ordinary full-stack defaults.
 
 The release neither admits recovery requests nor approves media/provider
-publication. After deployment, refresh the original W45 proof, worker exit
-receipts, shared capacity, scratch lease and segment load before its already
-authorized first scoped epoch. All provider uploads, drafts, unlisted operations
-and public promotion remain held.
+publication. After deployment, refresh exact-original W44 proof, both terminal
+predecessors and complete actual worker/recorder exit receipts, current ledger,
+shared capacity, queue/editor leases and publication holds. Only then may the
+parent write fresh trusted fixed-path evidence and admit the single final private
+epoch. This release phase performs no admission. All provider uploads, drafts,
+unlisted operations and public promotion remain held.

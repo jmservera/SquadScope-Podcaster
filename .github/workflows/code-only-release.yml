@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       api_digest:
-        description: 'Independently verified scanned 8e65a535 API sha256 digest'
+        description: 'Independently verified scanned a30fbc59 API sha256 digest'
         required: true
         type: string
       worker_digest:
-        description: 'Independently verified scanned 8e65a535 worker sha256 digest'
+        description: 'Independently verified scanned a30fbc59 worker sha256 digest'
         required: true
         type: string
 
