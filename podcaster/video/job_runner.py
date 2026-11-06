@@ -1108,6 +1108,7 @@ class _RenderAuthority:
         renew: Callable[[], tuple[float, ...]],
         check_live: Callable[[], None] | None = None,
         deadlines: tuple[float, ...] = (),
+        refreshable_deadlines: bool = False,
     ) -> None:
         self.guard = guard
         self.budget = budget
@@ -1115,9 +1116,10 @@ class _RenderAuthority:
         self.check_live = check_live
         self.next_heartbeat = 0.0
         self.deadlines = deadlines
+        self.refreshable_deadlines = refreshable_deadlines
         self.error: Exception | None = None
 
-    def _remaining(self) -> float:
+    def _remaining(self, *, include_cached: bool = True) -> float:
         if self.error is not None:
             raise OwnershipError("render authority was lost") from self.error
         if self.check_live is not None:
@@ -1126,25 +1128,42 @@ class _RenderAuthority:
         return min(
             [
                 self.budget.remaining_seconds(VideoStage.RENDER),
-                *(deadline - now for deadline in self.deadlines),
+                *(
+                    deadline - now
+                    for deadline in self.deadlines
+                    if include_cached or not self.refreshable_deadlines
+                ),
             ]
         )
 
     def remaining(self, *, force_renew: bool = False) -> float:
         acquired = False
         try:
-            timeout = min(20.0, self._remaining())
+            # Recovery heartbeats can supersede cached visibility; only a bounded
+            # live fence/epoch read may establish whether that authority still exists.
+            timeout = min(20.0, self._remaining(include_cached=False))
             operation_deadline = time.monotonic() + timeout
             if timeout <= 0 or not self.guard.renewal_lock.acquire(timeout=timeout):
                 raise OwnershipError("render authority renewal exceeded its bound")
             acquired = True
-            timeout = min(operation_deadline - time.monotonic(), self._remaining())
+            timeout = min(
+                operation_deadline - time.monotonic(), self._remaining(include_cached=False)
+            )
             if timeout <= 0:
                 raise OwnershipError("render authority renewal exceeded its bound")
             # Followers reuse the successful renewal, but still read the current fence.
-            due = force_renew or time.monotonic() >= self.next_heartbeat
+            due = (
+                force_renew
+                or time.monotonic() >= self.next_heartbeat
+                or (
+                    self.refreshable_deadlines
+                    and any(deadline - time.monotonic() <= 5 for deadline in self.deadlines)
+                )
+            )
 
             def operation() -> tuple[float, ...]:
+                if self.refreshable_deadlines:
+                    self.guard.assert_current()
                 deadlines = self.renew() if due else self.deadlines
                 self.guard.assert_current()
                 return deadlines
@@ -1193,20 +1212,20 @@ class _RecoveryQueueLease:
         self._thread: threading.Thread | None = None
 
     def beat(self) -> None:
-        guard = self.ownership_guard
-        if guard is not None:
-            with guard.renewal_lock:
-                self._beat()
-        else:
-            self._beat()
-
-    def _beat(self) -> None:
-        from podcaster.orchestration import load_manifest
-        from podcaster.video.recovery import RecoveryDenied, claim_epoch, read_selected
-
         updated = self.queue.update_message(
             self.message, visibility_timeout=RECOVERY_VIDEO_VISIBILITY_TIMEOUT
         )
+        guard = self.ownership_guard
+        if guard is not None:
+            with guard.renewal_lock:
+                self._beat(updated)
+        else:
+            self._beat(updated)
+
+    def _beat(self, updated: QueueMessage) -> None:
+        from podcaster.orchestration import load_manifest
+        from podcaster.video.recovery import RecoveryDenied, claim_epoch, read_selected
+
         self.message = updated
         try:
             claim_epoch(
@@ -1803,7 +1822,7 @@ def run_video_generation(
                 deadlines=tuple(
                     deadline
                     for deadline in (
-                        lifecycle_deadline_monotonic,
+                        (lifecycle_deadline_monotonic if recovery_visibility is None else None),
                         _authoritative_deadline_monotonic(visibility_expires_at),
                         (
                             _authoritative_deadline_monotonic(media_validation_lease.expires_at)
@@ -1813,6 +1832,7 @@ def run_video_generation(
                     )
                     if deadline is not None
                 ),
+                refreshable_deadlines=recovery_visibility is not None,
             )
 
             with timings.phase("composition"):

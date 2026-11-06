@@ -221,6 +221,86 @@ def test_final_validation_forces_bounded_fresh_renewal(render_authority_control,
     assert timeouts == [20]
 
 
+def test_recovery_render_refreshes_superseded_visibility_after_heartbeat(render_authority_control):
+    _runner, authority, guard, renew, _live, clock = render_authority_control
+    authority.refreshable_deadlines = True
+    authority.authorize()
+    clock[0] = 181
+    authority.next_heartbeat = 210
+    renew.return_value = (240.0,)
+    assert authority.remaining() == 19
+    assert renew.call_count == 2
+    assert guard.assert_current.call_count == 4
+
+
+@pytest.mark.parametrize("loss", ["visibility", "editor", "owner", "epoch", "render"])
+def test_recovery_expired_cache_requires_live_authority_before_renewal(
+    render_authority_control, loss
+):
+    runner, authority, guard, renew, live, _clock = render_authority_control
+    authority.refreshable_deadlines = True
+    authority.deadlines = (99.0,)
+    if loss in {"visibility", "editor", "owner"}:
+        guard.assert_current.side_effect = runner.OwnershipError(f"{loss} lost")
+    elif loss == "epoch":
+        live.side_effect = runner.OwnershipError("epoch expired")
+    else:
+        authority.budget = SimpleNamespace(remaining_seconds=lambda stage: 0.0)
+    with pytest.raises(runner.OwnershipError):
+        authority.authorize()
+    renew.assert_not_called()
+    guard.assert_current.side_effect = None
+    live.side_effect = None
+    with pytest.raises(runner.OwnershipError, match="was lost"):
+        authority.authorize()
+
+
+def test_recovery_current_visibility_expiry_fails_after_bounded_read(render_authority_control):
+    runner, authority, _guard, renew, _live, _clock = render_authority_control
+    authority.refreshable_deadlines = True
+    authority.deadlines = (99.0,)
+    renew.return_value = (99.0,)
+    with pytest.raises(runner.OwnershipError, match="has expired"):
+        authority.remaining(force_renew=True)
+    assert renew.call_count == 1
+
+
+@pytest.mark.parametrize("heartbeat_renewed", [False, True])
+def test_recovery_uses_current_persisted_visibility_not_expired_cache(
+    render_authority_control, storage, heartbeat_renewed
+):
+    runner, authority, _guard, renew, _live, clock = render_authority_control
+    from podcaster.video.ownership import VideoOwnershipGuard
+
+    at = datetime.now(timezone.utc)
+
+    def now():
+        return at + timedelta(seconds=clock[0] - 100)
+
+    authority.guard = VideoOwnershipGuard.acquire(
+        storage,
+        "renewed-recovery",
+        owner="video-runner",
+        execution_id="same-worker",
+        visibility_expires_at=at + timedelta(seconds=80),
+        now=now,
+    )
+    authority.refreshable_deadlines = True
+    authority.deadlines = (180.0,)
+    clock[0] = 170
+    if heartbeat_renewed:
+        authority.guard.refresh_visibility(at + timedelta(seconds=140))
+    clock[0] = 181
+    renew.return_value = (240.0,)
+    if heartbeat_renewed:
+        assert authority.remaining() == 19
+        renew.assert_called_once()
+    else:
+        with pytest.raises(runner.OwnershipError, match="has expired"):
+            authority.remaining()
+        renew.assert_not_called()
+
+
 def test_final_validation_kills_hung_authority_io():
     from podcaster.video import job_runner as runner
     from podcaster.video.intermediates import StorageOperationTimeout

@@ -524,6 +524,12 @@ inside the lock and publish successful authority before unlocking; followers sti
 verify the current fence. Final validation forces a fresh renewal through that
 same bounded path. Returned budgets are recomputed after all waits, and any lost
 authority is latched so other workers cancel rather than reuse an earlier success.
+Recovery uses the current heartbeat-confirmed queue visibility, not the original
+dequeue's superseded expiry. A stale cached visibility bound triggers a bounded
+current-owner/epoch/editor check before renewal, never revival of an expired
+current claim. Queue network renewal runs outside the downstream authority lock;
+committing the returned receipt and epoch/downstream authority remains serialized,
+so a slow queue response cannot block selection while waiting for selection itself.
 Loss stops the specifically owned process tree and discards
 partial output. All compose commands use the original render-stage budget
 (3300 seconds from epoch start), leaving the existing downstream reserves intact.

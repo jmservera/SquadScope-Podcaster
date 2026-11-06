@@ -1,5 +1,29 @@
 # W44/W45 video-only recovery — Leela implementation evidence
 
+## P04 Leela fourth-author current-visibility correction — 2026-11-06
+
+Working independently from local76fdaa80 in isolated
+`.worktrees/leela-pr784-current-visibility-20261106`; prior dirty worktree and
+attached bounded tests are untouched. Frank/Basher/Rusty supply no contributions.
+Reproduced both existing failures unchanged (2 failed): expired original dequeue
+cache rejects valid recovery authority; threaded SDK selection overlap blocks
+on the heartbeat's queue-network call holding the authority lock.
+
+Separate superseded recovery visibility from fixed render/epoch deadlines.
+Any replacement authority must pass bounded current owner/fence/epoch/editor
+checks; actual expiry cannot be revived. Heartbeat queue I/O need not hold the
+downstream authority lock; its manifest/downstream updates remain serialized.
+Both original unchanged regressions now pass. Full related recovery/runner/
+ownership/editor/budget/compose/process/intermediates suite: **894 passed**,
+29 existing fork warnings, 78.65 seconds. Nine new deterministic cases cover
+superseded cache, current persisted heartbeat renewal versus genuine expiry,
+lost owner/editor/epoch/render authority and failure latching. Fixed-deadline,
+post-wait timeout, coalescing and real threaded/fork controls remain unchanged.
+An initial selector typo collected no tests; corrected command ran all related
+files without exclusions. Full normal pytest and actual whole-cumulative
+independent review remain pending, not PASS.
+No deployment, successor admission, provider/TTS operation, or runtime guarantee.
+
 ## P04 Basher different-author successor-clock correction — 2026-11-06
 
 Basher solely revised the rejected freshness artifact; Frank supplied no advice
