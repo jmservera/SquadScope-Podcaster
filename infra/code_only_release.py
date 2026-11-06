@@ -12,6 +12,7 @@ import re
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 SUBSCRIPTION = "99d2c976-e2ca-4e54-ad12-0325e6a62b9e"
@@ -74,13 +75,37 @@ def resource_url(target):
     )
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def trusted_arm_url(url):
+    parsed = urllib.parse.urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "management.azure.com"
+        or parsed.fragment
+        or not parsed.path.startswith(f"/subscriptions/{SUBSCRIPTION}/")
+    ):
+        raise RuntimeError("Untrusted ARM operation URL; details withheld")
+    return url
+
+
+def retry_delay(headers):
+    value = headers.get("Retry-After", "")
+    return min(max(int(value), 1), 60) if value.isdigit() else 5
+
+
 class Arm:
     def __init__(self):
         self.token = cli_json(
             ["account", "get-access-token", "--resource", "https://management.azure.com/"]
         )["accessToken"]
+        self.opener = urllib.request.build_opener(NoRedirect())
 
-    def request(self, method, url, body=None):
+    def response(self, method, url, body=None):
+        trusted_arm_url(url)
         data = None if body is None else json.dumps(body).encode()
         request = urllib.request.Request(
             url,
@@ -91,9 +116,53 @@ class Arm:
                 "Content-Type": "application/json",
             },
         )
+        with self.opener.open(request, timeout=90) as response:
+            raw = response.read()
+            payload = json.loads(raw) if raw.strip() else {}
+            if not isinstance(payload, dict):
+                raise RuntimeError("Unexpected ARM response shape; details withheld")
+            return response.status, response.headers, payload
+
+    def poll_operation(self, url, headers, location=False):
+        trusted_arm_url(url)
+        deadline = time.monotonic() + 600
+        while time.monotonic() < deadline:
+            time.sleep(min(retry_delay(headers), max(0, deadline - time.monotonic())))
+            if time.monotonic() >= deadline:
+                break
+            try:
+                code, headers, payload = self.response("GET", url)
+            except urllib.error.HTTPError as error:
+                if error.code not in (408, 429, 500, 502, 503, 504):
+                    raise RuntimeError(
+                        f"ARM operation polling failed HTTP {error.code}; body withheld"
+                    ) from None
+                headers = error.headers
+                continue
+            except (urllib.error.URLError, TimeoutError):
+                headers = {}
+                continue
+            state = payload.get("status") or payload.get("properties", {}).get("provisioningState")
+            if state in ("Failed", "Canceled"):
+                raise RuntimeError("Terminal ARM operation failure: " + state)
+            if state == "Succeeded":
+                return
+            if location and code in (200, 204) and not state:
+                return
+            if not state and not (location and code == 202):
+                raise RuntimeError("ARM operation response lacks terminal status; details withheld")
+        raise RuntimeError("ARM operation polling timeout; accepted mutation not certified")
+
+    def request(self, method, url, body=None):
         try:
-            with urllib.request.urlopen(request, timeout=90) as response:
-                return json.load(response)
+            _, headers, payload = self.response(method, url, body)
+            if method == "PATCH":
+                operation = headers.get("Azure-AsyncOperation") or headers.get("Location")
+                if operation:
+                    self.poll_operation(
+                        operation, headers, location=not bool(headers.get("Azure-AsyncOperation"))
+                    )
+            return payload
         except urllib.error.HTTPError as error:
             raise RuntimeError(f"ARM {method} failed HTTP {error.code}; body withheld") from None
 
@@ -193,11 +262,11 @@ def require_quiet_jobs():
             raise RuntimeError("Active event-worker execution; defer release: " + target)
 
 
-def wait_ready(arm, target):
+def wait_ready(arm, target, expected_image):
     for _ in range(120):
         resource = arm.request("GET", resource_url(target))
         state = resource["properties"]["provisioningState"]
-        if state == "Succeeded":
+        if state == "Succeeded" and images(resource) == [expected_image]:
             return resource
         if state in ("Failed", "Canceled"):
             raise RuntimeError("Terminal deployment failure: " + target)
@@ -247,7 +316,7 @@ def release(arm, api_image, worker_image, apply=False, sleep=time.sleep):
         require_unchanged(expected, arm.snapshots())
         image = api_image if target == "api" else worker_image
         arm.request("PATCH", resource_url(target), patch_body(expected[target], image))
-        wait_ready(arm, target)
+        wait_ready(arm, target, image)
         expected[target]["properties"]["template"]["containers"][0]["image"] = image
         observed = arm.snapshots()
         require_unchanged(expected, observed)

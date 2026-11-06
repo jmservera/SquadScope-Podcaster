@@ -36,6 +36,20 @@ one healthy 100%-traffic revision. Independent actual postrelease readback must
 verify all six digests, protected settings, UI/model/network invariants and
 health before admitting the two original private recovery epochs.
 
+Successful empty PATCH responses are accepted without JSON decoding errors,
+but 202 alone never certifies deployment. The helper polls `Azure-AsyncOperation`
+to `Succeeded` (rejecting `Failed`/`Canceled`), or the ARM `Location` completion
+endpoint when the first header is absent. It follows the ARM asynchronous
+operation contract, honors bounded numeric Retry-After delays, and retries only
+transient polling reads within a fixed ten-minute deadline; it never replays
+a PATCH. Poll URLs must be HTTPS on the exact ARM management host and current
+subscription; HTTP redirects are refused and URLs/bodies are not logged.
+When neither polling header exists, fresh resource reads must reach both
+`provisioningState=Succeeded` **and the expected immutable image** within the
+bounded readiness wait. An old Succeeded image cannot satisfy this fallback.
+All paths then require fresh six-resource protected comparison and API health.
+See [ARM asynchronous operations](https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/async-operations).
+
 Original rollback references are pinned in the helper and emitted in the
 sanitized preflight. A partial failure leaves already updated images recorded
 in per-resource milestones; **there is no automatic rollback** or restart from
