@@ -437,7 +437,8 @@ and only after exact four-field publication identity, review/script/completed-cl
 WAV/MP3 bytes and SHA revalidation and expiry of the first durable video attempt.
 Later unknown-claim or placeholder jobs cannot enter. Authentication grants no
 general recovery role: the operation scope is fixed server-side to one epoch per
-original identity, and caller-supplied inventory/approval strings have no authority.
+original identity, except the exact bounded W44 successor described below.
+Caller-supplied inventory/approval strings have no authority.
 The development auth-disabled mode cannot admit these jobs. The former
 `/video/private-recovery` operator and dispatch endpoints are removed. Provider
 inventory is deferred only for private rendering, not evidence that it occurred.
@@ -455,6 +456,111 @@ Old ordinary messages are fenced; a recovery epoch uses its own clip namespace
 and immutable MP4/held-outbox candidate paths. Only one candidate selected by
 the original manifest's CAS is authoritative; readers verify both its original
 reviewed-media proof and persisted private MP4 digest. Candidates alone are inert.
+
+#### Exact W44 successor disposition (2026-11-06)
+
+The coordinator's explicit disposition under the owner's actual 14:02 instruction
+permits **one** successor to W44 epoch `29080a3a502d40729a59e7eb440b3681`,
+not a generic retry or a new owner message. W45 remains first-epoch-only and the
+operator must wait for W44's selected private MP4 PASS before admitting W45.
+The same authenticated route takes no new authority-bearing arguments.
+Only the exact W44 original and original MP3 SHA256
+`5933fdecc6c76d80c81e2c845206fd0655a983713c2b20f204377ac3823153c1`
+can enter. Full review/script/completed-claim/WAV/MP3 proof and identity-wide provider
+quietness are freshly revalidated inside the manifest CAS.
+
+Admission additionally reads the fixed **private storage operator channel**
+`jobs/podcast-2026-W44-00bc06dfb6e2/video-recovery/29080a3a502d40729a59e7eb440b3681/quiescence.json`.
+No API endpoint writes this document and no request field supplies its path,
+contents, retry token or approval. An API-key holder cannot manufacture it.
+Existing privileged storage operators are inside this trust boundary; this is
+an operational attestation, not cryptographic proof of worker absence or owner identity.
+Do not grant new storage permissions, create infrastructure or use public access.
+
+The release operator must obtain fresh complete execution/native-redelivery and
+replica inventories plus authoritative retained termination receipts before writing
+the attestation through existing private storage access. A 404, missing replica,
+partial listing or unknown queue/native retry state is **not** termination proof.
+The document schema is `w44-successor-quiescence-v1`; it binds `job_id`,
+`predecessor_epoch_id`, `coordinator_disposition`
+(`coordinator-w44-single-successor-disposition-20261106-140213`), `proof_sha256`,
+SHA256 of canonical predecessor JSON (`predecessor_sha256`), and SHA256 of the
+unchanged historical budget bytes (`historical_budget_sha256`). `observed_at`
+must be after the predecessor's deadline and no more than 120 seconds old at CAS.
+Each reservation callback, including every conditional-write retry, samples the
+live clock after all proof and attestation storage reads; request-start time is
+not admission time. Stale or future-dated evidence denies reservation without
+changing the ledger. The successful callback sets the new start and fixed
+deadline; later reconciliation never moves either timestamp.
+`execution_inventory_complete`, `native_redeliveries_accounted` and
+`competing_writer_absent` must all be true, backed by actual observations, not guessed.
+`executions` contains unique `name`, terminal `status` (`Failed`, `Succeeded` or
+`Stopped`), `replica_inventory_complete: true`, and nonempty `replicas` with
+`name`, integer `exit_code`, and `finished_at`. Include both known executions
+`podcaster-yqabcnkm2junu-video-98kpp` (both known replicas `9rmfj`, `9c562`) and
+`podcaster-yqabcnkm2junu-video-zb8dm`, plus every newly discovered execution/retry.
+Unknown evidence fails closed; do not generate true booleans from absence.
+
+The original terminal epoch is never reset. The successor records its predecessor,
+the complete attestation and prior runner/terminal/timing audit; old ledger,
+historical budget and abandoned candidate evidence remain preserved. A single
+manifest CAS appends at most one successor with a new fixed 5100-second deadline
+persisted once. Concurrent/repeated calls reconcile that same successor; terminal,
+expired or unknown successors cannot become a third epoch. Existing old-writer,
+selection and identity-wide provider fences still apply across both epochs.
+
+#### Live editor authority and finite composition
+
+Queue visibility is not editor authority. During media subprocess work the runner
+explicitly renews only its still-live, same-execution editor CAS lease and records
+the committed expiry in its still-current downstream claim. These operations are
+serialized with queue/epoch/downstream renewal. Neither expiry nor terminal claims
+can be revived; no stage deadline or epoch deadline changes. Queue heartbeat failure
+is checked during subprocess execution; editor/downstream authority is checked at
+most 30 seconds apart. Worker and final-validation callbacks share one finite
+20-second bound across lock wait and cancellable storage operations, shortened by
+the remaining render budget. Concurrent workers recheck the renewal throttle
+inside the lock and publish successful authority before unlocking; followers still
+verify the current fence. Final validation forces a fresh renewal through that
+same bounded path. Returned budgets are recomputed after all waits, and any lost
+authority is latched so other workers cancel rather than reuse an earlier success.
+Recovery uses the current heartbeat-confirmed queue visibility, not the original
+dequeue's superseded expiry. A stale cached visibility bound triggers a bounded
+current-owner/epoch/editor check before renewal, never revival of an expired
+current claim. Queue network renewal runs outside the downstream authority lock;
+committing the returned receipt and epoch/downstream authority remains serialized,
+so a slow queue response cannot block selection while waiting for selection itself.
+Loss stops the specifically owned process tree and discards
+partial output. All compose commands use the original render-stage budget
+(3300 seconds from epoch start), leaving the existing downstream reserves intact.
+Full decode also has a finite remaining-lifecycle bound and live cancellation.
+
+Internally canonical content and the already encoded canonical outro crossfade now
+receive silent audio using video stream copy, avoiding two redundant full-length
+lossy canonical encodes. Intro/outro normalization, actual xfade, DOG, quality/CRF,
+resolution, profile, sole original podcast audio and full-decode promotion gates
+are unchanged. Arbitrary external canonicalization callers still re-encode.
+
+`media stage=... resource_sample=...` logs provide elapsed time, child-process CPU,
+sampled read/write bytes and chars, output size and available ffmpeg frames/fps.
+Samples are process-local lower bounds, not Python-parent CPU, exact I/O wait or
+proof that production completes in budget. A finite offline 1080p synthetic control:
+
+```bash
+PYTHONPATH=. python scripts/benchmark_video_canonical_mux.py \
+  --work-dir .scratch/canonical-benchmark --seconds 12
+```
+
+The benchmark preserves production preset/CRF and caps each operation at 240 seconds,
+compares video packet hashes, verifies stream properties and completely decodes both
+outputs. It uses no provider, network or TTS, and does not certify full W44 wall time.
+
+The 2026-11-06 local 12-second moving 1080p/30fps control, restricted to four CPUs,
+measured legacy encode 14.729 seconds / 50.87 sampled child CPU seconds versus
+stream copy 0.134 seconds / 0.11 CPU seconds, with approximately 20 MB written in
+each case. Identical encoded video hash and both complete decodes passed.
+This isolates substantial redundant CPU work; cached reads and sampled counters
+cannot establish production disk wait or predict the full episode's wall time.
 Prior, ambiguous, or corrupt video provider evidence blocks replay. This release
 has **no transition from held private output to provider dispatch**, including
 Spotify draft or unlisted YouTube. A completed MP4, an inventory reference, or

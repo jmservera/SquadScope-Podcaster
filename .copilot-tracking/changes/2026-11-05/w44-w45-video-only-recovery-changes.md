@@ -1,5 +1,122 @@
 # W44/W45 video-only recovery — Leela implementation evidence
 
+## ACTIVE Farnsworth first-time revision — 2026-11-06T15:52:31Z
+
+Sole source mutator independently addresses healthy-poll remote-operation
+frequency. Preserve all earlier evidence and dirty scratch; no locked-out
+author contributions or implementation delegation. Frequent local checks,
+coalesced bounded periodic remote checks, fresh command/final fencing and
+owned-process cancellation must be verified before full pytest/Ruff, actual
+whole-cumulative independent review, exact-head CI/thread resolution and normal
+merge. No production mutation; parent continues release/media after merge.
+
+At15:55:28Z the minimal authority/process callback split passes **223 coupled
+runner/process/budget tests**, whole-tree Ruff check/format227 and whitespace.
+Deterministic100poll/fake-clock controls prove1remote operation/1renewal and
+1normal or2recovery readbacks until30seconds; real4threads×100polls also share
+1forked renewal and1/2readbacks. Fresh command-boundary fence loss and forced
+final validation remain checked; heartbeat loss cancels the exact owned PID
+within5seconds while an unrelated PID survives. No actual production CPU/IOwait
+measurement is claimed. Existing test read-count assertions now require the
+reduced remote frequency, not weaker fencing/fixtures.
+
+Initial full-suite collection failed on the known missing azure.keyvault module;
+existing sanctioned `.scratch/basher-test-deps` from the prior source worktree
+restored solely via PYTHONPATH. Normal full pytest is active, not PASS; no source
+or gate/dependency manifest change. Actual independent cumulative review and
+exact-head CI/thread resolution/merge remain pending.
+
+## CURRENT fresh genuine Medium rejection / Leela lockout — 2026-11-06T15:50:44Z
+
+Actual fresh Copilot review5802792627 submitted15:48:42Z rejects exactb5caa178
+with Medium at`podcaster/video/job_runner.py:1171`, discussion4494405161,
+thread`PRRT_kwDOSzuis860k7JA` unresolved: every healthy authorize poll still
+spawns a storage worker and reads ownership despite the30-second renewal
+throttle; recovery reads twice. Unchanged committed class extracted by AST into
+process memory,100healthy authorizecalls withzero fakeclock advance:
+100bounded-storage-workers,200ownership-readbacks,1renewal/noauthorityerror.
+This proves call frequency, not measuredproductionCPU/IOwait.
+
+The same actual review explicitly confirms both prior High findings RESOLVED.
+Author full6257PASS/Ruff227 and actual independent Livingston APPROVE/894+105PASS
+are preserved facts, not acceptance overriding this new genuine rejection.
+Leela immediately stops source/advice/coauthor/contributions/push/threadresolution/
+merge/deployment on this rejected revision. Parent must assign a different
+eligible author; Frank/Basher/Rusty remain excluded from their rejectedlineage.
+Only ownlocal `leela-pr784-ci` ghwatch stopped; remoteCI retainedrunning,
+12of13visiblechecksPASS/ci-testactive at15:50:44Z. PR784OPEN/BLOCKEDb5caa178,
+no merge/deployment/admission. Prior sourceworktree/dirtyrecord/scratch preserved.
+No newconsent/CAS/identitygate. Evidence-only working-copy update, no newsource.
+
+## PR784 exact b5caa178 full validation / normal push — 2026-11-06T15:43:51Z
+
+Full normal pytest: **6257 passed,4 existing skipped,2 configured deselected,
+30 warnings in1149.97s** (`.scratch/leela-full.log`, attached command exit0).
+Whole-tree Ruff check/format227 and whitespace diff passed before normal push.
+Actual independent READONLY Livingston APPROVED the whole cumulative exact
+b5caa178 vs e66ac9c, independently894 related+105 focused/editor/intermediates
+passed. Earlier broader1027pass/1transient fork-shutdown error passed isolation,
+integrated rerun and unchanged-base control; preserved honestly.
+
+Both unchanged original regressions pass. The untouched prior Rusty full suite
+finished6243pass/2sameFAIL,4skipped/2deselected; not acceptance for this revision.
+Normal fast-forward push updated existing PR784 to b5caa178. Both legitimate
+threads have substantive replies4494344085/4494344144 and are resolved.
+Fresh exact-head strict CI/CodeQL/Copilot review/comments and normal matched-head
+squash remain mandatory before merge. No production mutation or deployment/
+successor admission. This evidence-only working-copy update does not alter the
+reviewed/pushed code head or claim completed CI.
+
+## P04 Leela fourth-author current-visibility correction — 2026-11-06
+
+Working independently from local76fdaa80 in isolated
+`.worktrees/leela-pr784-current-visibility-20261106`; prior dirty worktree and
+attached bounded tests are untouched. Frank/Basher/Rusty supply no contributions.
+Reproduced both existing failures unchanged (2 failed): expired original dequeue
+cache rejects valid recovery authority; threaded SDK selection overlap blocks
+on the heartbeat's queue-network call holding the authority lock.
+
+Separate superseded recovery visibility from fixed render/epoch deadlines.
+Any replacement authority must pass bounded current owner/fence/epoch/editor
+checks; actual expiry cannot be revived. Heartbeat queue I/O need not hold the
+downstream authority lock; its manifest/downstream updates remain serialized.
+Both original unchanged regressions now pass. Full related recovery/runner/
+ownership/editor/budget/compose/process/intermediates suite: **894 passed**,
+29 existing fork warnings, 78.65 seconds. Nine new deterministic cases cover
+superseded cache, current persisted heartbeat renewal versus genuine expiry,
+lost owner/editor/epoch/render authority and failure latching. Fixed-deadline,
+post-wait timeout, coalescing and real threaded/fork controls remain unchanged.
+An initial selector typo collected no tests; corrected command ran all related
+files without exclusions. Full normal pytest and actual whole-cumulative
+independent review remain pending, not PASS.
+No deployment, successor admission, provider/TTS operation, or runtime guarantee.
+
+## P04 Basher different-author successor-clock correction — 2026-11-06
+
+Basher solely revised the rejected freshness artifact; Frank supplied no advice
+or coauthorship. The live clock now reaches reservation unchanged, is sampled
+after all proof/attestation reads on every conditional-write callback/retry,
+and denies stale or future evidence before ledger mutation. Successful
+reservation timestamps use that callback's actual time, not request start;
+same-epoch reconciliation never changes the persisted start or deadline.
+
+Twelve deterministic regressions cover callback delay, slow proof reads, slow
+attestation reads and discarded-CAS-proposal retry, each at -1/120/121 seconds.
+The existing exact-original/quiescence/fence tests remain intact. Successor
+selectors: **27 passed**. Integrated freshness/renewal/ownership/editor/budget/
+compose/process/intermediates: **864 passed**, 24 existing fork warnings.
+Whole-tree Ruff check/format: **227 files passed**; diff whitespace clean.
+The missing locked azure-keyvault-secrets 4.12.0 dependency was restored to an
+isolated ignored scratch target after import failure, without manifest change.
+Actual full normal pytest is running and is not yet a pass.
+
+Historical b95aacc rejection below remains preserved. A genuine independent
+read-only review of the corrected committed head, complete pytest, exact-head CI,
+fresh comments/threads and normal head-matched merge remain mandatory. No
+production attestation, epoch, deployment, provider/TTS or new infrastructure
+operation. Parent continues new-source build/scan/OCI provenance and reviewed
+release pin refresh immediately after this bounded merge milestone.
+
 ## 2026-11-06T09:10:35Z — Basher different-author startup correction
 
 Owner reassigned the valid PR782 startup artifact to Basher, sole mutation
@@ -323,3 +440,56 @@ independent review and release remain pending.
 Open issue #777 concerns the lockfile gate; it must not be waived or patched
 in this focused change. No merge, deployment, production epoch, provider write
 or public promotion occurred.
+# P04 resumed corrective implementation — 2026-11-06T14:10Z
+
+Frank sole source operator, WORKTREE_PATH=/home/azureuser/source/SquadScope-Coordinator/.worktrees/frank-render-renewal-20261106, branch squad/w44-render-renewal, base origin/main e66ac9cd78d60636ccdb4ac9c91e75abd3999f50. All previous dirty state preserved. Actual owner14:02 instruction and runtime coordinator single-successor disposition reconcile the historical one-epoch scope narrowly for exact W44 predecessor29080a3a502d40729a59e7eb440b3681; W45 first epoch unchanged. P04-T01 live explicit editor renewal/cancellation/budget/performance; T02 trusted bounded successor admission/history/fencing; T03 complete tests/review/exact-head CI/normal merge. No cloud mutation, deployment, render, TTS or provider action. Parent continues release immediately after actual merge. Historical rejection evidence retained above.
+
+## P04-T01/T02 implementation and finite evidence
+
+Explicit same-live-editor CAS heartbeat records committed editor expiry independently
+of queue visibility and serializes downstream authority refresh. Production media
+commands receive the unchanged render budget; authority loss cancels/reaps owned
+media process trees, and final full decode uses the same live cancellation.
+Authority storage operations and lock acquisition are finite20s; heartbeat shutdown
+join is35s, never indefinite. Fixed3300s render and5100s epoch deadlines remain.
+
+Only exact W44 predecessor29080a3a502d40729a59e7eb440b3681 may have one successor.
+The existing private-storage operator channel requires <=120s fresh complete
+execution/replica/native-redelivery termination evidence, bound to predecessor/
+original proof/historical budget; no API can provide or write it. The original
+terminal ledger and prior runner audit are preserved by the same manifest CAS.
+This explicitly trusts existing privileged storage operators and does not assert
+new owner identity, fresh owner message, or mathematical absence from a404.
+Production attestation/admission remains absent and must be established by parent.
+
+Focused712 tests passed, then integrated bounded-authority/process/lease/recovery246
+passed after tightening. Whole-tree Ruff228 clean; full suite running.
+Finite offline12s moving1080p30/CRF12/slow control on4CPU affinity:
+legacy canonical encode14.7288wall/50.87sampledchildCPU vs canonical-video copy
+0.1336wall/0.11CPU, both~20MBwrite, identical compressed video hash, bothfull-decode
+PASS. ChildCPU/read/write samples are not parentCPU or exactI/Owait. This isolates
+two redundant full-length encodes; full486s W44 budget completion remains unproven.
+First benchmark rendered successfully but bounded stdout truncated packet JSON;
+small aggregate video hash fixed that evidence method without weakening the gate.
+Files/scripts and complete report remain in `.scratch/canonical-benchmark-v2`.
+P04-T03 independent exact-head review/full suite/CI/normal merge still pending.
+
+## P04-T02 actual independent rejection — Frank lockout
+
+Hermes actual READONLY review of exactb95aaccba0eaae70a3e8015af460e222fd857e65
+returned REJECT: Medium successor-freshness defect in recovery.py. The request
+timestamp is frozen when passed into reservation; an independent unchanged-source
+in-memory121s delay before the actual manifest CAS callback still admitted epoch2
+using stale quiescence evidence. Frank is locked out of this rejected artifact/
+revision and must not self-fix, contribute advice/coauthoring, push, merge or deploy.
+Parent must assign a different eligible author. No new owner-consent/GitHub-human
+review/CAS-capability prerequisite exists; coordinator disposition remains valid.
+
+Actual independent validation:716 process/ownership/synthesis-security/job-runner/
+compose tests plus136budget/editor/intermediates tests passed;24forkwarnings;
+4/4 concurrentrenderthread→boundedchildRLock controls passed. Author final200
+successor vectors passed73.41s, Ruff228clean. Full normal suite was stopped at
+~10percent after genuine source rejection; no full-suitePASS or CI waiver claimed.
+Branch is local/unpushed, no PR/CI/merge. Exact rejected commit preserved; this
+append is operational evidence only, not a source correction. No production
+attestation/admission/deploy/media/provider/TTS/secret operation occurred.

@@ -38,6 +38,61 @@ def _storage(tmp_path: Path) -> LocalStorageBackend:
     return LocalStorageBackend(tmp_path / "storage", "https://blob.example")
 
 
+def test_explicit_editor_heartbeat_survives_long_render_without_visibility_grant(tmp_path):
+    from podcaster.video.editor import acquire_or_renew_lease, read_lease
+
+    storage = _storage(tmp_path)
+    current = datetime.now(timezone.utc)
+    started = current
+    editor = acquire_or_renew_lease(storage, "job", "render", now=current)
+    guard = VideoOwnershipGuard.acquire(
+        storage,
+        "job",
+        owner="video-runner",
+        execution_id="render",
+        visibility_expires_at=current + timedelta(seconds=900),
+        lease_expires_at=editor.expires_at,
+        now=lambda: current,
+    )
+    original_claim = guard.claim
+    for seconds in range(300, 2701, 300):
+        current = started + timedelta(seconds=seconds)
+        guard.renew_editor(storage)
+        guard.refresh_visibility(current + timedelta(seconds=900))
+        guard.assert_current()
+        assert read_lease(storage, "job").claimed_at == started
+        assert guard.claim == original_claim
+    assert read_lease(storage, "job").expires_at > started + timedelta(minutes=45)
+
+
+@pytest.mark.parametrize("loss", ["editor", "downstream", "expired"])
+def test_editor_heartbeat_never_revives_or_bypasses_a_lost_claim(tmp_path, loss):
+    from podcaster.video.editor import acquire_or_renew_lease, editor_lease_blob_path
+
+    storage = _storage(tmp_path)
+    current = datetime.now(timezone.utc)
+    editor = acquire_or_renew_lease(storage, "job", "render", now=current)
+    guard = VideoOwnershipGuard.acquire(
+        storage,
+        "job",
+        owner="video-runner",
+        execution_id="render",
+        visibility_expires_at=current + timedelta(seconds=900),
+        lease_expires_at=editor.expires_at,
+        now=lambda: current,
+    )
+    if loss == "editor":
+        acquire_or_renew_lease(storage, "job", "successor", now=current + timedelta(seconds=1801))
+    elif loss == "downstream":
+        _force_takeover(storage, "job")
+    else:
+        current += timedelta(seconds=901)
+    before = storage.get_bytes(editor_lease_blob_path("job"))
+    with pytest.raises(OwnershipError):
+        guard.renew_editor(storage)
+    assert storage.get_bytes(editor_lease_blob_path("job")) == before
+
+
 def _claim(
     storage: LocalStorageBackend,
     *,

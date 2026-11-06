@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -89,6 +90,7 @@ class VideoOwnershipGuard:
         self.storage = storage
         self.claim = claim
         self.now = now or (lambda: datetime.now(timezone.utc))
+        self.renewal_lock = threading.RLock()
 
     @classmethod
     def acquire(
@@ -230,6 +232,18 @@ class VideoOwnershipGuard:
 
         self.storage.update_bytes(ownership_path(self.claim.job_id), _CONTENT_TYPE, _refresh)
         self.assert_current()
+
+    def renew_editor(self, scratch: StorageBackend):
+        """Renew only this live editor's CAS lease, then record its actual authority."""
+        from podcaster.video.editor import renew_lease
+
+        with self.renewal_lock:
+            self.assert_current()
+            lease = renew_lease(scratch, self.claim.job_id, self.claim.execution_id, now=self.now())
+            if lease is None:
+                raise OwnershipError("editor lease lost during composition")
+            self.refresh_lease(lease.expires_at)
+            return lease
 
     def refresh_visibility(self, visibility_expires_at: datetime) -> None:
         """Renew queue visibility without creating new editor authority."""

@@ -1657,6 +1657,77 @@ class TestEncodeConfigurability:
         assert "fade=t=out:st=10.000:d=1.000" in joined
 
 
+def test_real_render_command_cannot_hang_past_fixed_stage_budget():
+    import sys
+
+    from podcaster.video.process import OwnedProcessTimeout
+
+    current = datetime.now(timezone.utc)
+    budget = VideoStageBudget.start(now_utc=current - timedelta(seconds=3299.5))
+    run = vc._budgeted_runner(None, budget)
+    started = time.monotonic()
+    with pytest.raises(OwnedProcessTimeout):
+        run([sys.executable, "-c", "import time; time.sleep(60)"])
+    assert time.monotonic() - started < 5
+
+
+def test_canonical_silent_mux_keeps_video_packets_and_fully_decodes(tmp_path):
+    source = tmp_path / "source.mp4"
+    output = tmp_path / "canonical.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=1920x1080:rate=30",
+            "-t",
+            "1",
+            *vc._encode_tail(vc.ENCODE_PRESET),
+            "-threads",
+            "2",
+            str(source),
+        ],
+        check=True,
+        timeout=30,
+        capture_output=True,
+    )
+    subprocess.run(
+        vc._build_canonical_av_cmd(source, output, has_audio=False, canonical_video=True),
+        check=True,
+        timeout=30,
+        capture_output=True,
+    )
+
+    def packets(path):
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v",
+                "-show_packets",
+                "-show_entries",
+                "packet=data_hash",
+                "-show_data_hash",
+                "sha256",
+                "-of",
+                "json",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=10,
+        )
+        return json.loads(result.stdout)["packets"]
+
+    assert packets(source) == packets(output)
+    _REAL_DECODE_FINAL_MEDIA(output, timeout_seconds=30)
+
+
 class TestComposeVideoContentVideoOnly:
     def test_content_composed_without_audio(self, tmp_path):
         runner = _ffprobe_runner(has_audio=True, duration=12.0)
@@ -1716,14 +1787,8 @@ class TestComposeVideoContentVideoOnly:
         # intro/content/outro joined video-only into joined.mp4
         concat_cmds = [c for c in cmds if "concat" in c and c[-1].endswith("joined.mp4")]
         assert len(concat_cmds) == 1
-        # canonicalized clips all generate a silent track (has_audio=False):
-        # intro, content, outro, plus the re-canonicalised content+outro
-        # crossfade clip (issue #393) = 4.
-        canon_cmds = [
-            c
-            for c in cmds
-            if "-filter_complex" in c and "join" in c[-1] and "anullsrc" in " ".join(c)
-        ]
+        # All four clips receive silent audio; internally canonical video is copied.
+        canon_cmds = [c for c in cmds if "join" in c[-1] and "anullsrc" in " ".join(c)]
         assert len(canon_cmds) == 4
         assert all("anullsrc" in " ".join(c) for c in canon_cmds)
         # content->outro is joined with a crossfade (issue #393), not a hard cut.
@@ -1790,13 +1855,8 @@ class TestComposeVideoIntroOutro:
         # Intro, outro, content-crossfade, and final validation probes.
         probe_cmds = [c for c in cmds if c[0] == "ffprobe"]
         assert len(probe_cmds) == 4
-        # canonical re-encodes for intro, content, outro and the crossfaded
-        # content+outro clip (4 canonicalize calls)
-        canon_cmds = [
-            c
-            for c in cmds
-            if "-filter_complex" in c and "anullsrc" in " ".join(c) and "join" in c[-1]
-        ]
+        # Silent audio for intro, content, outro and the crossfaded content+outro.
+        canon_cmds = [c for c in cmds if "anullsrc" in " ".join(c) and "join" in c[-1]]
         assert len(canon_cmds) == 4
         # duration = 10s content + 5s intro + 5s outro, minus the 1s crossfade
         # overlap between content and outro (issue #393).

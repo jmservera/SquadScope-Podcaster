@@ -1098,6 +1098,114 @@ def _video_visibility_timeout(env: dict[str, str] | None = None) -> int:
     return value if value > 0 else DEFAULT_VIDEO_VISIBILITY_TIMEOUT
 
 
+class _RenderAuthority:
+    """Share one finite lock/I/O bound and renewal result across render workers."""
+
+    def __init__(
+        self,
+        guard: VideoOwnershipGuard,
+        budget: VideoStageBudget,
+        renew: Callable[[], tuple[float, ...]],
+        check_live: Callable[[], None] | None = None,
+        deadlines: tuple[float, ...] = (),
+        refreshable_deadlines: bool = False,
+    ) -> None:
+        self.guard = guard
+        self.budget = budget
+        self.renew = renew
+        self.check_live = check_live
+        self.next_heartbeat = 0.0
+        self.deadlines = deadlines
+        self.refreshable_deadlines = refreshable_deadlines
+        self.error: Exception | None = None
+
+    def _remaining(self, *, include_cached: bool = True) -> float:
+        if self.error is not None:
+            raise OwnershipError("render authority was lost") from self.error
+        if self.check_live is not None:
+            self.check_live()
+        now = time.monotonic()
+        return min(
+            [
+                self.budget.remaining_seconds(VideoStage.RENDER),
+                *(
+                    deadline - now
+                    for deadline in self.deadlines
+                    if include_cached or not self.refreshable_deadlines
+                ),
+            ]
+        )
+
+    def _refresh_due(self) -> bool:
+        return time.monotonic() >= self.next_heartbeat or (
+            self.refreshable_deadlines
+            and any(deadline - time.monotonic() <= 5 for deadline in self.deadlines)
+        )
+
+    def remaining(self, *, force_renew: bool = False, force_refresh: bool = False) -> float:
+        acquired = False
+        try:
+            if self._remaining(include_cached=False) <= 0:
+                raise OwnershipError("render lifecycle authority has expired")
+            if not force_renew and not force_refresh and not self._refresh_due():
+                remaining = self._remaining()
+                if remaining <= 5:
+                    raise OwnershipError("render lifecycle authority has expired")
+                return remaining
+            # Recovery heartbeats can supersede cached visibility; only a bounded
+            # live fence/epoch read may establish whether that authority still exists.
+            timeout = min(20.0, self._remaining(include_cached=False))
+            operation_deadline = time.monotonic() + timeout
+            if timeout <= 0 or not self.guard.renewal_lock.acquire(timeout=timeout):
+                raise OwnershipError("render authority renewal exceeded its bound")
+            acquired = True
+            timeout = min(
+                operation_deadline - time.monotonic(), self._remaining(include_cached=False)
+            )
+            if timeout <= 0:
+                raise OwnershipError("render authority renewal exceeded its bound")
+            # Publish the entire refresh under this lock; periodic followers do no I/O.
+            due = force_renew or self._refresh_due()
+            if not due and not force_refresh:
+                remaining = self._remaining()
+                if remaining <= 5:
+                    raise OwnershipError("render lifecycle authority has expired")
+                return remaining
+
+            def operation() -> tuple[float, ...]:
+                if self.refreshable_deadlines:
+                    self.guard.assert_current()
+                deadlines = self.renew() if due else self.deadlines
+                self.guard.assert_current()
+                return deadlines
+
+            deadlines = run_storage_operation(operation, timeout)
+            if time.monotonic() >= operation_deadline:
+                raise OwnershipError("render authority renewal exceeded its bound")
+            self.deadlines = deadlines
+            remaining = self._remaining()
+            if remaining <= 5:
+                raise OwnershipError("render lifecycle authority has expired")
+            if due:
+                self.next_heartbeat = time.monotonic() + 30.0
+            return remaining
+        except Exception as exc:
+            self.error = exc
+            raise
+        finally:
+            if acquired:
+                self.guard.renewal_lock.release()
+
+    def authorize(self) -> None:
+        self.remaining()
+
+    def __call__(self) -> None:
+        self.remaining(force_refresh=True)
+
+    def poll(self) -> None:
+        self.authorize()
+
+
 class _RecoveryQueueLease:
     """Keep the received recovery message and its manifest owner in sync."""
 
@@ -1121,12 +1229,20 @@ class _RecoveryQueueLease:
         self._thread: threading.Thread | None = None
 
     def beat(self) -> None:
-        from podcaster.orchestration import load_manifest
-        from podcaster.video.recovery import RecoveryDenied, claim_epoch, read_selected
-
         updated = self.queue.update_message(
             self.message, visibility_timeout=RECOVERY_VIDEO_VISIBILITY_TIMEOUT
         )
+        guard = self.ownership_guard
+        if guard is not None:
+            with guard.renewal_lock:
+                self._beat(updated)
+        else:
+            self._beat(updated)
+
+    def _beat(self, updated: QueueMessage) -> None:
+        from podcaster.orchestration import load_manifest
+        from podcaster.video.recovery import RecoveryDenied, claim_epoch, read_selected
+
         self.message = updated
         try:
             claim_epoch(
@@ -1161,7 +1277,11 @@ class _RecoveryQueueLease:
                     return
             except Exception as exc:
                 self.error = exc
-                logger.warning("recovery queue/owner renewal failed job_id=%s", self.claim.job_id)
+                logger.warning(
+                    "recovery queue/owner renewal failed job_id=%s category=%s",
+                    self.claim.job_id,
+                    type(exc).__name__,
+                )
                 return
 
     def start(self) -> None:
@@ -1174,7 +1294,9 @@ class _RecoveryQueueLease:
     def stop(self) -> None:
         self._stop.set()
         if self._thread is not None:
-            self._thread.join()
+            self._thread.join(timeout=35)
+            if self._thread.is_alive() and self.error is None:
+                self.error = RuntimeError("recovery heartbeat did not stop within its bound")
 
     def visible_until(self) -> datetime:
         from podcaster.video.recovery import RecoveryDenied, assert_current
@@ -1183,6 +1305,12 @@ class _RecoveryQueueLease:
             raise RecoveryDenied("recovery queue renewal failed")
         assert_current(self.storage, self.claim, now=self.clock)
         return self.message.next_visible_on
+
+    def check_live(self) -> None:
+        if self.error is not None:
+            from podcaster.video.recovery import RecoveryDenied
+
+            raise RecoveryDenied("recovery heartbeat lost authority") from self.error
 
 
 def _authoritative_deadline_monotonic(expires_at: datetime | None) -> float | None:
@@ -1219,6 +1347,7 @@ def run_video_generation(
     ownership_execution_id: str | None = None,
     ownership_visibility_expires_at: datetime | None = None,
     recovery_visibility: Callable[[], datetime] | None = None,
+    recovery_check_live: Callable[[], None] | None = None,
     on_recovery_ownership: Callable[[VideoOwnershipGuard], None] | None = None,
     recovery_claim=None,
 ) -> VideoOutcome:
@@ -1362,51 +1491,47 @@ def run_video_generation(
     attempt_id = hashlib.sha256(execution_id.encode()).hexdigest()
     run_id = execution_id if fanout_enabled else None
     media_validation_lease = None
-    media_validation_admitted = False
     ownership_guard: VideoOwnershipGuard | None = None
     promotion_permit: BoundaryPermit | None = None
 
-    def _remaining_media_validation_budget() -> float:
-        nonlocal media_validation_admitted, media_validation_lease
-
-        current_monotonic = time.monotonic()
-        remaining: list[float] = []
+    def _renew_render_authority() -> tuple[float, ...]:
+        deadlines: list[float] = []
         if recovery_visibility is not None:
             renewed_deadline = _authoritative_deadline_monotonic(recovery_visibility())
             if renewed_deadline is None:
                 raise RuntimeError("final media validation failed: queue renewal is unavailable")
-            remaining.append(renewed_deadline - current_monotonic)
+            deadlines.append(renewed_deadline)
         elif lifecycle_deadline_monotonic is not None:
-            remaining.append(lifecycle_deadline_monotonic - current_monotonic)
+            deadlines.append(lifecycle_deadline_monotonic)
         if fanout_enabled and run_id is not None:
             from podcaster.video.editor import (
-                read_lease,
                 renew_lease,
             )
 
             media_validation_lease = (
-                renew_lease(scratch, clip_job_id, run_id)
-                if not media_validation_admitted
-                else read_lease(scratch, clip_job_id)
+                ownership_guard.renew_editor(scratch)
+                if ownership_guard is not None
+                else renew_lease(scratch, clip_job_id, run_id)
             )
             if media_validation_lease is None or media_validation_lease.run_id != run_id:
                 raise RuntimeError(
                     f"final media validation failed: editor lease lost for job_id={job_id}"
                 )
-            if ownership_guard is not None:
-                ownership_guard.refresh_lease(media_validation_lease.expires_at)
             lease_deadline = _authoritative_deadline_monotonic(media_validation_lease.expires_at)
             if lease_deadline is None:
                 raise RuntimeError(
                     "final media validation failed: editor lease expiry invalid "
                     f"for job_id={job_id}"
                 )
-            media_validation_admitted = True
-            current_monotonic = time.monotonic()
-            remaining.append(lease_deadline - current_monotonic)
-        if not remaining:
-            return float("inf")
-        return min(remaining)
+            deadlines.append(lease_deadline)
+        return tuple(deadlines)
+
+    render_authority: _RenderAuthority | None = None
+
+    def _remaining_media_validation_budget() -> float:
+        if render_authority is None:
+            raise OwnershipError("render ownership guard is unavailable")
+        return render_authority.remaining(force_renew=True)
 
     # Claim pipeline lock — prevent concurrent audio synthesis on same job
     if not claim_pipeline(storage, job_id, PIPELINE_VIDEO, now=current):
@@ -1701,6 +1826,26 @@ def run_video_generation(
             )
             if on_recovery_ownership is not None:
                 on_recovery_ownership(ownership_guard)
+            render_authority = _RenderAuthority(
+                ownership_guard,
+                stage_budget,
+                _renew_render_authority,
+                recovery_check_live,
+                deadlines=tuple(
+                    deadline
+                    for deadline in (
+                        (lifecycle_deadline_monotonic if recovery_visibility is None else None),
+                        _authoritative_deadline_monotonic(visibility_expires_at),
+                        (
+                            _authoritative_deadline_monotonic(media_validation_lease.expires_at)
+                            if media_validation_lease is not None
+                            else None
+                        ),
+                    )
+                    if deadline is not None
+                ),
+                refreshable_deadlines=recovery_visibility is not None,
+            )
 
             with timings.phase("composition"):
 
@@ -1742,6 +1887,8 @@ def run_video_generation(
                     section_cards=section_cards,
                     intermediates=intermediates,
                     task_reporter=normalize_reporter,
+                    budget=stage_budget,
+                    authorize=render_authority,
                     media_validation_budget=(
                         _remaining_media_validation_budget
                         if lifecycle_deadline_monotonic is not None or fanout_enabled
@@ -2752,6 +2899,7 @@ def process_message(
                     or datetime.now(timezone.utc) + timedelta(seconds=_video_visibility_timeout())
                 ),
                 recovery_visibility=lease.visible_until if lease is not None else None,
+                recovery_check_live=lease.check_live if lease is not None else None,
                 on_recovery_ownership=lease.attach_guard if lease is not None else None,
                 recovery_claim=recovery_claim,
             )

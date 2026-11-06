@@ -5,12 +5,16 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import multiprocessing
 import socket
 import subprocess
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 from urllib.parse import urlparse
@@ -61,6 +65,411 @@ from podcaster.video.job_runner import (
 def _claracle_credit_hostname(text: str) -> str | None:
     credit_value = text.split("Claracle — ", 1)[1].split()[0]
     return urlparse(credit_value if "://" in credit_value else f"https://{credit_value}").hostname
+
+
+@pytest.fixture
+def render_authority_control(monkeypatch):
+    from podcaster.video import job_runner as runner
+
+    clock = [100.0]
+    monkeypatch.setattr(runner.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(runner, "run_storage_operation", lambda call, timeout: call())
+    guard = SimpleNamespace(renewal_lock=threading.RLock(), assert_current=MagicMock())
+    budget = SimpleNamespace(remaining_seconds=lambda stage: 200.0 - clock[0])
+    renew = MagicMock(return_value=(180.0,))
+    live = MagicMock()
+    authority = runner._RenderAuthority(guard, budget, renew, live)
+    return runner, authority, guard, renew, live, clock
+
+
+@pytest.mark.parametrize("iteration", range(8))
+def test_slow_concurrent_render_renewals_coalesce_inside_lock(render_authority_control, iteration):
+    _runner, authority, guard, renew, _live, clock = render_authority_control
+    ready = threading.Barrier(4)
+    lock = guard.renewal_lock
+    waits = []
+
+    class ContendedLock:
+        def acquire(self, *, timeout):
+            waits.append(timeout)
+            ready.wait(timeout=5)
+            return lock.acquire(timeout=timeout)
+
+        def release(self):
+            lock.release()
+
+    guard.renewal_lock = ContendedLock()
+
+    def slow_healthy_renewal():
+        clock[0] += 8
+        return (180.0,)
+
+    renew.side_effect = slow_healthy_renewal
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(lambda _: authority.remaining(), range(4)))
+    assert results == [72.0] * 4
+    assert renew.call_count == 1
+    assert guard.assert_current.call_count == 1
+    assert len(waits) == 4 and max(waits) == 20
+    assert authority.next_heartbeat == 138
+
+
+def test_final_validation_recomputes_budget_after_lock_and_io(render_authority_control):
+    _runner, authority, guard, renew, _live, clock = render_authority_control
+    timeouts = []
+
+    class DelayedLock:
+        def acquire(self, *, timeout):
+            timeouts.append(timeout)
+            clock[0] += 6
+            return True
+
+        def release(self):
+            pass
+
+    guard.renewal_lock = DelayedLock()
+    authority.budget = SimpleNamespace(remaining_seconds=lambda stage: 115.0 - clock[0])
+
+    def slow_renewal():
+        clock[0] += 2
+        return (180.0,)
+
+    renew.side_effect = slow_renewal
+    assert authority.remaining(force_renew=True) == 7
+    assert timeouts == [15]
+
+
+@pytest.mark.parametrize("elapsed", [11, 21])
+def test_final_validation_cannot_return_prewait_budget(render_authority_control, elapsed):
+    runner, authority, guard, renew, _live, clock = render_authority_control
+    authority.budget = SimpleNamespace(remaining_seconds=lambda stage: 110.0 - clock[0])
+    guard.renewal_lock = MagicMock()
+
+    def wait_past_budget(*, timeout):
+        assert timeout == 10
+        clock[0] += elapsed
+        return True
+
+    guard.renewal_lock.acquire.side_effect = wait_past_budget
+    with pytest.raises(runner.OwnershipError, match="exceeded its bound"):
+        authority.remaining(force_renew=True)
+    renew.assert_not_called()
+    guard.renewal_lock.release.assert_called_once()
+
+
+def test_lock_wait_and_storage_share_one_twenty_second_bound(render_authority_control, monkeypatch):
+    runner, authority, guard, _renew, _live, clock = render_authority_control
+    guard.renewal_lock = MagicMock()
+
+    def delayed_acquire(*, timeout):
+        assert timeout == 20
+        clock[0] += 12
+        return True
+
+    guard.renewal_lock.acquire.side_effect = delayed_acquire
+
+    def late_storage(call, timeout):
+        assert timeout == 8
+        result = call()
+        clock[0] += 9
+        return result
+
+    monkeypatch.setattr(runner, "run_storage_operation", late_storage)
+    with pytest.raises(runner.OwnershipError, match="exceeded its bound"):
+        authority.remaining(force_renew=True)
+    assert authority.next_heartbeat == 0
+
+
+@pytest.mark.parametrize("loss", ["fence", "heartbeat", "render", "epoch"])
+def test_throttled_render_checks_loss_fence_and_fixed_deadlines(render_authority_control, loss):
+    runner, authority, guard, renew, live, clock = render_authority_control
+    authority.authorize()
+    if loss == "fence":
+        guard.assert_current.side_effect = runner.OwnershipError("stale fence")
+    elif loss == "heartbeat":
+        live.side_effect = runner.OwnershipError("heartbeat lost")
+    elif loss == "render":
+        authority.budget = SimpleNamespace(remaining_seconds=lambda stage: 0.0)
+    else:
+        authority.deadlines = (99.0,)
+    with pytest.raises(runner.OwnershipError):
+        authority() if loss == "fence" else authority.authorize()
+    assert renew.call_count == 1
+    live.side_effect = None
+    guard.assert_current.side_effect = None
+    clock[0] = 100
+    authority.budget = SimpleNamespace(remaining_seconds=lambda stage: 100.0)
+    authority.deadlines = (180.0,)
+    with pytest.raises(runner.OwnershipError, match="was lost"):
+        authority.authorize()
+
+
+def test_final_validation_forces_bounded_fresh_renewal(render_authority_control, monkeypatch):
+    runner, authority, guard, renew, _live, clock = render_authority_control
+    authority.authorize()
+    timeouts = []
+
+    def operation(call, timeout):
+        timeouts.append(timeout)
+        clock[0] += 8
+        return call()
+
+    monkeypatch.setattr(runner, "run_storage_operation", operation)
+    assert authority.remaining(force_renew=True) == 72
+    assert renew.call_count == 2
+    assert guard.assert_current.call_count == 2
+    assert timeouts == [20]
+
+
+def test_recovery_render_refreshes_superseded_visibility_after_heartbeat(render_authority_control):
+    _runner, authority, guard, renew, _live, clock = render_authority_control
+    authority.refreshable_deadlines = True
+    authority.authorize()
+    clock[0] = 181
+    authority.next_heartbeat = 210
+    renew.return_value = (240.0,)
+    assert authority.remaining() == 19
+    assert renew.call_count == 2
+    assert guard.assert_current.call_count == 4
+
+
+@pytest.mark.parametrize("loss", ["visibility", "editor", "owner", "epoch", "render"])
+def test_recovery_expired_cache_requires_live_authority_before_renewal(
+    render_authority_control, loss
+):
+    runner, authority, guard, renew, live, _clock = render_authority_control
+    authority.refreshable_deadlines = True
+    authority.deadlines = (99.0,)
+    if loss in {"visibility", "editor", "owner"}:
+        guard.assert_current.side_effect = runner.OwnershipError(f"{loss} lost")
+    elif loss == "epoch":
+        live.side_effect = runner.OwnershipError("epoch expired")
+    else:
+        authority.budget = SimpleNamespace(remaining_seconds=lambda stage: 0.0)
+    with pytest.raises(runner.OwnershipError):
+        authority.authorize()
+    renew.assert_not_called()
+    guard.assert_current.side_effect = None
+    live.side_effect = None
+    with pytest.raises(runner.OwnershipError, match="was lost"):
+        authority.authorize()
+
+
+def test_recovery_current_visibility_expiry_fails_after_bounded_read(render_authority_control):
+    runner, authority, _guard, renew, _live, _clock = render_authority_control
+    authority.refreshable_deadlines = True
+    authority.deadlines = (99.0,)
+    renew.return_value = (99.0,)
+    with pytest.raises(runner.OwnershipError, match="has expired"):
+        authority.remaining(force_renew=True)
+    assert renew.call_count == 1
+
+
+@pytest.mark.parametrize("heartbeat_renewed", [False, True])
+def test_recovery_uses_current_persisted_visibility_not_expired_cache(
+    render_authority_control, storage, heartbeat_renewed
+):
+    runner, authority, _guard, renew, _live, clock = render_authority_control
+    from podcaster.video.ownership import VideoOwnershipGuard
+
+    at = datetime.now(timezone.utc)
+
+    def now():
+        return at + timedelta(seconds=clock[0] - 100)
+
+    authority.guard = VideoOwnershipGuard.acquire(
+        storage,
+        "renewed-recovery",
+        owner="video-runner",
+        execution_id="same-worker",
+        visibility_expires_at=at + timedelta(seconds=80),
+        now=now,
+    )
+    authority.refreshable_deadlines = True
+    authority.deadlines = (180.0,)
+    clock[0] = 170
+    if heartbeat_renewed:
+        authority.guard.refresh_visibility(at + timedelta(seconds=140))
+    clock[0] = 181
+    renew.return_value = (240.0,)
+    if heartbeat_renewed:
+        assert authority.remaining() == 19
+        renew.assert_called_once()
+    else:
+        with pytest.raises(runner.OwnershipError, match="has expired"):
+            authority.remaining()
+        renew.assert_not_called()
+
+
+def test_final_validation_kills_hung_authority_io():
+    from podcaster.video import job_runner as runner
+    from podcaster.video.intermediates import StorageOperationTimeout
+
+    guard = SimpleNamespace(renewal_lock=threading.RLock(), assert_current=lambda: None)
+    budget = SimpleNamespace(remaining_seconds=lambda stage: 0.1)
+    authority = runner._RenderAuthority(guard, budget, lambda: time.sleep(30))
+    started = time.monotonic()
+    with pytest.raises(StorageOperationTimeout):
+        authority.remaining(force_renew=True)
+    assert time.monotonic() - started < 4.5
+    assert authority.error is not None
+    assert guard.renewal_lock.acquire(timeout=0)
+    guard.renewal_lock.release()
+
+
+@pytest.mark.parametrize("recovery", [False, True])
+def test_concurrent_render_threads_share_real_forked_renewal(recovery):
+    from podcaster.video import job_runner as runner
+
+    renewals = multiprocessing.get_context("fork").Value("i", 0)
+    fences = multiprocessing.get_context("fork").Value("i", 0)
+    lock = threading.RLock()
+    ready = threading.Barrier(4)
+
+    class ContendedLock:
+        def acquire(self, *, timeout):
+            ready.wait(timeout=5)
+            return lock.acquire(timeout=timeout)
+
+        def release(self):
+            lock.release()
+
+        def __enter__(self):
+            lock.acquire()
+
+        def __exit__(self, *_args):
+            lock.release()
+
+    def renew():
+        with guard.renewal_lock:
+            with renewals.get_lock():
+                renewals.value += 1
+            return (time.monotonic() + 60,)
+
+    def assert_current():
+        with fences.get_lock():
+            fences.value += 1
+
+    guard = SimpleNamespace(renewal_lock=ContendedLock(), assert_current=assert_current)
+    authority = runner._RenderAuthority(
+        guard,
+        SimpleNamespace(remaining_seconds=lambda stage: 100.0),
+        renew,
+        refreshable_deadlines=recovery,
+    )
+
+    def poll_worker(_index):
+        for _ in range(100):
+            remaining = authority.remaining()
+        return remaining
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(poll_worker, range(4)))
+    assert all(5 < remaining <= 60 for remaining in results)
+    assert renewals.value == 1
+    assert fences.value == (2 if recovery else 1)
+
+
+@pytest.mark.parametrize("recovery", [False, True])
+def test_healthy_poll_frequency_is_bounded_by_successful_refresh(
+    render_authority_control, monkeypatch, recovery
+):
+    runner, authority, guard, renew, live, clock = render_authority_control
+    authority.refreshable_deadlines = recovery
+    operations = MagicMock(side_effect=lambda call, timeout: call())
+    monkeypatch.setattr(runner, "run_storage_operation", operations)
+    for _ in range(100):
+        authority.authorize()
+    assert operations.call_count == 1
+    assert guard.assert_current.call_count == (2 if recovery else 1)
+    assert renew.call_count == 1
+    assert live.call_count >= 100
+    clock[0] = 129.999
+    authority.authorize()
+    assert operations.call_count == 1
+    clock[0] = 130
+    authority.authorize()
+    assert operations.call_count == 2
+    assert renew.call_count == 2
+    assert authority.next_heartbeat == 160
+
+
+def test_command_boundary_reads_fence_without_redundant_renewal(render_authority_control):
+    runner, authority, guard, renew, _live, _clock = render_authority_control
+    authority()
+    for _ in range(100):
+        authority.poll()
+    guard.assert_current.side_effect = runner.OwnershipError("boundary fence lost")
+    with pytest.raises(runner.OwnershipError, match="boundary fence lost"):
+        authority()
+    assert renew.call_count == 1
+    assert guard.assert_current.call_count == 2
+    with pytest.raises(runner.OwnershipError, match="was lost"):
+        authority.poll()
+
+
+def test_failed_periodic_refresh_does_not_publish_success(render_authority_control):
+    runner, authority, guard, _renew, _live, clock = render_authority_control
+    authority.authorize()
+    next_refresh = authority.next_heartbeat
+    clock[0] += 30
+    guard.assert_current.side_effect = runner.OwnershipError("refresh fence lost")
+    with pytest.raises(runner.OwnershipError, match="refresh fence lost"):
+        authority.poll()
+    assert authority.next_heartbeat == next_refresh
+    guard.assert_current.side_effect = None
+    with pytest.raises(runner.OwnershipError, match="was lost"):
+        authority.poll()
+
+
+def test_poll_cancellation_kills_only_owned_child(tmp_path):
+    import os
+    import sys
+
+    from podcaster.video import job_runner as runner
+    from podcaster.video.process import run_owned_process
+    from podcaster.video.recovery import RecoveryDenied
+
+    heartbeat = runner._RecoveryQueueLease(None, None, None, None)
+    guard = SimpleNamespace(renewal_lock=threading.RLock(), assert_current=lambda: None)
+    authority = runner._RenderAuthority(
+        guard,
+        SimpleNamespace(remaining_seconds=lambda stage: 60.0),
+        lambda: (time.monotonic() + 60,),
+        heartbeat.check_live,
+    )
+    pid_path = tmp_path / "owned.pid"
+    unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"])
+
+    def lose_heartbeat():
+        deadline = time.monotonic() + 5
+        while not pid_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        heartbeat.error = RuntimeError("lease lost")
+
+    watcher = threading.Thread(target=lose_heartbeat)
+    watcher.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(RecoveryDenied, match="heartbeat lost authority"):
+            run_owned_process(
+                [
+                    sys.executable,
+                    "-c",
+                    "import os,time,pathlib; "
+                    f"pathlib.Path({str(pid_path)!r}).write_text(str(os.getpid())); "
+                    "time.sleep(20)",
+                ],
+                authorize=authority,
+            )
+        assert time.monotonic() - started < 5
+        with pytest.raises(ProcessLookupError):
+            os.kill(int(pid_path.read_text()), 0)
+        assert unrelated.poll() is None
+    finally:
+        watcher.join(timeout=5)
+        unrelated.terminate()
+        unrelated.wait(timeout=5)
 
 
 @pytest.fixture(autouse=True)
@@ -835,10 +1244,11 @@ class TestRunVideoGeneration:
         mock_record.return_value = MagicMock(recorded=[])
 
         def fail_from_budget(*_args, **kwargs):
-            assert kwargs["media_validation_budget"]() <= 0
-            raise RuntimeError(
-                "final media validation failed: insufficient remaining lifecycle budget"
-            )
+            from podcaster.video.ownership import OwnershipError
+
+            with pytest.raises(OwnershipError, match="exceeded its bound"):
+                kwargs["media_validation_budget"]()
+            raise RuntimeError("final media validation failed: lifecycle authority expired")
 
         mock_compose.side_effect = fail_from_budget
 
@@ -853,6 +1263,46 @@ class TestRunVideoGeneration:
         mock_commit.assert_not_called()
         mock_enqueue.assert_not_called()
         mock_distribute.assert_not_called()
+
+    @pytest.mark.parametrize("boundary", ["compose_validation", "before_distribution"])
+    @patch("podcaster.video.job_runner.commit_immutable_artifact")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_final_validation_uses_bounded_authority_path(
+        self, mock_compose, mock_record, mock_commit, storage, dry_config, monkeypatch, boundary
+    ):
+        from podcaster.video import job_runner as runner
+        from podcaster.video.intermediates import StorageOperationTimeout
+
+        job_id = "bounded-final-validation"
+        storage.set_manifest(job_id, {"generation": {}})
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        mock_record.return_value = MagicMock(recorded=[])
+        calls = []
+
+        def bounded_storage(call, timeout):
+            calls.append(timeout)
+            raise StorageOperationTimeout("bounded final authority timeout")
+
+        monkeypatch.setattr(runner, "run_storage_operation", bounded_storage)
+
+        def compose(*args, **kwargs):
+            if boundary == "compose_validation":
+                kwargs["media_validation_budget"]()
+            kwargs["output_path"].write_bytes(b"x" * 2048)
+            return MagicMock()
+
+        mock_compose.side_effect = compose
+        with pytest.raises(TransientVideoError, match="video generation failed"):
+            run_video_generation(
+                job_id,
+                storage,
+                config=dry_config,
+                lifecycle_deadline_monotonic=time.monotonic() + 1000,
+                storage_operation_runner=lambda call, timeout: call(),
+            )
+        assert len(calls) == 1 and 0 < calls[0] <= 20
+        mock_commit.assert_not_called()
 
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
@@ -3302,6 +3752,8 @@ class TestFanoutGating:
         promoted = []
 
         def compose(*_args, output_path, **kwargs):
+            kwargs["authorize"]()
+            assert kwargs["budget"].remaining_seconds() > 0
             source = output_path.parent / "video-only.mp4"
             source.write_bytes(b"source")
 
@@ -3353,7 +3805,9 @@ class TestFanoutGating:
 
         mock_compose.side_effect = compose
 
-        with pytest.raises(TransientVideoError, match="video generation failed"):
+        from podcaster.video.ownership import OwnershipError
+
+        with pytest.raises(OwnershipError, match="editor lease lost"):
             run_video_generation(
                 job_id,
                 storage,
