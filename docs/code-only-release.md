@@ -1,12 +1,23 @@
 # Scoped W44/W45 code-only release
 
 This manual workflow is limited to the reviewed application merge
-`86c998b5d925e9d1bc3e1f563ee5e9935279323b`. Build both images from that exact
+`8e65a5355458c04a5fa659138f65b38c682ad1b2`. Build both images from that exact
 source, label their full OCI revision, scan HIGH/CRITICAL OS and library
 vulnerabilities with the existing fail-on-findings policy before pushing, import
 by immutable digest, and independently verify registry manifest/config provenance
 before dispatch. The workflow commit is separately reviewed release tooling,
 not the application image source. Never pass a tag or an unverified digest.
+
+Exact-source build `cg1v` scanned both images before either push. Immutable
+production imports preserve these complete manifest digests:
+
+* API: `sha256:56819d553629b39d7c4079fee6bcbb5338543a0f84f8c6c72a14796c52abb395`
+* All five workers: `sha256:678878ab19778c85e72d977fe4f6ac9f9932b87dcd4ff71c01b8411839193b95`
+
+Independent target-registry raw manifest/config-byte and full revision proof
+is mandatory before dispatch; an import acknowledgement is not that proof.
+The helper's original rollback references are the currently deployed
+`53cb8105…` API and `297877df…` worker digests, not the earlier release baseline.
 
 The owner accepts an assessed exclusive deployment window rather than requiring
 unavailable ACA conditional tokens. This is supported Microsoft.App JSON Merge
@@ -34,8 +45,9 @@ and outbox. No queues/triggers/scale, UI, model deployments, VNet, secrets or
 identities are changed. Operations are polled to terminal and the API must have
 one healthy 100%-traffic revision. Independent actual postrelease readback must
 verify all six digests, protected settings, UI/model/network invariants and
-health before admitting the one authorized W44 successor and the first W45
-private recovery epoch. The W44 predecessor remains terminal and preserved;
+health before admitting the first W45 private recovery epoch. Both authorized
+W44 epochs are terminal and preserved; no additional W44 epoch is authorized.
+The owner's W45-first sequencing does not require a selected W44 MP4;
 fresh complete trusted execution/replica/native-redelivery termination evidence
 and unchanged original media proof are mandatory at successor admission.
 
@@ -65,6 +77,7 @@ using the same exclusive window and current protected containers. Never replay
 old arrays, change holds, or run the ordinary full-stack defaults.
 
 The release neither admits recovery requests nor approves media/provider
-publication. W44 private selected-result byte/digest/identity/playability
-verification must precede W45. All provider uploads, drafts, unlisted operations
+publication. After deployment, refresh the original W45 proof, worker exit
+receipts, shared capacity, scratch lease and segment load before its already
+authorized first scoped epoch. All provider uploads, drafts, unlisted operations
 and public promotion remain held.
