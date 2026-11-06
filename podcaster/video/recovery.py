@@ -34,8 +34,13 @@ SCOPED_PRIVATE_DIRECTIVE = "owner-2026-11-05-w44-w45-original-private-only"
 W44_JOB = "podcast-2026-W44-00bc06dfb6e2"
 W44_PREDECESSOR = "29080a3a502d40729a59e7eb440b3681"
 W44_SUCCESSOR_DISPOSITION = "coordinator-w44-single-successor-disposition-20261106-140213"
+W44_SUCCESSOR = "f6460bef50d9440099e30df5c84d8a66"
+W44_FINAL_DISPOSITION = "coordinator-w44-diagnosed-final-epoch-disposition-20261106-221215"
+W44_PROOF_SHA256 = "8c3b1ce8e0273de7c54e743688ee3490845fe5a062dad1e5fe6f6a521afac96f"
+W44_BUDGET_SHA256 = "d1244992060e7f7d47949c3dc4d625e3ad1cbf4da45ac6102a4836c65b9197ec"
 W44_AUDIO_SHA256 = "5933fdecc6c76d80c81e2c845206fd0655a983713c2b20f204377ac3823153c1"
 SUCCESSOR_QUIESCENCE_PATH = f"jobs/{W44_JOB}/video-recovery/{W44_PREDECESSOR}/quiescence.json"
+FINAL_QUIESCENCE_PATH = f"jobs/{W44_JOB}/video-recovery/{W44_SUCCESSOR}/quiescence.json"
 SCOPED_IDENTITIES = {
     "podcast-2026-W44-00bc06dfb6e2": (
         "2026-W44",
@@ -103,6 +108,18 @@ def _parse(value: Any) -> datetime:
 
 def _iso(value: datetime) -> str:
     return _utc(value).isoformat().replace("+00:00", "Z")
+
+
+def _evidence_time(value: Any) -> tuple[datetime, str]:
+    """Compare UTC receipts exactly, including Azure's sub-microsecond precision."""
+    match = (
+        re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d+))?(?:Z|\+00:00)", value)
+        if isinstance(value, str)
+        else None
+    )
+    if match is None:
+        raise RecoveryDenied("worker evidence timestamp must be canonical UTC")
+    return _parse(value).replace(microsecond=0), (match[1] or "").rstrip("0")
 
 
 def _read(raw: bytes | None, job_id: str) -> dict[str, Any]:
@@ -261,43 +278,85 @@ def _assert_provider_quiet(
                 raise RecoveryDenied("identity-wide legacy outbox requires reconciliation")
 
 
+def _digest(value: Any) -> str:
+    return hashlib.sha256(manifest_bytes(value)).hexdigest()
+
+
+def _final_predecessors(epochs: list[dict[str, Any]], proof: str) -> None:
+    if len(epochs) != 2 or proof != W44_PROOF_SHA256:
+        raise RecoveryDenied("final disposition requires the exact two spent W44 epochs")
+    for epoch, epoch_id, authority in zip(
+        epochs,
+        (W44_PREDECESSOR, W44_SUCCESSOR),
+        (SCOPED_PRIVATE_DIRECTIVE, W44_SUCCESSOR_DISPOSITION),
+        strict=True,
+    ):
+        if (
+            epoch.get("epoch_id") != epoch_id
+            or epoch.get("status") != "terminal"
+            or epoch.get("terminal_reason") != "deadline_elapsed"
+            or epoch.get("authority") != authority
+            or epoch.get("inventory_reference") != SCOPED_PRIVATE_DIRECTIVE
+            or epoch.get("identity") != asdict(scoped_identity(W44_JOB))
+            or epoch.get("proof_sha256") != proof
+            or _parse(epoch.get("deadline_at_utc")) - _parse(epoch.get("started_at_utc"))
+            != timedelta(seconds=5100)
+        ):
+            raise RecoveryDenied("final disposition predecessor history does not match")
+    evidence = epochs[1].get("quiescence_evidence")
+    if (
+        epochs[1].get("predecessor_epoch_id") != W44_PREDECESSOR
+        or not isinstance(evidence, dict)
+        or evidence.get("predecessor_sha256") != _digest(epochs[0])
+        or _parse(epochs[1]["started_at_utc"]) < _parse(epochs[0]["deadline_at_utc"])
+    ):
+        raise RecoveryDenied("final disposition predecessor chain is invalid")
+
+
 def _successor_evidence(
     storage: StorageBackend, job_id: str, state: dict[str, Any], proof: str
 ) -> dict[str, Any]:
     """Read the fixed private operator channel; never accept an API-supplied attestation."""
-    if job_id != W44_JOB or len(state["epochs"]) != 1:
+    final = len(state["epochs"]) == 2
+    if job_id != W44_JOB or len(state["epochs"]) not in {1, 2}:
         raise RecoveryDenied("only one exact W44 successor is authorized")
-    prior = state["epochs"][0]
+    if final:
+        _final_predecessors(state["epochs"], proof)
+    prior = state["epochs"][-1]
+    predecessor = W44_SUCCESSOR if final else W44_PREDECESSOR
+    disposition = W44_FINAL_DISPOSITION if final else W44_SUCCESSOR_DISPOSITION
     if (
-        prior.get("epoch_id") != W44_PREDECESSOR
+        prior.get("epoch_id") != predecessor
         or prior.get("status") != "terminal"
         or prior.get("terminal_reason") != "deadline_elapsed"
-        or prior.get("authority") != SCOPED_PRIVATE_DIRECTIVE
+        or prior.get("authority")
+        != (W44_SUCCESSOR_DISPOSITION if final else SCOPED_PRIVATE_DIRECTIVE)
         or prior.get("inventory_reference") != SCOPED_PRIVATE_DIRECTIVE
         or prior.get("identity") != asdict(scoped_identity(job_id))
         or prior.get("proof_sha256") != proof
         or state.get("selected_private_output") is not None
     ):
         raise RecoveryDenied("exact predecessor is not proven terminal and unselected")
-    raw = storage.get_bytes(SUCCESSOR_QUIESCENCE_PATH)
+    raw = storage.get_bytes(FINAL_QUIESCENCE_PATH if final else SUCCESSOR_QUIESCENCE_PATH)
     try:
         evidence = json.loads(raw) if raw is not None else None
     except (ValueError, UnicodeDecodeError) as exc:
         raise RecoveryDenied("trusted worker quiescence evidence is invalid") from exc
     if not isinstance(evidence, dict):
         raise RecoveryDenied("fresh trusted worker quiescence evidence is required")
-    observed = _parse(evidence.get("observed_at"))
+    observed = _evidence_time(evidence.get("observed_at"))
     executions = evidence.get("executions")
     if (
-        evidence.get("schema_version") != "w44-successor-quiescence-v1"
+        evidence.get("schema_version")
+        != ("w44-final-quiescence-v1" if final else "w44-successor-quiescence-v1")
         or evidence.get("job_id") != W44_JOB
-        or evidence.get("predecessor_epoch_id") != W44_PREDECESSOR
-        or evidence.get("coordinator_disposition") != W44_SUCCESSOR_DISPOSITION
+        or evidence.get("predecessor_epoch_id") != predecessor
+        or evidence.get("coordinator_disposition") != disposition
         or evidence.get("predecessor_sha256") != hashlib.sha256(manifest_bytes(prior)).hexdigest()
         or evidence.get("proof_sha256") != proof
         or evidence.get("historical_budget_sha256")
         != hashlib.sha256(storage.get_bytes(f"jobs/{job_id}/video-budget.json") or b"").hexdigest()
-        or observed < _parse(prior["deadline_at_utc"])
+        or observed < _evidence_time(prior["deadline_at_utc"])
         or evidence.get("execution_inventory_complete") is not True
         or evidence.get("native_redeliveries_accounted") is not True
         or evidence.get("competing_writer_absent") is not True
@@ -305,7 +364,21 @@ def _successor_evidence(
         or not executions
     ):
         raise RecoveryDenied("trusted prior-worker inventory is stale, incomplete or mismatched")
+    if final and (
+        evidence.get("ledger_sha256") != _digest(state)
+        or evidence.get("predecessor_epochs_sha256") != _digest(state["epochs"])
+        or evidence.get("historical_budget_sha256") != W44_BUDGET_SHA256
+        or evidence.get("editor_authority_absent") is not True
+        or evidence.get("shared_capacity_conflict_absent") is not True
+        or any(
+            epoch.get("lease_expires_at_utc")
+            and _evidence_time(epoch["lease_expires_at_utc"]) > observed
+            for epoch in state["epochs"]
+        )
+    ):
+        raise RecoveryDenied("final disposition requires current ledger, budget and quiescence")
     names = set()
+    receipt_times = {}
     for execution in executions:
         if (
             not isinstance(execution, dict)
@@ -319,6 +392,7 @@ def _successor_evidence(
             raise RecoveryDenied("prior execution termination is unknown")
         names.add(execution["name"])
         replicas = set()
+        receipt_times[execution["name"]] = []
         for replica in execution["replicas"]:
             if (
                 not isinstance(replica, dict)
@@ -326,27 +400,97 @@ def _successor_evidence(
                 or replica["name"] in replicas
                 or type(replica.get("exit_code")) is not int
                 or not observed
-                >= _parse(replica.get("finished_at"))
-                >= _parse(prior["started_at_utc"])
+                >= _evidence_time(replica.get("finished_at"))
+                >= _evidence_time(state["epochs"][0]["started_at_utc"])
             ):
                 raise RecoveryDenied("prior replica termination is unknown")
             replicas.add(replica["name"])
-        if execution["name"] == "podcaster-yqabcnkm2junu-video-98kpp" and not {
-            "9rmfj",
-            "9c562",
-        }.issubset({name.rsplit("-", 1)[-1] for name in replicas}):
+            receipt_times[execution["name"]].append(_evidence_time(replica["finished_at"]))
+        known_replicas = {
+            "podcaster-yqabcnkm2junu-video-98kpp": {"9rmfj", "9c562"},
+            **(
+                {
+                    "podcaster-yqabcnkm2junu-video-f6rll": {"ncgdn", "k7fw6"},
+                    "podcaster-yqabcnkm2junu-video-mjn7b": {"7mflp", "zsxkn"},
+                }
+                if final
+                else {}
+            ),
+        }.get(execution["name"], set())
+        if not known_replicas.issubset({name.rsplit("-", 1)[-1] for name in replicas}):
             raise RecoveryDenied("known prior replicas are missing from trusted inventory")
     if not {
         "podcaster-yqabcnkm2junu-video-98kpp",
         "podcaster-yqabcnkm2junu-video-zb8dm",
     }.issubset(names):
         raise RecoveryDenied("known prior executions are missing from trusted inventory")
+    if final:
+        inventories = evidence.get("epoch_execution_inventories")
+        if not isinstance(inventories, dict) or set(inventories) != {
+            W44_PREDECESSOR,
+            W44_SUCCESSOR,
+        }:
+            raise RecoveryDenied("both prior epoch worker inventories are required")
+        inventoried = set()
+        for epoch in state["epochs"]:
+            inventory = inventories[epoch["epoch_id"]]
+            if (
+                not isinstance(inventory, dict)
+                or inventory.get("native_redeliveries_accounted") is not True
+                or inventory.get("recorder_inventory_complete") is not True
+            ):
+                raise RecoveryDenied("prior native and recorder inventories are incomplete")
+            for kind in ("video", "recorder"):
+                workers = inventory.get(kind)
+                if (
+                    not isinstance(workers, list)
+                    or not workers
+                    or any(
+                        not isinstance(name, str)
+                        or not name.startswith(f"podcaster-yqabcnkm2junu-{kind}-")
+                        or name not in names
+                        or name in inventoried
+                        for name in workers
+                    )
+                    or len(set(workers)) != len(workers)
+                ):
+                    raise RecoveryDenied("prior worker termination receipts are incomplete")
+                if any(
+                    finished < _evidence_time(epoch["started_at_utc"])
+                    for name in workers
+                    for finished in receipt_times[name]
+                ):
+                    raise RecoveryDenied("prior worker receipt predates its persisted epoch")
+                inventoried.update(workers)
+        if inventoried != names or any(
+            not {f"podcaster-yqabcnkm2junu-video-{name}" for name in known}.issubset(
+                set(inventories[epoch_id]["video"])
+            )
+            for epoch_id, known in (
+                (W44_PREDECESSOR, ("98kpp", "zb8dm")),
+                (W44_SUCCESSOR, ("f6rll", "mjn7b")),
+            )
+        ):
+            raise RecoveryDenied("known successor workers or discovered receipts are missing")
     return evidence
 
 
 def _scoped_ledger(state: dict[str, Any], job_id: str) -> list[dict[str, Any]]:
     epochs = state["epochs"]
     if len(epochs) == 1:
+        return epochs
+    if job_id == W44_JOB and len(epochs) == 3:
+        _final_predecessors(epochs[:2], epochs[-1].get("proof_sha256"))
+        final = epochs[-1]
+        evidence = final.get("quiescence_evidence")
+        if (
+            final.get("predecessor_epoch_id") != W44_SUCCESSOR
+            or final.get("authority") != W44_FINAL_DISPOSITION
+            or not isinstance(evidence, dict)
+            or evidence.get("predecessor_epochs_sha256") != _digest(epochs[:2])
+            or evidence.get("predecessor_sha256") != _digest(epochs[1])
+        ):
+            raise RecoveryDenied("final epoch ledger is outside the coordinator disposition")
         return epochs
     if (
         job_id != W44_JOB
@@ -403,7 +547,7 @@ def reserve_epoch(
         if predecessor is not None:
             if (
                 not scoped_private
-                or predecessor != W44_PREDECESSOR
+                or predecessor != (W44_SUCCESSOR if len(state["epochs"]) == 2 else W44_PREDECESSOR)
                 or expected_audio_sha256 != W44_AUDIO_SHA256
             ):
                 raise RecoveryDenied("successor admission is outside the coordinator disposition")
@@ -413,9 +557,9 @@ def reserve_epoch(
         # Proof/storage reads may block, and CAS retries must not reuse request time.
         reserved_at = _utc(now())
         if successor_evidence is not None and not (
-            timedelta(0)
-            <= reserved_at - _parse(successor_evidence["observed_at"])
-            <= timedelta(seconds=120)
+            _evidence_time(_iso(reserved_at - timedelta(seconds=120)))
+            <= _evidence_time(successor_evidence["observed_at"])
+            <= _evidence_time(_iso(reserved_at))
         ):
             raise RecoveryDenied("trusted prior-worker inventory is stale or future-dated")
         document["generation"].setdefault(
@@ -444,7 +588,13 @@ def reserve_epoch(
                 **(
                     {
                         "authority": (
-                            W44_SUCCESSOR_DISPOSITION if predecessor else SCOPED_PRIVATE_DIRECTIVE
+                            (
+                                W44_FINAL_DISPOSITION
+                                if predecessor == W44_SUCCESSOR
+                                else W44_SUCCESSOR_DISPOSITION
+                            )
+                            if predecessor
+                            else SCOPED_PRIVATE_DIRECTIVE
                         )
                     }
                     if scoped_private
@@ -496,9 +646,10 @@ def scoped_epoch(storage: StorageBackend, job_id: str, *, now: Clock = _now) -> 
     state = _state(document)
     successor = (
         job_id == W44_JOB
-        and len(state["epochs"]) == 1
-        and state["epochs"][0].get("epoch_id") == W44_PREDECESSOR
-        and state["epochs"][0].get("status") == "terminal"
+        and len(state["epochs"]) in {1, 2}
+        and state["epochs"][-1].get("epoch_id")
+        == (W44_SUCCESSOR if len(state["epochs"]) == 2 else W44_PREDECESSOR)
+        and state["epochs"][-1].get("status") == "terminal"
     )
     if not state["epochs"] or successor:
         try:
@@ -509,7 +660,7 @@ def scoped_epoch(storage: StorageBackend, job_id: str, *, now: Clock = _now) -> 
                 expected_audio_sha256=audio_sha,
                 inventory_reference=SCOPED_PRIVATE_DIRECTIVE,
                 scoped_private=True,
-                predecessor=W44_PREDECESSOR if successor else None,
+                predecessor=state["epochs"][-1]["epoch_id"] if successor else None,
                 now=now,
             )
         except RecoveryDenied:
@@ -524,7 +675,13 @@ def scoped_epoch(storage: StorageBackend, job_id: str, *, now: Clock = _now) -> 
     epoch = epochs[-1]
     if (
         epoch.get("authority")
-        != (W44_SUCCESSOR_DISPOSITION if len(epochs) == 2 else SCOPED_PRIVATE_DIRECTIVE)
+        != (
+            W44_FINAL_DISPOSITION
+            if len(epochs) == 3
+            else W44_SUCCESSOR_DISPOSITION
+            if len(epochs) == 2
+            else SCOPED_PRIVATE_DIRECTIVE
+        )
         or epoch.get("inventory_reference") != SCOPED_PRIVATE_DIRECTIVE
         or epoch.get("identity") != asdict(expected)
         or epoch.get("proof_sha256") != proof
@@ -700,7 +857,13 @@ def reconcile_pending(
                 if scoped_only and (
                     _scoped_ledger(_state(_read(raw, job_id)), job_id)[-1] != epoch
                     or epoch.get("authority")
-                    != (W44_SUCCESSOR_DISPOSITION if index == 1 else SCOPED_PRIVATE_DIRECTIVE)
+                    != (
+                        W44_FINAL_DISPOSITION
+                        if index == 2
+                        else W44_SUCCESSOR_DISPOSITION
+                        if index == 1
+                        else SCOPED_PRIVATE_DIRECTIVE
+                    )
                     or epoch.get("inventory_reference") != SCOPED_PRIVATE_DIRECTIVE
                     or epoch.get("identity") != asdict(scoped_identity(job_id))
                 ):
