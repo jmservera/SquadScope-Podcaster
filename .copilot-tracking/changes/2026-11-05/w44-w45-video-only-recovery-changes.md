@@ -1,5 +1,19 @@
 # W44/W45 video-only recovery — Leela implementation evidence
 
+## Basher exact-source release — 2026-11-06T16:47:30.017334+00:00
+
+Actual WORKTREE_PATH:
+`/home/azureuser/source/SquadScope-Coordinator/.worktrees/basher-pr784-private-release-20261106`.
+P04 application source86c998b/tree761834c8 is accepted and unchanged.
+Existing sanctioned exact-git-archive dual-image scan-before-push buildcg1u
+started16:47:30.017334Z. This separate release artifact changes only source,
+current rollback image pins and directly related workflow descriptions/docs.
+Helper behavior and accepted render-source remain unchanged. Actual independent
+new-source OCI provenance/release review, complete normal tests/required CI and
+normal matched-head merge precede the existing protected release workflow.
+Old W44 terminal/history retained, no successor attestation/admission yet;
+W45 stays held until selected-private W44 MP4 independent PASS.
+
 ## ACTIVE Farnsworth first-time revision — 2026-11-06T15:52:31Z
 
 Sole source mutator independently addresses healthy-poll remote-operation

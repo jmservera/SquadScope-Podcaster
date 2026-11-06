@@ -19,11 +19,11 @@ SUBSCRIPTION = "99d2c976-e2ca-4e54-ad12-0325e6a62b9e"
 GROUP = "squadscope-podcaster"
 PREFIX = "podcaster-yqabcnkm2junu-"
 REGISTRY = "podcasteryqabcnkm2junu.azurecr.io"
-SOURCE = "5a526f7165c3e18b825a1d5a98e6c5864882a933"
+SOURCE = "86c998b5d925e9d1bc3e1f563ee5e9935279323b"
 API_VERSION = "2025-01-01"
 TARGETS = ("api", "synth", "video", "recorder", "dist", "dsched")
-OLD_API = "sha256:a685db5ee3078e11ad6010bfdabfbbb2f6c52d190b102418ff44ce1c6391ca98"
-OLD_WORKER = "sha256:a51299e9cfbf4df86b7af7cb35deab9cf33f54792c979f91fbcb615df2ac37cf"
+OLD_API = "sha256:bfce21d5510247840048e24220de9785a3f37c4e668e9b2d82d98332744af09a"
+OLD_WORKER = "sha256:0d35d498ffafe46bba728520e66602ef9f29281e238f23aca7e488b6023e23fd"
 HOLDS = {
     "api": {"GROUNDING_MODE": "construct", "SPOTIFY_PUBLISH_ENABLED": "false"},
     "synth": {
