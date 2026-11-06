@@ -736,6 +736,80 @@ def test_successor_fails_closed_without_trusted_complete_fresh_termination(
 
 
 @pytest.mark.parametrize("recovery_original", ["podcast-2026-W44-00bc06dfb6e2"], indirect=True)
+@pytest.mark.parametrize("boundary", ["callback", "proof", "attestation", "retry"])
+@pytest.mark.parametrize("elapsed", [-1, 120, 121])
+def test_successor_uses_live_clock_after_reads_and_on_every_cas_retry(
+    recovery_original, monkeypatch, boundary, elapsed
+):
+    from podcaster.generation import manifest_bytes
+    from podcaster.video import recovery
+
+    storage, job_id, at, prior, evidence, _ = _w44_successor_fixture(recovery_original, monkeypatch)
+    storage.put_bytes(
+        recovery.SUCCESSOR_QUIESCENCE_PATH, manifest_bytes(evidence), "application/json"
+    )
+    path = f"jobs/{job_id}/manifest.json"
+    before = storage.get_bytes(path)
+    budget = storage.get_bytes(f"jobs/{job_id}/video-budget.json")
+    clock = [at]
+    original_update = storage.update_bytes
+    original_proof = recovery._proof
+    original_get = storage.get_bytes
+    proof_calls = 0
+    callbacks = []
+
+    def proof(*args):
+        nonlocal proof_calls
+        result = original_proof(*args)
+        proof_calls += 1
+        if boundary == "proof" and proof_calls == 2:
+            clock[0] = at + timedelta(seconds=elapsed)
+        return result
+
+    def get_bytes(name):
+        result = original_get(name)
+        if boundary == "attestation" and name == recovery.SUCCESSOR_QUIESCENCE_PATH:
+            clock[0] = at + timedelta(seconds=elapsed)
+        return result
+
+    def update_bytes(name, content_type, update):
+        def callback(raw):
+            callbacks.append(clock[0])
+            return update(raw)
+
+        if name == path:
+            if boundary == "retry":
+                # Discard the first proposal as a conditional-write conflict would.
+                callback(original_get(path))
+            if boundary in {"callback", "retry"}:
+                clock[0] = at + timedelta(seconds=elapsed)
+        return original_update(name, content_type, callback)
+
+    monkeypatch.setattr(recovery, "_proof", proof)
+    monkeypatch.setattr(storage, "get_bytes", get_bytes)
+    monkeypatch.setattr(storage, "update_bytes", update_bytes)
+    if elapsed != 120:
+        with pytest.raises(recovery.RecoveryDenied):
+            recovery.scoped_epoch(storage, job_id, now=lambda: clock[0])
+        assert original_get(path) == before
+    else:
+        epoch_id = recovery.scoped_epoch(storage, job_id, now=lambda: clock[0])
+        state = load_manifest(storage, job_id)["generation"]["video_recovery"]
+        assert state["epochs"][0] == prior
+        successor = state["epochs"][1]
+        assert successor["epoch_id"] == epoch_id
+        assert successor["started_at_utc"] == recovery._iso(clock[0])
+        assert successor["deadline_at_utc"] == recovery._iso(clock[0] + timedelta(seconds=5100))
+        assert successor["quiescence_evidence"] == evidence
+        persisted = original_get(path)
+        clock[0] += timedelta(seconds=1)
+        assert recovery.scoped_epoch(storage, job_id, now=lambda: clock[0]) == epoch_id
+        assert original_get(path) == persisted
+    assert len(callbacks) == (2 if boundary == "retry" else 1)
+    assert original_get(f"jobs/{job_id}/video-budget.json") == budget
+
+
+@pytest.mark.parametrize("recovery_original", ["podcast-2026-W44-00bc06dfb6e2"], indirect=True)
 def test_authenticated_request_cannot_supply_successor_quiescence(recovery_original, monkeypatch):
     from podcaster import monitoring
     from podcaster.video import recovery

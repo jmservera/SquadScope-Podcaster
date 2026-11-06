@@ -487,6 +487,11 @@ The document schema is `w44-successor-quiescence-v1`; it binds `job_id`,
 SHA256 of canonical predecessor JSON (`predecessor_sha256`), and SHA256 of the
 unchanged historical budget bytes (`historical_budget_sha256`). `observed_at`
 must be after the predecessor's deadline and no more than 120 seconds old at CAS.
+Each reservation callback, including every conditional-write retry, samples the
+live clock after all proof and attestation storage reads; request-start time is
+not admission time. Stale or future-dated evidence denies reservation without
+changing the ledger. The successful callback sets the new start and fixed
+deadline; later reconciliation never moves either timestamp.
 `execution_inventory_complete`, `native_redeliveries_accounted` and
 `competing_writer_absent` must all be true, backed by actual observations, not guessed.
 `executions` contains unique `name`, terminal `status` (`Failed`, `Succeeded` or

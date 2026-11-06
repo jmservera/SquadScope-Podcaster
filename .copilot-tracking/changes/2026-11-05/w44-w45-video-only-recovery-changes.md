@@ -1,5 +1,31 @@
 # W44/W45 video-only recovery — Leela implementation evidence
 
+## P04 Basher different-author successor-clock correction — 2026-11-06
+
+Basher solely revised the rejected freshness artifact; Frank supplied no advice
+or coauthorship. The live clock now reaches reservation unchanged, is sampled
+after all proof/attestation reads on every conditional-write callback/retry,
+and denies stale or future evidence before ledger mutation. Successful
+reservation timestamps use that callback's actual time, not request start;
+same-epoch reconciliation never changes the persisted start or deadline.
+
+Twelve deterministic regressions cover callback delay, slow proof reads, slow
+attestation reads and discarded-CAS-proposal retry, each at -1/120/121 seconds.
+The existing exact-original/quiescence/fence tests remain intact. Successor
+selectors: **27 passed**. Integrated freshness/renewal/ownership/editor/budget/
+compose/process/intermediates: **864 passed**, 24 existing fork warnings.
+Whole-tree Ruff check/format: **227 files passed**; diff whitespace clean.
+The missing locked azure-keyvault-secrets 4.12.0 dependency was restored to an
+isolated ignored scratch target after import failure, without manifest change.
+Actual full normal pytest is running and is not yet a pass.
+
+Historical b95aacc rejection below remains preserved. A genuine independent
+read-only review of the corrected committed head, complete pytest, exact-head CI,
+fresh comments/threads and normal head-matched merge remain mandatory. No
+production attestation, epoch, deployment, provider/TTS or new infrastructure
+operation. Parent continues new-source build/scan/OCI provenance and reviewed
+release pin refresh immediately after this bounded merge milestone.
+
 ## 2026-11-06T09:10:35Z — Basher different-author startup correction
 
 Owner reassigned the valid PR782 startup artifact to Basher, sole mutation
@@ -356,3 +382,23 @@ First benchmark rendered successfully but bounded stdout truncated packet JSON;
 small aggregate video hash fixed that evidence method without weakening the gate.
 Files/scripts and complete report remain in `.scratch/canonical-benchmark-v2`.
 P04-T03 independent exact-head review/full suite/CI/normal merge still pending.
+
+## P04-T02 actual independent rejection — Frank lockout
+
+Hermes actual READONLY review of exactb95aaccba0eaae70a3e8015af460e222fd857e65
+returned REJECT: Medium successor-freshness defect in recovery.py. The request
+timestamp is frozen when passed into reservation; an independent unchanged-source
+in-memory121s delay before the actual manifest CAS callback still admitted epoch2
+using stale quiescence evidence. Frank is locked out of this rejected artifact/
+revision and must not self-fix, contribute advice/coauthoring, push, merge or deploy.
+Parent must assign a different eligible author. No new owner-consent/GitHub-human
+review/CAS-capability prerequisite exists; coordinator disposition remains valid.
+
+Actual independent validation:716 process/ownership/synthesis-security/job-runner/
+compose tests plus136budget/editor/intermediates tests passed;24forkwarnings;
+4/4 concurrentrenderthread→boundedchildRLock controls passed. Author final200
+successor vectors passed73.41s, Ruff228clean. Full normal suite was stopped at
+~10percent after genuine source rejection; no full-suitePASS or CI waiver claimed.
+Branch is local/unpushed, no PR/CI/merge. Exact rejected commit preserved; this
+append is operational evidence only, not a source correction. No production
+attestation/admission/deploy/media/provider/TTS/secret operation occurred.

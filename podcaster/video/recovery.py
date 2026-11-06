@@ -257,7 +257,7 @@ def _assert_provider_quiet(
 
 
 def _successor_evidence(
-    storage: StorageBackend, job_id: str, state: dict[str, Any], proof: str, at: datetime
+    storage: StorageBackend, job_id: str, state: dict[str, Any], proof: str
 ) -> dict[str, Any]:
     """Read the fixed private operator channel; never accept an API-supplied attestation."""
     if job_id != W44_JOB or len(state["epochs"]) != 1:
@@ -271,7 +271,6 @@ def _successor_evidence(
         or prior.get("inventory_reference") != SCOPED_PRIVATE_DIRECTIVE
         or prior.get("identity") != asdict(scoped_identity(job_id))
         or prior.get("proof_sha256") != proof
-        or at < _parse(prior["deadline_at_utc"])
         or state.get("selected_private_output") is not None
     ):
         raise RecoveryDenied("exact predecessor is not proven terminal and unselected")
@@ -293,7 +292,6 @@ def _successor_evidence(
         or evidence.get("proof_sha256") != proof
         or evidence.get("historical_budget_sha256")
         != hashlib.sha256(storage.get_bytes(f"jobs/{job_id}/video-budget.json") or b"").hexdigest()
-        or not timedelta(0) <= at - observed <= timedelta(seconds=120)
         or observed < _parse(prior["deadline_at_utc"])
         or evidence.get("execution_inventory_complete") is not True
         or evidence.get("native_redeliveries_accounted") is not True
@@ -386,15 +384,6 @@ def reserve_epoch(
         _assert_provider_quiet(document, storage, job_id)
         if _budget(storage, job_id, at).to_dict() != historical_budget.to_dict():
             raise RecoveryDenied("historical budget changed before reservation")
-        document["generation"].setdefault(
-            "video_attempt_terminal",
-            {
-                "status": "failed",
-                "reason": "video_attempt_deadline_reached",
-                "at": _iso(at),
-                "deadline_at_utc": historical_budget.to_dict()["deadline_at_utc"],
-            },
-        )
         audio = document["generation"]["synthesis_runner"]["audio"]
         if identity != expected_identity or audio["sha256"] != expected_audio_sha256:
             raise RecoveryDenied("requested identity or completed MP3 does not match")
@@ -413,17 +402,34 @@ def reserve_epoch(
                 or expected_audio_sha256 != W44_AUDIO_SHA256
             ):
                 raise RecoveryDenied("successor admission is outside the coordinator disposition")
-            successor_evidence = _successor_evidence(storage, job_id, state, proof, _utc(now()))
+            successor_evidence = _successor_evidence(storage, job_id, state, proof)
         elif state["epochs"]:
             raise RecoveryDenied("an epoch already exists; reconcile it instead")
+        # Proof/storage reads may block, and CAS retries must not reuse request time.
+        reserved_at = _utc(now())
+        if successor_evidence is not None and not (
+            timedelta(0)
+            <= reserved_at - _parse(successor_evidence["observed_at"])
+            <= timedelta(seconds=120)
+        ):
+            raise RecoveryDenied("trusted prior-worker inventory is stale or future-dated")
+        document["generation"].setdefault(
+            "video_attempt_terminal",
+            {
+                "status": "failed",
+                "reason": "video_attempt_deadline_reached",
+                "at": _iso(reserved_at),
+                "deadline_at_utc": historical_budget.to_dict()["deadline_at_utc"],
+            },
+        )
         previous = state.pop("pending_selection_attempt", None)
         if previous is not None:
             abandoned = state.setdefault("abandoned_selection_attempts", [])
             if not isinstance(abandoned, list):
                 raise RecoveryDenied("historical candidate intents are invalid")
             abandoned.append(previous)
-        started = _iso(at)
-        deadline = _iso(at + timedelta(seconds=5100))
+        started = _iso(reserved_at)
+        deadline = _iso(reserved_at + timedelta(seconds=5100))
         state["epochs"].append(
             {
                 "epoch_id": proposed,
@@ -499,7 +505,7 @@ def scoped_epoch(storage: StorageBackend, job_id: str, *, now: Clock = _now) -> 
                 inventory_reference=SCOPED_PRIVATE_DIRECTIVE,
                 scoped_private=True,
                 predecessor=W44_PREDECESSOR if successor else None,
-                now=lambda: at,
+                now=now,
             )
         except RecoveryDenied:
             # A concurrent CAS winner may have reserved the same immutable operation.
@@ -518,7 +524,7 @@ def scoped_epoch(storage: StorageBackend, job_id: str, *, now: Clock = _now) -> 
         or epoch.get("identity") != asdict(expected)
         or epoch.get("proof_sha256") != proof
         or epoch.get("status") not in {"reserved", "dispatched", "running"}
-        or at >= _parse(epoch["deadline_at_utc"])
+        or _utc(now()) >= _parse(epoch["deadline_at_utc"])
     ):
         raise RecoveryDenied("existing epoch cannot be retried under owner directive")
     _same_proof(document, storage, job_id, epoch)
