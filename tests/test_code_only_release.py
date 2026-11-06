@@ -162,6 +162,11 @@ def test_success_updates_workers_before_api_and_keeps_holds(monkeypatch):
 
 
 def test_old_healthy_api_revision_cannot_satisfy_new_image(monkeypatch):
+    clock = [0]
+    monkeypatch.setattr(release.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        release.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
     revisions = [
         {
             "name": "old",
@@ -175,7 +180,6 @@ def test_old_healthy_api_revision_cannot_satisfy_new_image(monkeypatch):
         }
     ]
     monkeypatch.setattr(release, "cli_json", lambda _: revisions)
-    monkeypatch.setattr(release.time, "sleep", lambda _: None)
     with pytest.raises(RuntimeError, match="New API image"):
         release.require_api_health("new-image")
     revisions[0]["properties"]["template"]["containers"][0]["image"] = "new-image"
@@ -288,6 +292,72 @@ def test_async_timeout_does_not_certify_accepted_mutation(monkeypatch):
         arm.request("PATCH", release.resource_url("video"), {})
     assert clock[0] == 600
     assert sum(method == "PATCH" for method, _, _ in calls) == 1
+
+
+@pytest.mark.parametrize(
+    "location,code,payload",
+    [(False, 200, {"status": "Succeeded"}), (True, 200, {}), (True, 204, {})],
+)
+@pytest.mark.parametrize("elapsed", [600, 650])
+def test_late_terminal_poll_response_is_not_certified(
+    monkeypatch, location, code, payload, elapsed
+):
+    arm, calls, clock = scripted_arm(monkeypatch, [])
+
+    def late_response(method, url):
+        calls.append((method, url, None))
+        clock[0] = elapsed
+        return code, {}, payload
+
+    monkeypatch.setattr(arm, "response", late_response)
+    with pytest.raises(RuntimeError, match="polling timeout"):
+        arm.poll_operation(OPERATION, {}, location=location)
+    assert len(calls) == 1
+    assert clock[0] == elapsed
+
+
+@pytest.mark.parametrize("elapsed", [600, 658])
+def test_late_expected_image_readiness_response_is_not_certified(monkeypatch, elapsed):
+    arm, calls, clock = scripted_arm(monkeypatch, [])
+    resource = snapshot()["video"]
+    resource["properties"]["template"]["containers"][0]["image"] = "worker-new"
+
+    def late_read(method, url):
+        calls.append((method, url, None))
+        clock[0] = elapsed
+        return resource
+
+    monkeypatch.setattr(arm, "request", late_read)
+    with pytest.raises(RuntimeError, match="Deployment timeout"):
+        release.wait_ready(arm, "video", "worker-new")
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("elapsed", [600, 658])
+def test_late_healthy_api_revision_response_is_not_certified(monkeypatch, elapsed):
+    _, _, clock = scripted_arm(monkeypatch, [])
+    calls = []
+
+    def late_revisions(args):
+        calls.append(args)
+        clock[0] = elapsed
+        return [
+            {
+                "name": "healthy-new",
+                "properties": {
+                    "active": True,
+                    "healthState": "Healthy",
+                    "provisioningState": "Provisioned",
+                    "trafficWeight": 100,
+                    "template": {"containers": [{"image": "api-new"}]},
+                },
+            }
+        ]
+
+    monkeypatch.setattr(release, "cli_json", late_revisions)
+    with pytest.raises(RuntimeError, match="New API image"):
+        release.require_api_health("api-new")
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("code", [200, 204])

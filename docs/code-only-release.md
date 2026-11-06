@@ -47,6 +47,10 @@ subscription; HTTP redirects are refused and URLs/bodies are not logged.
 When neither polling header exists, fresh resource reads must reach both
 `provisioningState=Succeeded` **and the expected immutable image** within the
 bounded readiness wait. An old Succeeded image cannot satisfy this fallback.
+Terminal polling, resource readiness and API health each use a fixed ten-minute
+monotonic deadline checked again after every response, before certifying success.
+A response arriving at or after its deadline cannot certify completion; reads
+and retries never refresh the deadline.
 All paths then require fresh six-resource protected comparison and API health.
 See [ARM asynchronous operations](https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/async-operations).
 

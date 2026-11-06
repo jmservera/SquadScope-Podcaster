@@ -142,6 +142,8 @@ class Arm:
             except (urllib.error.URLError, TimeoutError):
                 headers = {}
                 continue
+            if time.monotonic() >= deadline:
+                break
             state = payload.get("status") or payload.get("properties", {}).get("provisioningState")
             if state in ("Failed", "Canceled"):
                 raise RuntimeError("Terminal ARM operation failure: " + state)
@@ -263,22 +265,28 @@ def require_quiet_jobs():
 
 
 def wait_ready(arm, target, expected_image):
-    for _ in range(120):
+    deadline = time.monotonic() + 600
+    while time.monotonic() < deadline:
         resource = arm.request("GET", resource_url(target))
+        if time.monotonic() >= deadline:
+            break
         state = resource["properties"]["provisioningState"]
         if state == "Succeeded" and images(resource) == [expected_image]:
             return resource
         if state in ("Failed", "Canceled"):
             raise RuntimeError("Terminal deployment failure: " + target)
-        time.sleep(5)
+        time.sleep(min(5, max(0, deadline - time.monotonic())))
     raise RuntimeError("Deployment timeout: " + target)
 
 
 def require_api_health(expected_image):
-    for _ in range(120):
+    deadline = time.monotonic() + 600
+    while time.monotonic() < deadline:
         revisions = cli_json(
             ["containerapp", "revision", "list", "-g", GROUP, "-n", PREFIX + "api"]
         )
+        if time.monotonic() >= deadline:
+            break
         healthy = [
             item
             for item in revisions
@@ -291,7 +299,7 @@ def require_api_health(expected_image):
         ]
         if len(healthy) == 1:
             return healthy[0]["name"]
-        time.sleep(5)
+        time.sleep(min(5, max(0, deadline - time.monotonic())))
     raise RuntimeError("New API image does not have one healthy 100% traffic revision")
 
 
