@@ -139,12 +139,15 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
             == metadata,
             "expiry": (
                 (
-                    datetime.fromisoformat(
-                        current["providers"][provider]["verification_horizon_at"].replace(
-                            "Z", "+00:00"
+                    operation is None
+                    or (
+                        datetime.fromisoformat(
+                            current["providers"][provider]["verification_horizon_at"].replace(
+                                "Z", "+00:00"
+                            )
                         )
+                        > repository.now()
                     )
-                    > repository.now()
                 )
                 if private_release
                 else (
@@ -182,10 +185,12 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
             continue
         horizon = leg.get("verification_horizon_at")
         if (
-            not horizon
-            or datetime.fromisoformat(horizon.replace("Z", "+00:00")) <= repository.now()
-            or leg["verification_attempt"] >= leg["verification_budget"]
-        ):
+            not private_release
+            and (
+                not horizon
+                or datetime.fromisoformat(horizon.replace("Z", "+00:00")) <= repository.now()
+            )
+        ) or leg["verification_attempt"] >= leg["verification_budget"]:
             repository.schedule_reconciliation(claim, provider=provider, due_at=repository.now())
             continue
         active_providers.append(provider)

@@ -2461,6 +2461,139 @@ def test_w44_selected_media_is_bound_to_canonical_manifest_and_verified_digest(r
 
 
 @pytest.mark.parametrize("recovery_original", ["podcast-2026-W44-00bc06dfb6e2"], indirect=True)
+def test_expired_owner_release_reconciles_without_authorizing_mutation(
+    recovery_original, monkeypatch
+):
+    from pathlib import Path
+    from uuid import uuid4
+
+    from podcaster import distribution_outbox
+    from podcaster.generation import manifest_bytes
+    from podcaster.orchestration import prepare_owner_authorized_video_release
+    from podcaster.video import recovery
+    from podcaster.video.distribution import VideoDistributionConfig
+    from podcaster.video.owner_release import OWNER_RELEASE_AUTHORIZED_AT, OWNER_RELEASE_OWNER
+
+    storage, job_id, _identity, _audio_sha, _at = recovery_original
+    authorized_at = datetime.fromisoformat(OWNER_RELEASE_AUTHORIZED_AT.replace("Z", "+00:00"))
+    enqueue_at = authorized_at - timedelta(days=2)
+    persisted_late_at = authorized_at + timedelta(hours=23)
+    expired_at = authorized_at + timedelta(hours=25)
+    monkeypatch.setattr(
+        distribution_outbox.DistributionOutboxRepository.__init__,
+        "__kwdefaults__",
+        {"now": lambda: enqueue_at},
+    )
+    record_authorization = (
+        distribution_outbox.DistributionOutboxRepository.record_owner_release_authorization
+    )
+
+    def persist_delayed_authorization(repository, outbox_id, *, owner):
+        repository.now = lambda: persisted_late_at
+        return record_authorization(repository, outbox_id, owner=owner)
+
+    monkeypatch.setattr(
+        distribution_outbox.DistributionOutboxRepository,
+        "record_owner_release_authorization",
+        persist_delayed_authorization,
+    )
+    source = Path("tests") / f".expired-owner-release-{uuid4().hex}.mp4"
+    try:
+        source.write_bytes(b"synthetic W44 release candidate" * 100)
+        manifest = load_manifest(storage, job_id)
+        proof = recovery._proof(manifest, storage, job_id)[1]
+        recovery.select_private_output(
+            storage,
+            job_id,
+            source,
+            attempt_id="expiredownerrelease",
+            claim=None,
+            expected_proof_sha256=proof,
+        )
+        manifest = load_manifest(storage, job_id)
+        manifest["generation"]["video_runner"]["publication_metadata"] = {
+            "title": "Existing reviewed title",
+            "description": "Existing reviewed description",
+        }
+        storage.put_bytes(
+            f"jobs/{job_id}/manifest.json",
+            manifest_bytes(manifest),
+            "application/json",
+        )
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            youtube_client_id="test-client",
+            youtube_client_secret="test-secret",
+            youtube_refresh_token="test-token",
+        )
+        monkeypatch.setattr(VideoDistributionConfig, "from_env", lambda: config)
+        monkeypatch.setattr(distribution_outbox, "outbox_routing_enabled", lambda: True)
+        monkeypatch.setattr("podcaster.queue.enqueue_distribution_job", lambda *_, **__: None)
+        result = prepare_owner_authorized_video_release(
+            job_id,
+            owner=OWNER_RELEASE_OWNER,
+            storage=storage,
+        )
+        repository = distribution_outbox.DistributionOutboxRepository(
+            storage, now=lambda: persisted_late_at
+        )
+        outbox = repository.read(result["outbox_id"])
+        horizon = datetime.fromisoformat(
+            outbox["providers"]["youtube"]["verification_horizon_at"].replace("Z", "+00:00")
+        )
+        assert outbox["enqueue"]["at"] == enqueue_at.isoformat().replace("+00:00", "Z")
+        assert horizon == authorized_at + timedelta(hours=24)
+        assert persisted_late_at < horizon
+
+        claim = repository.claim(
+            result["outbox_id"], owner="test-worker", execution_id="ambiguous", lease_seconds=300
+        )
+        repository.persist_intent(claim, provider="youtube", operation="draft_upload")
+        repository.consume_intent(
+            claim, provider="youtube", provider_timeout_seconds=120, receipt_margin_seconds=30
+        )
+        repository.release(claim)
+        repository.now = lambda: expired_at
+        expired_claim = repository.claim(
+            result["outbox_id"], owner="test-worker", execution_id="expired", lease_seconds=300
+        )
+        assert repository.authorize_dispatch(expired_claim, provider="youtube")
+        repository.release(expired_claim)
+        monkeypatch.setattr(
+            distribution_outbox.DistributionOutboxRepository.__init__,
+            "__kwdefaults__",
+            {"now": lambda: expired_at},
+        )
+
+        class TrackingTransport(_ReviewedYouTubeTransport):
+            def __init__(self):
+                super().__init__()
+                self.reconciliation_reads = []
+
+            def request(self, url, **kwargs):
+                if "/channels?" in url or "/playlistItems?" in url:
+                    self.reconciliation_reads.append(url)
+                return super().request(url, **kwargs)
+
+        http = TrackingTransport()
+        monkeypatch.setattr("podcaster.video.distribution._DefaultTransport", lambda: http)
+        monkeypatch.setattr(
+            "podcaster.video.distribution._get_youtube_access_token", lambda *_: "offline"
+        )
+        assert _run_reviewed_worker(storage, outbox).reason == "reviewed_video_dispatched"
+        assert any("/playlistItems?" in url for url in http.reconciliation_reads)
+        assert http.mutations == []
+        latest = repository.read(result["outbox_id"])
+        leg = latest["providers"]["youtube"]
+        assert leg["intent"]["operation"] == "draft_upload"
+        assert leg["intent"]["consumed_at"]
+        assert leg["receipts"] == []
+        assert leg["result"] == "publication_unknown"
+    finally:
+        source.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize("recovery_original", ["podcast-2026-W44-00bc06dfb6e2"], indirect=True)
 def test_owner_release_queues_youtube_only_without_forging_media_review(
     recovery_original, monkeypatch
 ):
@@ -2533,6 +2666,11 @@ def test_owner_release_queues_youtube_only_without_forging_media_review(
         assert outbox["owner_release_authorization"]["source"] == (
             "owner_authorized_release_exception"
         )
+        assert datetime.fromisoformat(
+            outbox["providers"]["youtube"]["verification_horizon_at"].replace("Z", "+00:00")
+        ) == datetime.fromisoformat(
+            outbox["owner_release_authorization"]["authorized_at"].replace("Z", "+00:00")
+        ) + timedelta(hours=24)
         http = _ReviewedYouTubeTransport()
         monkeypatch.setattr("podcaster.video.distribution._DefaultTransport", lambda: http)
         monkeypatch.setattr(

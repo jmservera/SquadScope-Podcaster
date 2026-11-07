@@ -1922,6 +1922,8 @@ class DistributionOutboxRepository:
                     "owner release cannot authorize ambiguous prior provider work"
                 )
             current["owner_release_authorization"] = evidence
+            authorized_at = _parse_time(evidence.get("authorized_at"))
+            youtube["verification_horizon_at"] = _iso(authorized_at + timedelta(hours=24))
 
         return self._update(outbox_id, _record)
 
@@ -2342,10 +2344,13 @@ class DistributionOutboxRepository:
         if not provider_approval_is_valid(document, provider) and not owner_release_approved:
             raise MediaReviewRequiredError("provider approval is missing or stale")
         horizon = _parse_time(leg.get("verification_horizon_at"))
+        horizon_expired = horizon is None or self.now() >= horizon
+        budget_exhausted = int(leg.get("verification_attempt") or 0) >= int(
+            leg.get("verification_budget") or 0
+        )
         if (provider_io or operation is not None) and (
-            horizon is None
-            or self.now() >= horizon
-            or int(leg.get("verification_attempt") or 0) >= int(leg.get("verification_budget") or 0)
+            budget_exhausted
+            or (horizon_expired and (operation is not None or not owner_release_approved))
         ):
             raise DistributionOutboxError("provider verification window is exhausted")
         if operation is not None:

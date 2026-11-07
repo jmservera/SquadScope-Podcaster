@@ -360,6 +360,99 @@ def test_owner_release_api_requires_standard_auth_and_designated_owner_jwt(monke
     assert queued == [(W44_JOB, "jmservera", storage)]
 
 
+def test_owner_release_preparation_does_not_block_event_loop_and_survives_cancellation(
+    monkeypatch,
+):
+    import asyncio
+    import threading
+
+    import httpx
+
+    secret = "test-owner-release-secret"
+    monkeypatch.setenv("UI_AUTH_USERNAME", "admin")
+    monkeypatch.setenv("UI_AUTH_PASSWORD", "test-password")
+    monkeypatch.setenv("UI_AUTH_SECRET", secret)
+    monkeypatch.setenv("PODCASTER_API_KEY", "machine-api-key")
+
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    preparation_thread = []
+
+    def prepare(*_args, **_kwargs):
+        preparation_thread.append(threading.get_ident())
+        started.set()
+        try:
+            assert release.wait(3), "test must release owner-release preparation"
+            return {"outbox_id": "local-outbox", "status": "queued_or_repairable"}
+        finally:
+            finished.set()
+
+    monkeypatch.setattr("podcaster.monitoring.prepare_owner_authorized_video_release", prepare)
+    monkeypatch.setattr("podcaster.monitoring.get_storage", lambda: object())
+
+    async def exercise():
+        event_loop_thread = threading.get_ident()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            request = asyncio.create_task(
+                client.post(
+                    "/api/video/owner-release",
+                    json={"job_id": W44_JOB},
+                    headers={"Authorization": f"Bearer {create_token('jmservera', secret)}"},
+                )
+            )
+            try:
+                assert await asyncio.to_thread(started.wait, 2)
+                health = await asyncio.wait_for(client.get("/healthz"), timeout=1)
+                assert health.status_code == 200
+                assert preparation_thread != [event_loop_thread]
+                request.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await request
+                assert not finished.is_set()
+            finally:
+                release.set()
+            assert await asyncio.to_thread(finished.wait, 2)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("failure", "status"),
+    [
+        ("binding", 409),
+        ("not_found", 404),
+    ],
+)
+def test_owner_release_preparation_preserves_error_responses(monkeypatch, failure, status):
+    from podcaster.review import ReviewBindingError
+
+    secret = "test-owner-release-secret"
+    monkeypatch.setenv("UI_AUTH_USERNAME", "admin")
+    monkeypatch.setenv("UI_AUTH_PASSWORD", "test-password")
+    monkeypatch.setenv("UI_AUTH_SECRET", secret)
+    monkeypatch.setenv("PODCASTER_API_KEY", "machine-api-key")
+
+    def prepare(*_args, **_kwargs):
+        if failure == "binding":
+            raise ReviewBindingError("invalid owner release")
+        raise ValueError("missing selected artifact")
+
+    monkeypatch.setattr("podcaster.monitoring.prepare_owner_authorized_video_release", prepare)
+    monkeypatch.setattr("podcaster.monitoring.get_storage", lambda: object())
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/video/owner-release",
+            json={"job_id": W44_JOB},
+            headers={"Authorization": f"Bearer {create_token('jmservera', secret)}"},
+        )
+
+    assert response.status_code == status
+
+
 def test_legacy_api_owner_release_requires_api_auth_and_owner_jwt(monkeypatch):
     from podcaster.api import GenerateHandler, create_token
     from tests.test_api import FakeHandler, make_handler

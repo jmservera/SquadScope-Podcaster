@@ -774,7 +774,8 @@ async def api_owner_authorized_video_release(request: Request):
     if not job_id:
         return JSONResponse(status_code=400, content={"error": "job_id_required"})
     try:
-        result = prepare_owner_authorized_video_release(
+        result = await asyncio.to_thread(
+            prepare_owner_authorized_video_release,
             job_id,
             owner=str(claims["sub"]),
             storage=get_storage(),
