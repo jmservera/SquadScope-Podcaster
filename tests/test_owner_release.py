@@ -180,6 +180,20 @@ def test_unrelated_job_cannot_receive_owner_release_exception():
     assert owner_release_evidence(identity, selected, artifact, canonical) is None
 
 
+@pytest.mark.parametrize("job_id", ["../outside", "podcast-2026-W46-unrelated"])
+def test_owner_release_rejects_unscoped_job_before_storage_access(job_id):
+    from podcaster.orchestration import prepare_owner_authorized_video_release
+    from podcaster.review import ReviewBindingError
+    from podcaster.video.owner_release import OWNER_RELEASE_OWNER
+
+    with pytest.raises(ReviewBindingError):
+        prepare_owner_authorized_video_release(
+            job_id,
+            owner=OWNER_RELEASE_OWNER,
+            storage=object(),
+        )
+
+
 @pytest.mark.parametrize(
     ("job_id", "digest"),
     [

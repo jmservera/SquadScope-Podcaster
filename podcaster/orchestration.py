@@ -264,10 +264,16 @@ def prepare_owner_authorized_video_release(
         owner_release_evidence,
         owner_release_matches_selected,
     )
-    from podcaster.video.recovery import RecoveryDenied, read_selected
+    from podcaster.video.recovery import RecoveryDenied, read_selected, scoped_identity
 
     if owner != OWNER_RELEASE_OWNER:
         raise ReviewBindingError("owner release requires the designated owner")
+    if not isinstance(job_id, str):
+        raise ReviewBindingError("owner release job identity is invalid")
+    try:
+        authorized_identity = scoped_identity(job_id)
+    except RecoveryDenied as exc:
+        raise ReviewBindingError("owner release job identity is not authorized") from exc
     backend = storage or create_storage_backend()
     manifest = load_manifest(backend, job_id)
     if not isinstance(manifest, dict):
@@ -283,7 +289,7 @@ def prepare_owner_authorized_video_release(
         identity = PublicationIdentity(**identity_data)
     except (TypeError, ValueError) as exc:
         raise ReviewBindingError("owner release publication identity is invalid") from exc
-    if identity.accepted_job_id != job_id:
+    if identity != authorized_identity:
         raise ReviewBindingError("owner release job identity does not match")
     selected_digest = selected.get("mp4_sha256")
     if (
@@ -326,9 +332,9 @@ def prepare_owner_authorized_video_release(
     if not objectives:
         raise ReviewBindingError("normal YouTube publication is not enabled for owner release")
 
-    scratch = Path(".scratch") / "owner-release" / job_id
+    scratch = Path(".scratch") / "owner-release"
     scratch.mkdir(parents=True, exist_ok=True, mode=0o700)
-    local_path = scratch / f"{selected['attempt_id']}-{selected['mp4_sha256']}.mp4"
+    local_path = scratch / f"{uuid4().hex}.mp4"
     try:
         if not backend.download_file(selected["archive_path"], local_path):
             raise ReviewBindingError("selected owner-release artifact could not be staged")
