@@ -4,8 +4,6 @@ import json
 import time
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from podcaster.distribution_outbox import DistributionOutboxRepository, commit_immutable_artifact
 from podcaster.distribution_worker import process_message, provider_mutation_enabled
 from podcaster.publication_state import PublicationIdentity
@@ -393,12 +391,14 @@ def test_resumed_private_distribution_worker_never_calls_final_adapters(tmp_path
         spotify.assert_not_called()
 
 
-def test_resumed_private_worker_denies_identity_even_past_media_review_gate(tmp_path, monkeypatch):
+def test_resumed_private_worker_requires_owner_evidence_even_if_media_gate_passes(
+    tmp_path, monkeypatch
+):
     from unittest.mock import Mock
 
     from podcaster import distribution_outbox, publish
     from podcaster.video import distribution
-    from podcaster.video.recovery import PRIVATE_ORIGINALS, RecoveryDenied
+    from podcaster.video.recovery import PRIVATE_ORIGINALS
 
     original = next(iter(PRIVATE_ORIGINALS))
     storage, repository, _clock, document = _setup(tmp_path, job_id=original)
@@ -409,16 +409,14 @@ def test_resumed_private_worker_denies_identity_even_past_media_review_gate(tmp_
     # Isolate the identity-wide hold from the earlier media-review gate.
     monkeypatch.setattr(distribution_outbox, "media_review_allows_distribution", lambda _: True)
     queue = MemoryQueue()
-    with pytest.raises(
-        RecoveryDenied, match="private recovery originals have no provider dispatch transition"
-    ):
-        process_message(
-            _message(encode_distribution_message(document["outbox_id"]), dequeue_count=2),
-            storage=storage,
-            queue=queue,
-            repository=repository,
-            mutation_enabled=True,
-        )
-    assert queue.deleted == []
+    outcome = process_message(
+        _message(encode_distribution_message(document["outbox_id"]), dequeue_count=2),
+        storage=storage,
+        queue=queue,
+        repository=repository,
+        mutation_enabled=True,
+    )
+    assert outcome.reason == "media_review_required"
+    assert queue.deleted == ["m1"]
     youtube.assert_not_called()
     spotify.assert_not_called()
