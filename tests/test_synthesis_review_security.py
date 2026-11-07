@@ -502,6 +502,54 @@ def test_scoped_original_full_identity_and_actual_mp3_binding(recovery_original)
     )
 
 
+@pytest.mark.parametrize(
+    ("job_id", "expected"),
+    [
+        (
+            "podcast-2026-W44-00bc06dfb6e2",
+            (
+                "2026-W44",
+                "40269058395",
+                "2a34575cd7be0d0a6ec36b4a808a1909ae7f793d00a8511da464ec063cf2bfa0",
+                "5c1fc333deb75ea2bfff990c1222f97a12acb2c3234e19df26717a27e8ff6f56",
+            ),
+        ),
+        (
+            "podcast-2026-W45-9798e93edc06",
+            (
+                "2026-W45",
+                "41395629030",
+                "fc4023679d8b2ba90481f783ebb9c57e61e059db3790c9c9d3c4a996b0242e34",
+                "a64c9c664a510b94207a566c92c3cc0465af241a5304109b845d1317284f5d3b",
+            ),
+        ),
+    ],
+)
+def test_owner_release_scope_uses_exact_w44_and_w45_publication_identities(job_id, expected):
+    from podcaster.video.recovery import scoped_identity
+
+    identity = scoped_identity(job_id)
+    assert (
+        identity.week,
+        identity.publish_run_id,
+        identity.article_sha256,
+        identity.manifest_sha256,
+    ) == expected
+
+
+def test_owner_release_scope_rejects_near_miss_job_id():
+    from podcaster.video.recovery import RecoveryDenied, scoped_identity
+
+    with pytest.raises(RecoveryDenied):
+        scoped_identity("podcast-2026-W45-9798e93edc06-near-miss")
+
+
+def test_unrelated_job_remains_outside_owner_release_scope():
+    from podcaster.video.recovery import private_original
+
+    assert not private_original("podcast-2026-W46-unrelated")
+
+
 def test_scoped_concurrent_reservations_commit_one_fixed_epoch(recovery_original, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier, local
@@ -2332,6 +2380,177 @@ def test_private_candidate_selection_losers_and_readback_fail_closed(recovery_or
         read_selected(storage, job_id)
 
 
+@pytest.mark.parametrize("recovery_original", ["podcast-2026-W44-00bc06dfb6e2"], indirect=True)
+def test_w44_selected_media_is_bound_to_canonical_manifest_and_verified_digest(recovery_original):
+    from hashlib import sha256
+    from pathlib import Path
+    from uuid import uuid4
+
+    from podcaster.generation import manifest_bytes
+    from podcaster.video import recovery
+    from podcaster.video.owner_release import (
+        owner_release_evidence,
+        owner_release_matches_selected,
+    )
+
+    storage, job_id, _identity, _audio_sha, at = recovery_original
+    media = b"synthetic W44 selected candidate" * 100
+    source = Path("tests") / f".owner-release-w44-{uuid4().hex}.mp4"
+    try:
+        source.write_bytes(media)
+        document = load_manifest(storage, job_id)
+        review_before = document["review"]
+        proof = recovery._proof(document, storage, job_id)[1]
+        selected = recovery.select_private_output(
+            storage,
+            job_id,
+            source,
+            attempt_id="w44selectedcandidate",
+            claim=None,
+            expected_proof_sha256=proof,
+            now=lambda: at,
+        )
+        digest = sha256(media).hexdigest()
+        canonical = load_manifest(storage, job_id)["generation"]["video_recovery"][
+            "selected_private_output"
+        ]
+
+        assert selected == canonical
+        assert selected["mp4_sha256"] == digest
+        assert selected["archive_path"].endswith(f"{digest}.mp4")
+        assert recovery.read_selected(storage, job_id) == selected
+        assert load_manifest(storage, job_id)["review"] == review_before
+
+        artifact = {"media_kind": "video", "sha256": digest, "size_bytes": len(media)}
+        canonical_artifact = {
+            "artifact_id": "w44-canonical-selected-artifact",
+            "selection_version": 1,
+            "selected": True,
+            "sha256": digest,
+        }
+        authorization = owner_release_evidence(
+            selected["identity"],
+            selected,
+            artifact,
+            canonical_artifact,
+        )
+        release_document = {
+            "publication_identity": selected["identity"],
+            "artifact": artifact,
+            "canonical_artifact": canonical_artifact,
+            "owner_release_authorization": authorization,
+        }
+        assert authorization is not None
+        assert owner_release_matches_selected(release_document, storage)
+
+        release_document["artifact"] = {**artifact, "sha256": sha256(b"arbitrary").hexdigest()}
+        assert not owner_release_matches_selected(release_document, storage)
+
+        canonical["mp4_sha256"] = sha256(b"unrelated media").hexdigest()
+        changed = load_manifest(storage, job_id)
+        changed["generation"]["video_recovery"]["selected_private_output"] = canonical
+        storage.put_bytes(
+            f"jobs/{job_id}/manifest.json",
+            manifest_bytes(changed),
+            "application/json",
+        )
+        with pytest.raises(recovery.RecoveryDenied):
+            recovery.read_selected(storage, job_id)
+    finally:
+        source.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize("recovery_original", ["podcast-2026-W44-00bc06dfb6e2"], indirect=True)
+def test_owner_release_queues_youtube_only_without_forging_media_review(
+    recovery_original, monkeypatch
+):
+    from pathlib import Path
+    from uuid import uuid4
+
+    from podcaster import distribution_outbox
+    from podcaster.generation import manifest_bytes
+    from podcaster.orchestration import prepare_owner_authorized_video_release
+    from podcaster.video import recovery
+    from podcaster.video.distribution import VideoDistributionConfig
+    from podcaster.video.owner_release import OWNER_RELEASE_OWNER
+
+    storage, job_id, _identity, _audio_sha, at = recovery_original
+    source = Path("tests") / f".owner-release-dispatch-{uuid4().hex}.mp4"
+    try:
+        source.write_bytes(b"synthetic W44 release candidate" * 100)
+        manifest = load_manifest(storage, job_id)
+        proof = recovery._proof(manifest, storage, job_id)[1]
+        recovery.select_private_output(
+            storage,
+            job_id,
+            source,
+            attempt_id="ownerreleasedispatch",
+            claim=None,
+            expected_proof_sha256=proof,
+            now=lambda: at,
+        )
+        manifest = load_manifest(storage, job_id)
+        manifest["generation"]["video_runner"]["publication_metadata"] = {
+            "title": "Existing reviewed title",
+            "description": "Existing reviewed description",
+        }
+        storage.put_bytes(
+            f"jobs/{job_id}/manifest.json",
+            manifest_bytes(manifest),
+            "application/json",
+        )
+
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            youtube_client_id="test-client",
+            youtube_client_secret="test-secret",
+            youtube_refresh_token="test-token",
+            spotify_upload_enabled=True,
+        )
+        monkeypatch.setattr(VideoDistributionConfig, "from_env", lambda: config)
+        monkeypatch.setattr(distribution_outbox, "outbox_routing_enabled", lambda: True)
+        queued: list[str] = []
+
+        def capture_queue(outbox_id, *, authorize_send, mark_accepted):
+            authorize_send()
+            mark_accepted()
+            queued.append(outbox_id)
+
+        monkeypatch.setattr("podcaster.queue.enqueue_distribution_job", capture_queue)
+        result = prepare_owner_authorized_video_release(
+            job_id,
+            owner=OWNER_RELEASE_OWNER,
+            storage=storage,
+        )
+
+        repository = distribution_outbox.DistributionOutboxRepository(storage)
+        outbox = repository.read(result["outbox_id"])
+        assert result["status"] == "queued_or_repairable"
+        assert len(queued) == 1
+        assert queued[0] == result["outbox_id"]
+        assert set(outbox["providers"]) == {"youtube"}
+        assert outbox["media_review"] == {"status": "pending", "audit_trail": []}
+        assert outbox["owner_release_authorization"]["source"] == (
+            "owner_authorized_release_exception"
+        )
+        http = _ReviewedYouTubeTransport()
+        monkeypatch.setattr("podcaster.video.distribution._DefaultTransport", lambda: http)
+        monkeypatch.setattr(
+            "podcaster.video.distribution._get_youtube_access_token", lambda *_: "offline"
+        )
+        assert _run_reviewed_worker(storage, outbox).reason == "reviewed_video_dispatched"
+        assert http.bytes_uploaded == storage.get_bytes(outbox["artifact"]["path"])
+        assert http.mutations == ["upload", "promote"]
+        assert repository.read(result["outbox_id"])["media_review"] == {
+            "status": "pending",
+            "audit_trail": [],
+        }
+        assert _run_reviewed_worker(storage, outbox).reason == "reviewed_video_dispatched"
+        assert http.mutations == ["upload", "promote"]
+    finally:
+        source.unlink(missing_ok=True)
+
+
 @pytest.mark.parametrize("damage", ["lost_commit", "changed_pointer", "held_outbox", "archive"])
 def test_first_private_selection_requires_durable_readback(
     recovery_original, tmp_path, monkeypatch, damage
@@ -2971,7 +3190,11 @@ def test_api_queue_construction_failure_reconciles_deadline_and_recovers(
     ] == ["terminal"]
 
 
-def test_private_original_cannot_reach_distribution_or_final_adapters(tmp_path):
+@pytest.mark.parametrize(
+    "job_id",
+    ["podcast-2026-W44-00bc06dfb6e2", "podcast-2026-W45-9798e93edc06"],
+)
+def test_private_original_cannot_reach_distribution_or_final_adapters(tmp_path, job_id):
     from podcaster import publish
     from podcaster.distribution_dispatch import dispatch_reviewed_video
     from podcaster.video.distribution import (
@@ -2980,9 +3203,9 @@ def test_private_original_cannot_reach_distribution_or_final_adapters(tmp_path):
         upload_to_spotify_episode,
         upload_to_youtube,
     )
-    from podcaster.video.recovery import PRIVATE_ORIGINALS, RecoveryDenied
+    from podcaster.video.recovery import PRIVATE_ORIGINALS, RecoveryDenied, scoped_identity
 
-    job_id = next(iter(PRIVATE_ORIGINALS))
+    assert job_id in PRIVATE_ORIGINALS
     path = tmp_path / "completed.mp4"
     path.write_bytes(b"V" * 2048)
     youtube = Mock(side_effect=AssertionError("YouTube network called"))
@@ -2992,7 +3215,7 @@ def test_private_original_cannot_reach_distribution_or_final_adapters(tmp_path):
         spotify_upload_enabled=True,
         dry_run=False,
     )
-    identity = PublicationIdentity(job_id, "2026-W44", "1", "a" * 64, "b" * 64)
+    identity = scoped_identity(job_id)
     with pytest.raises(RecoveryDenied):
         distribute_video(path, job_id, "title", "description", 60, config)
     with pytest.raises(RecoveryDenied):

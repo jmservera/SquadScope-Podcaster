@@ -839,13 +839,14 @@ def upload_to_youtube(
     Raises RuntimeError on auth failures; returns None on upload failures
     after retries so distribution continues to other targets.
     """
+    from podcaster.video.owner_release import owner_release_active
     from podcaster.video.recovery import RecoveryDenied, private_original
 
     if config.youtube_enabled and (
         not isinstance(job_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,127}", job_id)
     ):
         raise RecoveryDenied("validated job identity required for YouTube upload")
-    if private_original(job_id):
+    if private_original(job_id) and not owner_release_active(job_id, video_path):
         raise RecoveryDenied("private recovery original cannot upload to YouTube")
     if not config.youtube_enabled:
         logger.info("YouTube upload disabled")

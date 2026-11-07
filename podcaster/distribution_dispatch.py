@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import nullcontext
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -22,6 +23,10 @@ from podcaster.orchestration import load_manifest
 from podcaster.publication_state import publication_identity
 from podcaster.review import is_exact_script_job, validate_private_media_inputs
 from podcaster.video import distribution, youtube_playlist, youtube_publish
+from podcaster.video.owner_release import (
+    owner_release_dispatch,
+    owner_release_matches_selected,
+)
 from podcaster.video.youtube_reconcile import (
     ABSENT,
     reconcile_youtube_upload,
@@ -48,7 +53,10 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
 
     identity_data = document.get("publication_identity")
     original_job = identity_data.get("accepted_job_id") if isinstance(identity_data, dict) else None
-    if private_original(original_job):
+    private_release = private_original(original_job)
+    if private_release and (
+        repository is None or not owner_release_matches_selected(document, repository.storage)
+    ):
         raise RecoveryDenied("private recovery originals have no provider dispatch transition")
     if "media_review" not in document:
         return "legacy_provider_dispatch_not_authorized"
@@ -100,30 +108,56 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
             if latest != manifest or admitted_audio is None:
                 raise DistributionOutboxError("reviewed manifest changed during provider operation")
             audio = admitted_audio
-        if (
-            asdict(identity) != current["publication_identity"]
-            or publication_identity(latest, job_id, identity.publish_run_id) != identity
-            or outbox_id_for(
+        binding_checks = {
+            "publication_identity": asdict(identity) == current["publication_identity"],
+            "manifest_identity": publication_identity(latest, job_id, identity.publish_run_id)
+            == identity,
+            "outbox_identity": outbox_id_for(
                 identity, media_kind="video", provider_objectives=current["provider_objectives"]
             )
-            != claim.outbox_id
-            or current["artifact"] != document["artifact"]
-            or current["canonical_artifact"] != document["canonical_artifact"]
-            or current["publication_digest"] != document["publication_digest"]
-            or not media_review_allows_distribution(current)
-            or latest["generation"]["video_runner"]["distribution"]["outbox_id"] != claim.outbox_id
-            or current["providers"][provider]["context"].get("runtime_sha256")
-            != distribution.provider_runtime_sha256(provider, config, language)
-            or current["providers"][provider]["context"].get("synthesis_audio_path") != audio.path
-            or current["providers"][provider]["context"].get("synthesis_audio_sha256")
-            != admitted_audio_sha256
-            or current["providers"][provider]["context"].get("publication_metadata_sha256")
-            != metadata_sha256
-            or latest["generation"]["video_runner"].get("publication_metadata") != metadata
-            or datetime.fromisoformat(latest["expires_at"].replace("Z", "+00:00"))
-            <= repository.now()
-        ):
-            raise DistributionOutboxError("reviewed video or provider binding changed")
+            == claim.outbox_id,
+            "artifact": current["artifact"] == document["artifact"],
+            "canonical_artifact": current["canonical_artifact"] == document["canonical_artifact"],
+            "publication_digest": current["publication_digest"] == document["publication_digest"],
+            "media_admission": media_review_allows_distribution(current),
+            "selected_owner_artifact": not private_release
+            or not verify_media
+            or owner_release_matches_selected(current, repository.storage),
+            "manifest_outbox": latest["generation"]["video_runner"]["distribution"].get("outbox_id")
+            == claim.outbox_id,
+            "provider_runtime": current["providers"][provider]["context"].get("runtime_sha256")
+            == distribution.provider_runtime_sha256(provider, config, language),
+            "audio_path": current["providers"][provider]["context"].get("synthesis_audio_path")
+            == audio.path,
+            "audio_digest": current["providers"][provider]["context"].get("synthesis_audio_sha256")
+            == admitted_audio_sha256,
+            "publication_metadata_digest": current["providers"][provider]["context"].get(
+                "publication_metadata_sha256"
+            )
+            == metadata_sha256,
+            "publication_metadata": latest["generation"]["video_runner"].get("publication_metadata")
+            == metadata,
+            "expiry": (
+                (
+                    datetime.fromisoformat(
+                        current["providers"][provider]["verification_horizon_at"].replace(
+                            "Z", "+00:00"
+                        )
+                    )
+                    > repository.now()
+                )
+                if private_release
+                else (
+                    datetime.fromisoformat(latest["expires_at"].replace("Z", "+00:00"))
+                    > repository.now()
+                )
+            ),
+        }
+        failed_bindings = [name for name, valid in binding_checks.items() if not valid]
+        if failed_bindings:
+            raise DistributionOutboxError(
+                "reviewed video or provider binding changed: " + ", ".join(failed_bindings)
+            )
         if verify_media:
             verify_artifact(repository.storage, artifact)
             if path is not None and _file_digest(path) != artifact.sha256:
@@ -249,18 +283,24 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
                     continue
                 repository.consume_schedule_token(claim, provider=provider, token=token)
             if provider == "youtube" and config.youtube_enabled:
-                _youtube(
-                    repository,
-                    claim,
-                    state,
-                    identity,
-                    config,
-                    path,
-                    validate,
-                    mutate,
-                    transport or distribution._DefaultTransport(),
-                    metadata,
+                scope = (
+                    owner_release_dispatch(document, repository.storage, path)
+                    if private_release
+                    else nullcontext()
                 )
+                with scope:
+                    _youtube(
+                        repository,
+                        claim,
+                        state,
+                        identity,
+                        config,
+                        path,
+                        validate,
+                        mutate,
+                        transport or distribution._DefaultTransport(),
+                        metadata,
+                    )
             elif provider == "spotify" and config.spotify_upload_enabled:
                 _spotify(
                     repository,

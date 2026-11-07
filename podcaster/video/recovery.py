@@ -1175,7 +1175,13 @@ def select_private_output(
         if claim:
             epoch["status"] = "selected"
         current["generation"]["video_recovery"] = state
-        current["generation"]["video_runner"] = {
+        previous_runner = current["generation"].get("video_runner")
+        previous_metadata = (
+            previous_runner.get("publication_metadata")
+            if isinstance(previous_runner, Mapping)
+            else None
+        )
+        video_runner = {
             "status": "completed",
             "at": _iso(_utc(now())),
             "distribution": {
@@ -1184,6 +1190,15 @@ def select_private_output(
                 "blob_path": archive,
             },
         }
+        if (
+            isinstance(previous_metadata, Mapping)
+            and set(previous_metadata) == {"title", "description"}
+            and all(
+                isinstance(value, str) and value.strip() for value in previous_metadata.values()
+            )
+        ):
+            video_runner["publication_metadata"] = dict(previous_metadata)
+        current["generation"]["video_runner"] = video_runner
         selected.update(candidate)
         return manifest_bytes(current)
 
