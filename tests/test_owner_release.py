@@ -366,7 +366,7 @@ def test_owner_release_preparation_does_not_block_event_loop_and_survives_cancel
     import asyncio
     import threading
 
-    import httpx
+    import httpx2 as httpx
 
     secret = "test-owner-release-secret"
     monkeypatch.setenv("UI_AUTH_USERNAME", "admin")
