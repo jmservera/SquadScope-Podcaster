@@ -223,6 +223,8 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
                 return accepted[-1]["provider_item_id"]
             if claim.read_only:
                 raise DistributionOutboxError("ambiguous dispatch is reconciliation-only")
+            if private_release and _owner_release_horizon_expired(state, repository):
+                raise DistributionOutboxError("owner release verification horizon is exhausted")
             repository.persist_intent(
                 claim,
                 provider=provider,
@@ -230,6 +232,9 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
                 expected_provider_item_id=provider_id,
                 precondition_fingerprint=document["publication_digest"],
             )
+            state = validate(provider)
+            if private_release and _owner_release_horizon_expired(state, repository):
+                raise DistributionOutboxError("owner release verification horizon is exhausted")
             repository.consume_intent(
                 claim, provider=provider, provider_timeout_seconds=120, receipt_margin_seconds=30
             )
@@ -346,6 +351,37 @@ def _provider_id(leg):
     return next(iter(ids), None)
 
 
+def _owner_release_horizon_expired(document, repository):
+    if not document.get("owner_release_authorization"):
+        return False
+    try:
+        horizon = datetime.fromisoformat(
+            document["providers"]["youtube"]["verification_horizon_at"].replace("Z", "+00:00")
+        )
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return True
+    return horizon <= repository.now()
+
+
+def _owner_release_expired_handoff(
+    repository,
+    claim,
+    *,
+    source,
+    provider_item_id=None,
+    native_state=None,
+):
+    repository.record_verification(
+        claim,
+        provider="youtube",
+        result="manual_handoff_required",
+        source=source,
+        provider_item_id=provider_item_id,
+        native_state=native_state,
+        exhaustion_reason="provider_verification_horizon_exhausted",
+    )
+
+
 def _pending(repository, claim, provider, item_id, native_state, source):
     repository.record_verification(
         claim,
@@ -419,6 +455,14 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
                 source="youtube_identity_readback_unresolved",
             )
             return
+        elif _owner_release_horizon_expired(document, repository):
+            _owner_release_expired_handoff(
+                repository,
+                claim,
+                source="owner_release_horizon_expired_before_upload",
+                native_state="absent",
+            )
+            return
         else:
 
             def upload(authorize):
@@ -477,6 +521,15 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
             _pending(repository, claim, "youtube", video_id, privacy, "youtube_media_readback")
             return
     else:
+        if _owner_release_horizon_expired(document, repository):
+            _owner_release_expired_handoff(
+                repository,
+                claim,
+                source="owner_release_horizon_expired_before_publication",
+                provider_item_id=video_id,
+                native_state=privacy,
+            )
+            return
         if privacy != "public":
             # Persist the observed ID before promotion, counting this readback
             # once. A final permitted private poll cannot admit more provider I/O.

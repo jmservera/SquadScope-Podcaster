@@ -50,6 +50,33 @@ def test_authority_media_reads_use_conditional_get_not_repeated_full_wav(monkeyp
     assert all(r.get_header("If-none-match") == '"original"' for r in requests[1:])
 
 
+def test_selected_archive_reuses_bytes_only_after_conditional_etag_check(monkeypatch):
+    from podcaster.video.recovery import _verify_candidate_archive
+
+    client = backend()
+    payload = b"selected-private-video"
+    digest = hashlib.sha256(payload).hexdigest()
+    requests = []
+
+    def get(request, *, timeout):
+        requests.append(request)
+        if request.get_header("If-none-match") == '"original"':
+            raise HTTPError(request.full_url, 304, "unchanged", {}, None)
+        return Response(payload)
+
+    monkeypatch.setattr(storage, "urlopen", get)
+    monkeypatch.setattr(client, "blob_size", lambda _path: len(payload))
+    monkeypatch.setattr(
+        client,
+        "download_file",
+        lambda *_: pytest.fail("verified archive reads must not download the full archive"),
+    )
+    for _ in range(10):
+        _verify_candidate_archive(client, "jobs/original/selected.mp4", digest, len(payload))
+    assert requests[0].get_header("If-none-match") is None
+    assert all(request.get_header("If-none-match") == '"original"' for request in requests[1:])
+
+
 @pytest.mark.parametrize("event", ["modified", "missing", "transport"])
 def test_cached_original_media_fails_closed_on_changed_or_unavailable_get(monkeypatch, event):
     client = backend()

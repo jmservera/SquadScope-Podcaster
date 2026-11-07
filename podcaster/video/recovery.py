@@ -1033,6 +1033,10 @@ def _file_sha256(path: Path) -> tuple[str, int]:
 def _verify_candidate_archive(storage: StorageBackend, path: str, digest: str, size: int) -> None:
     if storage.blob_size(path) != size:
         raise RecoveryDenied("private candidate size mismatch")
+    verified_reader = getattr(storage, "get_verified_bytes", None)
+    if callable(verified_reader):
+        verified_reader(path, digest, size)
+        return
     readback_dir = Path(".scratch") / "video-recovery"
     readback_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     target = readback_dir / f"{uuid.uuid4().hex}.mp4"

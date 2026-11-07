@@ -2545,20 +2545,7 @@ def test_expired_owner_release_reconciles_without_authorizing_mutation(
         assert horizon == authorized_at + timedelta(hours=24)
         assert persisted_late_at < horizon
 
-        claim = repository.claim(
-            result["outbox_id"], owner="test-worker", execution_id="ambiguous", lease_seconds=300
-        )
-        repository.persist_intent(claim, provider="youtube", operation="draft_upload")
-        repository.consume_intent(
-            claim, provider="youtube", provider_timeout_seconds=120, receipt_margin_seconds=30
-        )
-        repository.release(claim)
         repository.now = lambda: expired_at
-        expired_claim = repository.claim(
-            result["outbox_id"], owner="test-worker", execution_id="expired", lease_seconds=300
-        )
-        assert repository.authorize_dispatch(expired_claim, provider="youtube")
-        repository.release(expired_claim)
         monkeypatch.setattr(
             distribution_outbox.DistributionOutboxRepository.__init__,
             "__kwdefaults__",
@@ -2585,10 +2572,17 @@ def test_expired_owner_release_reconciles_without_authorizing_mutation(
         assert http.mutations == []
         latest = repository.read(result["outbox_id"])
         leg = latest["providers"]["youtube"]
-        assert leg["intent"]["operation"] == "draft_upload"
-        assert leg["intent"]["consumed_at"]
+        assert leg.get("intent") is None
         assert leg["receipts"] == []
-        assert leg["result"] == "publication_unknown"
+        assert leg["result"] == "manual_handoff_required"
+        assert leg["verification"]["source"] == "owner_release_horizon_expired_before_upload"
+        assert leg["verification"]["exhaustion_reason"] == (
+            "provider_verification_horizon_exhausted"
+        )
+        assert _run_reviewed_worker(storage, outbox).reason == "reviewed_video_dispatched"
+        assert any("/playlistItems?" in url for url in http.reconciliation_reads)
+        assert http.mutations == []
+        assert repository.read(result["outbox_id"])["providers"]["youtube"] == leg
     finally:
         source.unlink(missing_ok=True)
 
@@ -2608,6 +2602,16 @@ def test_owner_release_queues_youtube_only_without_forging_media_review(
     from podcaster.video.owner_release import OWNER_RELEASE_OWNER
 
     storage, job_id, _identity, _audio_sha, at = recovery_original
+    from podcaster.video.owner_release import OWNER_RELEASE_AUTHORIZED_AT
+
+    authorized_at = datetime.fromisoformat(OWNER_RELEASE_AUTHORIZED_AT.replace("Z", "+00:00"))
+    frozen = authorized_at + timedelta(hours=1)
+    monkeypatch.setattr(distribution_outbox, "utc_now", lambda: frozen)
+    monkeypatch.setattr(
+        distribution_outbox.DistributionOutboxRepository.__init__,
+        "__kwdefaults__",
+        {"now": lambda: frozen},
+    )
     source = Path("tests") / f".owner-release-dispatch-{uuid4().hex}.mp4"
     try:
         source.write_bytes(b"synthetic W44 release candidate" * 100)
