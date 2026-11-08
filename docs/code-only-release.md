@@ -80,12 +80,16 @@ and retries never refresh the deadline.
 All paths then require fresh six-resource protected comparison and API health.
 See [ARM asynchronous operations](https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/async-operations).
 
-The observed production rollback references are pinned in the helper and emitted
-in the sanitized preflight. A partial failure leaves already updated images recorded
-in per-resource milestones; **there is no automatic rollback** or restart from
-a stale baseline. Freshly inspect and independently approve any reconciliation,
-using the same exclusive window and current protected containers. Never replay
-old arrays, change holds, or run the ordinary full-stack defaults.
+The prior production rollback references are pinned in the helper and emitted in
+the sanitized preflight. For each resource, the guard accepts only its exact
+pinned prior image or the exact requested immutable target image. This allows a
+reviewed rerun to resume an interrupted rollout while rejecting any unknown
+image; it is not a rollback. A resource already at the requested image is freshly
+read and skipped rather than patched again. Every mutation still uses the
+current protected container array and fresh comparisons. Independently inspect
+and approve the current mixed state before rerunning, using the same exclusive
+window. Never replay old arrays, change holds, or run the ordinary full-stack
+defaults.
 
 The release neither admits recovery requests nor approves media/provider
 publication. After deployment, refresh exact-original W44 proof, both terminal

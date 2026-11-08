@@ -100,7 +100,10 @@ def test_release_rejects_previous_baseline(monkeypatch, target, image):
         def snapshots(self):
             return copy.deepcopy(state)
 
-    with pytest.raises(RuntimeError, match=f"Expected original rollback image not live: {target}"):
+    with pytest.raises(
+        RuntimeError,
+        match=f"Unexpected image state outside original or requested target: {target}",
+    ):
         release.release(ReadOnlyArm(), "api-new", "worker-new", sleep=lambda _: None)
 
 
@@ -230,6 +233,56 @@ def test_success_updates_workers_before_api_and_keeps_holds(monkeypatch):
     monkeypatch.setattr(release, "require_api_health", lambda _: "healthy-new")
     final = release.release(arm, "api-new", "worker-new", apply=True, sleep=lambda _: None)
     assert arm.writes == ["synth", "video", "recorder", "dist", "dsched", "api"]
+    release.check_holds(final)
+
+
+def test_release_resumes_known_partial_target_images(monkeypatch):
+    class FakeArm:
+        def __init__(self):
+            self.state = snapshot()
+            self.writes = []
+            for target in ("synth", "video"):
+                self.state[target]["properties"]["template"]["containers"][0]["image"] = (
+                    "worker-new"
+                )
+
+        def snapshots(self):
+            return copy.deepcopy(self.state)
+
+        def request(self, method, url, body=None):
+            target = next(item for item in release.TARGETS if release.PREFIX + item + "?" in url)
+            if method == "PATCH":
+                self.writes.append(target)
+                self.state[target]["properties"]["template"]["containers"] = body["properties"][
+                    "template"
+                ]["containers"]
+            return copy.deepcopy(self.state[target])
+
+    arm = FakeArm()
+    monkeypatch.setattr(release, "require_quiet_jobs", lambda: None)
+
+    def report_healthy(_):
+        arm.state["api"]["properties"]["latestReadyRevisionName"] = "healthy-new"
+        arm.state["api"]["properties"]["latestRevisionName"] = "healthy-new"
+        return "healthy-new"
+
+    monkeypatch.setattr(release, "require_api_health", report_healthy)
+    final = release.release(arm, "api-new", "worker-new", apply=True, sleep=lambda _: None)
+
+    assert arm.writes == ["recorder", "dist", "dsched", "api"]
+    assert release.images(final["synth"]) == ["worker-new"]
+    assert release.images(final["video"]) == ["worker-new"]
+    assert all(
+        release.images(final[target]) == [image]
+        for target, image in (
+            ("api", "api-new"),
+            ("synth", "worker-new"),
+            ("video", "worker-new"),
+            ("recorder", "worker-new"),
+            ("dist", "worker-new"),
+            ("dsched", "worker-new"),
+        )
+    )
     release.check_holds(final)
 
 

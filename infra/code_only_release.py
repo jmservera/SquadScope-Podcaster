@@ -309,8 +309,12 @@ def release(arm, api_image, worker_image, apply=False, sleep=time.sleep):
     for target in TARGETS:
         old = OLD_API if target == "api" else OLD_WORKER
         repository = "podcaster-api" if target == "api" else "podcaster-synthesis"
-        if images(baseline[target]) != [f"{REGISTRY}/{repository}@{old}"]:
-            raise RuntimeError("Expected original rollback image not live: " + target)
+        requested = api_image if target == "api" else worker_image
+        allowed = ([f"{REGISTRY}/{repository}@{old}"], [requested])
+        if images(baseline[target]) not in allowed:
+            raise RuntimeError(
+                "Unexpected image state outside original or requested target: " + target
+            )
     print(json.dumps(evidence(baseline, milestone="before", source=SOURCE)), flush=True)
     require_quiet_jobs()
     sleep(30)
@@ -321,14 +325,25 @@ def release(arm, api_image, worker_image, apply=False, sleep=time.sleep):
     # Update event worker templates before exposing the new API admission path.
     for target in (*TARGETS[1:], "api"):
         require_quiet_jobs()
-        require_unchanged(expected, arm.snapshots())
+        observed = arm.snapshots()
+        require_unchanged(expected, observed)
+        check_holds(observed)
         image = api_image if target == "api" else worker_image
-        arm.request("PATCH", resource_url(target), patch_body(expected[target], image))
+        if images(observed[target]) == [image]:
+            expected = observed
+            print(
+                json.dumps(evidence(observed, milestone="already-target", target=target)),
+                flush=True,
+            )
+            continue
+        arm.request("PATCH", resource_url(target), patch_body(observed[target], image))
         wait_ready(arm, target, image)
+        expected = copy.deepcopy(observed)
         expected[target]["properties"]["template"]["containers"][0]["image"] = image
         observed = arm.snapshots()
         require_unchanged(expected, observed)
         check_holds(observed)
+        expected = observed
         print(json.dumps(evidence(observed, milestone="updated", target=target)), flush=True)
     healthy_revision = require_api_health(api_image)
     final = arm.snapshots()
