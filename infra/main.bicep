@@ -206,6 +206,9 @@ param videoGenerationEnabled string = 'true'
 @description('Route provider distribution through the durable outbox. Disabled until canary.')
 param distributionOutboxEnabled string = 'false'
 
+@description('Allow only validated owner-release API requests to create pending-review outbox records.')
+param ownerReleaseOutboxEnabled string = 'false'
+
 @description('Allow the distribution worker to invoke mutating provider dispatch. Disabled until canary.')
 param distributionWorkerProviderMutationEnabled string = 'false'
 
@@ -612,6 +615,7 @@ module acaDistribution 'modules/aca-distribution.bicep' = {
     distributionImage: synthesisImage
     containerRegistryServer: acrLoginServer
     providerMutationEnabled: distributionWorkerProviderMutationEnabled
+    spotifyPublishEnabled: spotifyPublishEnabled
     spotifySessionCookieDc: spotifySessionCookieDc
     spotifySessionCookieKey: spotifySessionCookieKey
     spotifyShowId: spotifyShowId
@@ -741,6 +745,9 @@ module api 'modules/api.bicep' = if (deployApiApp) {
     storageAccountName: storage.name
     storageContainerName: storageContainerName
     synthesisQueueName: synthesisQueueName
+    distributionOutboxEnabled: distributionOutboxEnabled
+    ownerReleaseOutboxEnabled: ownerReleaseOutboxEnabled
+    videoYoutubeEnabled: videoYoutubeEnabled
     podcasterApiKey: podcasterApiKey
     apiImage: apiImage
     publicationStatusYoutubeReadbackEnabled: publicationStatusYoutubeReadbackEnabled

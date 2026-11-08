@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from threading import Condition, Event
@@ -2527,7 +2528,9 @@ def test_expired_owner_release_without_video_id_hands_off_before_provider_io(
             youtube_refresh_token="test-token",
         )
         monkeypatch.setattr(VideoDistributionConfig, "from_env", lambda: config)
-        monkeypatch.setattr(distribution_outbox, "outbox_routing_enabled", lambda: True)
+        monkeypatch.setenv("DISTRIBUTION_OUTBOX_ENABLED", "false")
+        monkeypatch.setenv("DISTRIBUTION_WORKER_PROVIDER_MUTATION_ENABLED", "false")
+        monkeypatch.setenv("OWNER_RELEASE_OUTBOX_ENABLED", "true")
         monkeypatch.setattr("podcaster.queue.enqueue_distribution_job", lambda *_, **__: None)
         result = prepare_owner_authorized_video_release(
             job_id,
@@ -2796,8 +2799,11 @@ def test_owner_release_expiry_crossing_before_unknown_id_reconciliation_hands_of
 @pytest.mark.parametrize("recovery_original", ["podcast-2026-W44-00bc06dfb6e2"], indirect=True)
 @pytest.mark.parametrize("expire_after_upload", [False, True])
 def test_owner_release_queues_youtube_only_without_forging_media_review(
-    recovery_original, monkeypatch, expire_after_upload
+    recovery_original, monkeypatch, expire_after_upload, tmp_path
 ):
+    import os
+    import stat
+    import tempfile
     from pathlib import Path
     from uuid import uuid4
 
@@ -2820,8 +2826,40 @@ def test_owner_release_queues_youtube_only_without_forging_media_review(
         "__kwdefaults__",
         {"now": lambda: clock[0]},
     )
-    source = Path("tests") / f".owner-release-dispatch-{uuid4().hex}.mp4"
+    source = tmp_path / f"owner-release-dispatch-{uuid4().hex}.mp4"
+    staging_root = tmp_path / "aca-container-tmp"
+    staging_root.mkdir()
+    real_temporary_directory = tempfile.TemporaryDirectory
+    staging_paths = []
+    staged_artifacts = []
+
+    @contextmanager
+    def private_temporary_directory(*, prefix, dir):
+        assert dir == "/tmp"
+        with real_temporary_directory(prefix=prefix, dir=staging_root) as scratch:
+            staging_path = Path(scratch)
+            staging_paths.append(staging_path)
+            assert stat.S_IMODE(staging_path.stat().st_mode) == 0o700
+            assert staging_path.stat().st_uid == os.geteuid()
+            yield scratch
+
+    original_commit = distribution_outbox.commit_immutable_artifact
+
+    def verify_selected_bytes(storage_backend, media_path, **kwargs):
+        media_path = Path(media_path)
+        staged_artifacts.append(
+            {
+                "path": media_path,
+                "mode": stat.S_IMODE(media_path.stat().st_mode),
+                "owner": media_path.stat().st_uid,
+                "bytes": media_path.read_bytes(),
+            }
+        )
+        return original_commit(storage_backend, media_path, **kwargs)
+
     try:
+        monkeypatch.setattr(tempfile, "TemporaryDirectory", private_temporary_directory)
+        monkeypatch.setattr(distribution_outbox, "commit_immutable_artifact", verify_selected_bytes)
         source.write_bytes(b"synthetic W44 release candidate" * 100)
         manifest = load_manifest(storage, job_id)
         proof = recovery._proof(manifest, storage, job_id)[1]
@@ -2853,7 +2891,21 @@ def test_owner_release_queues_youtube_only_without_forging_media_review(
             spotify_upload_enabled=True,
         )
         monkeypatch.setattr(VideoDistributionConfig, "from_env", lambda: config)
-        monkeypatch.setattr(distribution_outbox, "outbox_routing_enabled", lambda: True)
+        monkeypatch.setenv("DISTRIBUTION_OUTBOX_ENABLED", "false")
+        monkeypatch.setenv("DISTRIBUTION_WORKER_PROVIDER_MUTATION_ENABLED", "false")
+        monkeypatch.delenv("OWNER_RELEASE_OUTBOX_ENABLED", raising=False)
+        assert not distribution_outbox.outbox_routing_enabled()
+        with pytest.raises(
+            ReviewBindingError, match="owner release requires route-specific outbox enablement"
+        ):
+            prepare_owner_authorized_video_release(
+                job_id,
+                owner=OWNER_RELEASE_OWNER,
+                storage=storage,
+            )
+        assert not list(staging_root.iterdir())
+
+        monkeypatch.setenv("OWNER_RELEASE_OUTBOX_ENABLED", "true")
         queued: list[str] = []
 
         def capture_queue(outbox_id, *, authorize_send, mark_accepted):
@@ -2868,6 +2920,31 @@ def test_owner_release_queues_youtube_only_without_forging_media_review(
             storage=storage,
         )
 
+        assert len(staging_paths) == 1
+        assert not staging_paths[0].exists()
+        assert not list(staging_root.iterdir())
+        assert len(staged_artifacts) == 1
+        assert staged_artifacts[0]["mode"] == 0o600
+        assert staged_artifacts[0]["owner"] == os.geteuid()
+        assert (
+            sha256(staged_artifacts[0]["bytes"]).hexdigest()
+            == (
+                load_manifest(storage, job_id)["generation"]["video_recovery"][
+                    "selected_private_output"
+                ]["mp4_sha256"]
+            )
+        )
+        assert (
+            len(staged_artifacts[0]["bytes"])
+            == load_manifest(storage, job_id)["generation"]["video_recovery"][
+                "selected_private_output"
+            ]["size_bytes"]
+        )
+        assert not distribution_outbox.outbox_routing_enabled()
+        from podcaster.distribution_worker import provider_mutation_enabled
+
+        assert not provider_mutation_enabled()
+
         repository = distribution_outbox.DistributionOutboxRepository(storage)
         outbox = repository.read(result["outbox_id"])
         assert result["status"] == "queued_or_repairable"
@@ -2878,6 +2955,20 @@ def test_owner_release_queues_youtube_only_without_forging_media_review(
         assert outbox["owner_release_authorization"]["source"] == (
             "owner_authorized_release_exception"
         )
+
+        def fail_commit(*_args, **_kwargs):
+            raise OSError("injected local artifact commit failure")
+
+        monkeypatch.setattr(distribution_outbox, "commit_immutable_artifact", fail_commit)
+        with pytest.raises(OSError, match="injected local artifact commit failure"):
+            prepare_owner_authorized_video_release(
+                job_id,
+                owner=OWNER_RELEASE_OWNER,
+                storage=storage,
+            )
+        assert len(staging_paths) == 2
+        assert not staging_paths[-1].exists()
+        assert not list(staging_root.iterdir())
         assert datetime.fromisoformat(
             outbox["providers"]["youtube"]["verification_horizon_at"].replace("Z", "+00:00")
         ) == datetime.fromisoformat(

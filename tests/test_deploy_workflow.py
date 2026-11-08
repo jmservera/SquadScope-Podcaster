@@ -218,7 +218,7 @@ def test_image_input_is_validated_before_github_environment_write():
         assert script.index(f'validate_image_ref "${image}"') < script.index('>> "$GITHUB_ENV"')
 
 
-def test_api_youtube_status_credentials_are_optional_secret_refs_without_mutation_flags():
+def test_api_youtube_status_credentials_are_optional_secret_refs_without_required_flag():
     main = BICEP.read_text()
     api = (ROOT / "infra/modules/api.bicep").read_text()
     assert "param publicationStatusYoutubeReadbackEnabled bool = false" in main
@@ -246,12 +246,38 @@ def test_api_youtube_status_credentials_are_optional_secret_refs_without_mutatio
     assert "var youtubeReadbackSecrets = youtubeReadbackConfigured ? [" in api
     assert "var youtubeReadbackEnvironment = youtubeReadbackConfigured ? [" in api
     for forbidden in (
-        "VIDEO_YOUTUBE_ENABLED",
         "VIDEO_YOUTUBE_REQUIRED",
         "roleAssignments",
         "networkAcls",
     ):
         assert forbidden not in api
+
+
+def test_api_owner_release_enablement_is_wired_and_disabled_by_default():
+    main = BICEP.read_text(encoding="utf-8")
+    api = (ROOT / "infra/modules/api.bicep").read_text(encoding="utf-8")
+    containerfile = (ROOT / "Containerfile.api").read_text(encoding="utf-8")
+    binding = re.search(r"module api 'modules/api.bicep'.*?\n  params: \{(.*?)\n  \}", main, re.S)[
+        1
+    ]
+
+    for parameter, environment in (
+        ("distributionOutboxEnabled", "DISTRIBUTION_OUTBOX_ENABLED"),
+        ("ownerReleaseOutboxEnabled", "OWNER_RELEASE_OUTBOX_ENABLED"),
+        ("videoYoutubeEnabled", "VIDEO_YOUTUBE_ENABLED"),
+    ):
+        assert f"{parameter}: {parameter}" in binding
+        assert f"param {parameter} string = 'false'" in api
+        assert f"name: '{environment}'" in api
+        assert f"value: {parameter}" in api
+
+    assert "param distributionOutboxEnabled string = 'false'" in main
+    assert "param ownerReleaseOutboxEnabled string = 'false'" in main
+    assert "param videoYoutubeEnabled string = 'false'" in main
+    assert "DISTRIBUTION_WORKER_PROVIDER_MUTATION_ENABLED" not in api
+    worker = (ROOT / "infra/modules/aca-distribution.bicep").read_text(encoding="utf-8")
+    assert "OWNER_RELEASE_OUTBOX_ENABLED" not in worker
+    assert "/app/.scratch/owner-release" not in containerfile
 
 
 def _release_workflow_text() -> str:
@@ -430,6 +456,7 @@ def test_reusable_deploy_workflow_uses_oidc_auth() -> None:
 def test_reusable_deploy_workflow_threads_spotify_publish_settings() -> None:
     workflow = _reusable_workflow_text()
     aca_module = (ROOT / "infra/modules/aca.bicep").read_text(encoding="utf-8")
+    distribution_module = ACA_DISTRIBUTION_BICEP.read_text(encoding="utf-8")
     api_module = (ROOT / "infra/modules/api.bicep").read_text(encoding="utf-8")
     main_bicep = BICEP.read_text(encoding="utf-8")
 
@@ -463,6 +490,26 @@ def test_reusable_deploy_workflow_threads_spotify_publish_settings() -> None:
     assert "spotifyAllowLivePublish string = 'false'" in main_bicep, (
         "main.bicep must default spotifyAllowLivePublish to 'false'"
     )
+    distribution_binding = re.search(
+        r"module acaDistribution 'modules/aca-distribution\.bicep'.*?"
+        r"\n  params: \{(.*?)\n  \}",
+        main_bicep,
+        re.S,
+    )
+    assert '--parameters spotifyPublishEnabled="${SPOTIFY_PUBLISH_ENABLED:-false}"' in workflow
+    assert "param spotifyPublishEnabled string = 'false'" in main_bicep
+    assert distribution_binding
+    assert "spotifyPublishEnabled: spotifyPublishEnabled" in distribution_binding[1]
+    assert "param spotifyPublishEnabled string = 'false'" in distribution_module
+    assert (
+        "{ name: 'SPOTIFY_PUBLISH_ENABLED', value: spotifyPublishEnabled }" in distribution_module
+    )
+    assert "{ name: 'VIDEO_SPOTIFY_UPLOAD_ENABLED', value: 'true' }" in distribution_module
+    assert "{ name: 'VIDEO_YOUTUBE_ENABLED', value: videoYoutubeEnabled }" in distribution_module
+    assert re.search(r"name: 'PODCAST_AUTO_PUBLISH'\s+value: podcastAutoPublish", aca_module)
+    assert "param podcastAutoPublish string = 'false'" in main_bicep
+    assert "param distributionOutboxEnabled string = 'false'" in main_bicep
+    assert "param distributionWorkerProviderMutationEnabled string = 'false'" in main_bicep
     # Workflow must export the value with a false default, never defaulting to true.
     assert "SPOTIFY_ALLOW_LIVE_PUBLISH_VAR:-true" not in workflow, (
         "workflow must not default SPOTIFY_ALLOW_LIVE_PUBLISH to true"

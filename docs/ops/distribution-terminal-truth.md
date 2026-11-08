@@ -128,6 +128,11 @@ see the integration contract for its default-off deployment parameter.
 Rollback removes the new caller endpoint configuration and restores the previous images;
 it must not delete provider receipts/claims or relax either review or visibility gates.
 
+`OWNER_RELEASE_OUTBOX_ENABLED` is a separate API-only, default-off gate. If explicitly enabled,
+it permits only the validated designated-owner W44/W45 endpoint to create its durable outbox
+record with `media_review.status=pending`; it does not enable generic outbox routing, worker
+dispatch, provider mutation, or media-review approval.
+
 `DISTRIBUTION_OUTBOX_ENABLED` is disabled by default. Enable it only after the dedicated
 distribution queue and worker use the same release image and the alert queries below are active.
 Rollback disables new outbox routing and claims; it must not delete outbox records, consumed
