@@ -1,24 +1,30 @@
 # Scoped W44/W45 code-only release
 
 This manual workflow is limited to the reviewed application merge
-`a30fbc599700d71b37532916e5813e3c2ddf27b6`. Build both images from that exact
+`54ede8b5a240f1dd1d976c42cc9d036b55990a48`. Build both images from that exact
 source, label their full OCI revision, scan HIGH/CRITICAL OS and library
 vulnerabilities with the existing fail-on-findings policy before pushing, import
 by immutable digest, and independently verify registry manifest/config provenance
-before dispatch. The workflow commit is separately reviewed release tooling,
-not the application image source. Never pass a tag or an unverified digest.
+before dispatch. Supply that exact application source commit separately from
+the release-procedure revision. The script rejects any source commit other than
+the reviewed merge. The workflow checks out the exact revision recorded on its
+manual-dispatch run; that release-procedure revision is distinct from the
+application image source. Never pass a tag or an unverified digest.
 
-Exact-source build `cg1x` scanned both images before either push. Immutable
-production imports preserve these complete manifest digests:
+ACR Task runs `ch4` and `ch5` built both images from the exact source. Trivy
+scans `ch6` and `ch7` passed the existing HIGH/CRITICAL policy, and tag-lock
+run `cha` locked both full-commit tags. The verified manifest digests are:
 
-* API: `sha256:76eb517d02f8b1c3a5881d416dc9074aa84deee6b5656b707a4c033aa2d7173d`
-* All five workers: `sha256:0efeb80bdeb23ee76c5411c4c9ae5f75338cbc8b1237df32cfec501247065727`
+* API: `sha256:7a4b2edc8474469dc5de720c94df3ff95f43fa291eaf1f32cec23796546878e3`
+* All five workers: `sha256:0d350aa6bc143dd529bc8fa80353986f3ceb07300f94aca0f047439a71099358`
 
 Independent target-registry raw manifest/config-byte and full revision proof
 is mandatory before dispatch; an import acknowledgement is not that proof.
-The helper's original rollback references are the currently deployed
-`56819d55…` API and `678878ab…` worker digests from reviewed source
-`8e65a5355458c04a5fa659138f65b38c682ad1b2`, not the earlier release baseline.
+The helper's rollback guard is pinned to the freshly observed production
+baseline: API `sha256:76eb517d02f8b1c3a5881d416dc9074aa84deee6b5656b707a4c033aa2d7173d`
+and all workers `sha256:0efeb80bdeb23ee76c5411c4c9ae5f75338cbc8b1237df32cfec501247065727`.
+These values are checked before any write and included in sanitized preflight
+evidence.
 
 The owner accepts an assessed exclusive deployment window rather than requiring
 unavailable ACA conditional tokens. This is supported Microsoft.App JSON Merge
@@ -74,8 +80,8 @@ and retries never refresh the deadline.
 All paths then require fresh six-resource protected comparison and API health.
 See [ARM asynchronous operations](https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/async-operations).
 
-Original rollback references are pinned in the helper and emitted in the
-sanitized preflight. A partial failure leaves already updated images recorded
+The observed production rollback references are pinned in the helper and emitted
+in the sanitized preflight. A partial failure leaves already updated images recorded
 in per-resource milestones; **there is no automatic rollback** or restart from
 a stale baseline. Freshly inspect and independently approve any reconciliation,
 using the same exclusive window and current protected containers. Never replay

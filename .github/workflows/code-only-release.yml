@@ -3,12 +3,16 @@ name: Code-only release (reviewed W44/W45 merge)
 on:
   workflow_dispatch:
     inputs:
+      source_commit:
+        description: 'Reviewed application source commit pinned by the release procedure'
+        required: true
+        type: string
       api_digest:
-        description: 'Independently verified scanned a30fbc59 API sha256 digest'
+        description: 'Independently verified scanned API sha256 digest for source_commit'
         required: true
         type: string
       worker_digest:
-        description: 'Independently verified scanned a30fbc59 worker sha256 digest'
+        description: 'Independently verified scanned worker sha256 digest for source_commit'
         required: true
         type: string
 
@@ -27,10 +31,13 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - name: Checkout reviewed release procedure
+      - name: Checkout reviewed release procedure at dispatched revision
         uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Confirm release procedure revision
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
       - name: Azure login with existing production identity
         uses: azure/login@93381592711f247e165c389ebb30b596c84cdc48
         with:
@@ -39,9 +46,11 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Preserve protected configuration and release six immutable images
         env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
           API_DIGEST: ${{ inputs.api_digest }}
           WORKER_DIGEST: ${{ inputs.worker_digest }}
         run: |
           set -euo pipefail
           python3 infra/code_only_release.py \
+            --source-commit "$SOURCE_COMMIT" \
             --api-digest "$API_DIGEST" --worker-digest "$WORKER_DIGEST" --apply
