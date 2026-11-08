@@ -32,7 +32,7 @@ _IDENTITIES = {
         "mp4_sha256": W45_MP4_SHA256,
     },
 }
-_ACTIVE_RELEASE: ContextVar[Mapping[str, str] | None] = ContextVar(
+_ACTIVE_RELEASE: ContextVar[Mapping[str, Any] | None] = ContextVar(
     "owner_authorized_video_release", default=None
 )
 
@@ -137,6 +137,11 @@ def _file_sha256(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
+def _file_version(path: Path) -> tuple[int, int, int, int, int]:
+    stat = path.stat()
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
 def owner_release_record_is_valid(document: Mapping[str, Any]) -> bool:
     """Validate persisted owner evidence against the exact outbox identity and artifact."""
     identity = document.get("publication_identity")
@@ -213,14 +218,20 @@ def owner_release_dispatch(
         or not path.is_file()
     ):
         raise ValueError("owner release artifact does not match the selected media")
+    version = _file_version(path)
     digest, size = _file_sha256(path)
-    if digest != selected["mp4_sha256"] or size != selected["size_bytes"]:
+    if (
+        digest != selected["mp4_sha256"]
+        or size != selected["size_bytes"]
+        or _file_version(path) != version
+    ):
         raise ValueError("owner release staged media does not match the selected bytes")
-    token: Token[Mapping[str, str] | None] = _ACTIVE_RELEASE.set(
+    token: Token[Mapping[str, Any] | None] = _ACTIVE_RELEASE.set(
         {
             "accepted_job_id": str(identity["accepted_job_id"]),
             "artifact_sha256": str(selected["mp4_sha256"]),
             "video_path": str(path.resolve()),
+            "file_version": version,
         }
     )
     try:
@@ -241,6 +252,6 @@ def owner_release_active(job_id: str, video_path: Path) -> bool:
     ):
         return False
     try:
-        return _file_sha256(path)[0] == dispatch.get("artifact_sha256")
+        return _file_version(path) == dispatch.get("file_version")
     except OSError:
         return False

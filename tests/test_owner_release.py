@@ -277,7 +277,7 @@ def test_owner_release_keeps_unrelated_job_defaults_and_global_spotify_setting()
 
 
 def test_owner_release_dispatch_binds_adapter_admission_to_selected_file(tmp_path, monkeypatch):
-    from podcaster.video import recovery
+    from podcaster.video import owner_release, recovery
     from podcaster.video.distribution import VideoDistributionConfig, upload_to_youtube
     from podcaster.video.recovery import RecoveryDenied
 
@@ -290,10 +290,19 @@ def test_owner_release_dispatch_binds_adapter_admission_to_selected_file(tmp_pat
     selected_path.write_bytes(selected_bytes)
     other_path.write_bytes(b"other media" * 100)
     monkeypatch.setattr(recovery, "read_selected", lambda _storage, _job_id: selected)
+    original_digest = owner_release._file_sha256
+    digest_calls = []
+
+    def counted_digest(path):
+        digest_calls.append(path)
+        return original_digest(path)
+
+    monkeypatch.setattr(owner_release, "_file_sha256", counted_digest)
     config = VideoDistributionConfig(youtube_enabled=True)
 
     with owner_release_dispatch(document, object(), selected_path):
         assert owner_release_active(W44_JOB, selected_path)
+        assert len(digest_calls) == 1
         assert not owner_release_active(W44_JOB, other_path)
         selected_path.write_bytes(b"changed media" * 100)
         assert not owner_release_active(W44_JOB, selected_path)

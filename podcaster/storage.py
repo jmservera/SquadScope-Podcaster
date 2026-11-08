@@ -9,6 +9,7 @@ import stat
 import subprocess
 import time
 import xml.etree.ElementTree as ET
+from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -16,10 +17,12 @@ from datetime import datetime, timezone
 from email.utils import formatdate
 from http.client import HTTPException
 from pathlib import Path
+from threading import RLock
 from typing import Callable, Protocol
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
+from uuid import uuid4
 
 from werkzeug.utils import secure_filename
 
@@ -29,6 +32,8 @@ DOWNLOAD_METHOD_USER_DELEGATION_SAS = "azure_ad_user_delegation_sas"
 DOWNLOAD_METHOD_LOCAL_LOCATOR = "local_filesystem_locator"
 
 logger = logging.getLogger(__name__)
+_VERIFIED_BYTE_CACHE_MAX_BYTES = 8 * 1024 * 1024
+_VERIFIED_CACHE_MAX_ENTRIES = 64
 _operation_deadline: ContextVar[float | None] = ContextVar(
     "storage_operation_deadline", default=None
 )
@@ -548,7 +553,10 @@ class AzureBlobStorageBackend:
         self._account_url = normalize_artifact_base_url(account_url)
         self._account_name = _account_name_from_url(self._account_url)
         self._sas_command_runner = sas_command_runner or _az_sas_command_runner
-        self._verified_reads: dict[tuple[str, str, int], tuple[str, bytes]] = {}
+        self._verified_reads: OrderedDict[tuple[str, str, int], tuple[str, bytes]] = OrderedDict()
+        self._verified_reads_bytes = 0
+        self._verified_blob_etags: OrderedDict[tuple[str, str, int], str] = OrderedDict()
+        self._verified_cache_lock = RLock()
 
     def put_bytes(self, path: str, content: bytes, content_type: str) -> StoredArtifact:
         safe_path = _safe_blob_path(path)
@@ -606,10 +614,17 @@ class AzureBlobStorageBackend:
         return content
 
     def get_verified_bytes(self, path: str, sha256: str, size_bytes: int) -> bytes:
-        """Reuse verified bytes only after a conditional GET proves their ETag unchanged."""
+        """Return small verified objects using a bounded conditional-ETag cache."""
+        if size_bytes > _VERIFIED_BYTE_CACHE_MAX_BYTES:
+            raise StorageUnavailableError(
+                "verified object exceeds the in-memory limit; use streaming verification"
+            )
         safe_path = _safe_blob_path(path)
         key = (safe_path, sha256, size_bytes)
-        cached = self._verified_reads.get(key)
+        with self._verified_cache_lock:
+            cached = self._verified_reads.get(key)
+            if cached is not None:
+                self._verified_reads.move_to_end(key)
         content, etag = self._get_blob_state(
             safe_path, if_none_match=cached[0] if cached is not None else None
         )
@@ -622,8 +637,58 @@ class AzureBlobStorageBackend:
         ):
             raise StorageUnavailableError("verified original media is missing or changed")
         if etag and not etag.startswith("W/"):
-            self._verified_reads[key] = (etag, content)
+            with self._verified_cache_lock:
+                previous = self._verified_reads.pop(key, None)
+                if previous is not None:
+                    self._verified_reads_bytes -= len(previous[1])
+                self._verified_reads[key] = (etag, content)
+                self._verified_reads_bytes += len(content)
+                while (
+                    len(self._verified_reads) > _VERIFIED_CACHE_MAX_ENTRIES
+                    or self._verified_reads_bytes > _VERIFIED_BYTE_CACHE_MAX_BYTES
+                ):
+                    _, (_, evicted) = self._verified_reads.popitem(last=False)
+                    self._verified_reads_bytes -= len(evicted)
         return content
+
+    def verify_blob_sha256(self, path: str, sha256: str, size_bytes: int) -> None:
+        """Verify large immutable objects on disk and cache only a bounded ETag proof."""
+        safe_path = _safe_blob_path(path)
+        key = (safe_path, sha256, size_bytes)
+        actual_size, etag = self._blob_properties(safe_path)
+        if actual_size != size_bytes:
+            raise StorageUnavailableError("verified original media is missing or changed")
+        with self._verified_cache_lock:
+            cached_etag = self._verified_blob_etags.get(key)
+            if etag and not etag.startswith("W/") and etag == cached_etag:
+                self._verified_blob_etags.move_to_end(key)
+                return
+
+        scratch = Path(".scratch") / "video-recovery"
+        scratch.mkdir(parents=True, exist_ok=True, mode=0o700)
+        target = scratch / f"{uuid4().hex}.mp4"
+        try:
+            if not self.download_file(safe_path, target):
+                raise StorageUnavailableError("verified original media is missing or changed")
+            digest = hashlib.sha256()
+            actual_size = 0
+            with target.open("rb") as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+                    actual_size += len(block)
+            if actual_size != size_bytes or digest.hexdigest() != sha256:
+                raise StorageUnavailableError("verified original media is missing or changed")
+            final_size, final_etag = self._blob_properties(safe_path)
+            if final_size != size_bytes or final_etag != etag:
+                raise StorageUnavailableError("verified original media changed during verification")
+            if etag and not etag.startswith("W/"):
+                with self._verified_cache_lock:
+                    self._verified_blob_etags[key] = etag
+                    self._verified_blob_etags.move_to_end(key)
+                    while len(self._verified_blob_etags) > _VERIFIED_CACHE_MAX_ENTRIES:
+                        self._verified_blob_etags.popitem(last=False)
+        finally:
+            target.unlink(missing_ok=True)
 
     def update_bytes(
         self,
@@ -861,6 +926,11 @@ class AzureBlobStorageBackend:
         size) before the local copy is deleted (issue #410 upload safety).
         """
         safe_path = _safe_blob_path(path)
+        size, _etag = self._blob_properties(safe_path)
+        return size
+
+    def _blob_properties(self, safe_path: str) -> tuple[int | None, str | None]:
+        """Return a blob's size and ETag using a body-free HEAD request."""
         encoded_path = "/".join(quote(part, safe="") for part in safe_path.split("/"))
         token = self._credential.get_token("https://storage.azure.com/.default")
         request = Request(
@@ -875,13 +945,16 @@ class AzureBlobStorageBackend:
         try:
             with urlopen(request, timeout=30) as response:
                 length = response.headers.get("Content-Length")
-                return int(length) if length is not None else None
+                return (
+                    int(length) if length is not None else None,
+                    response.headers.get("ETag"),
+                )
         except HTTPError as exc:
             if exc.code == 404:
-                return None
+                return None, None
             detail = exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
             raise RuntimeError(
-                f"blob size probe failed for {safe_path}: HTTP {exc.code} {detail}"
+                f"blob properties probe failed for {safe_path}: HTTP {exc.code} {detail}"
             ) from exc
 
     def _sdk_blob_client(self, safe_path: str):

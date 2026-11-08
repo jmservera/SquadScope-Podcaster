@@ -142,6 +142,10 @@ class LeaseBudgetError(DistributionOutboxError):
     """Raised when insufficient lease remains for mutation and receipt persistence."""
 
 
+class MutationIntentExpiredError(DistributionOutboxError):
+    """Raised when an owner-authorized mutation deadline expires before intent I/O."""
+
+
 class UnsafeOutboxValueError(DistributionOutboxError):
     """Raised when a durable record would contain unsafe data."""
 
@@ -2373,10 +2377,16 @@ class DistributionOutboxRepository:
         operation: str,
         expected_provider_item_id: str | None = None,
         precondition_fingerprint: str | None = None,
+        not_after: datetime | None = None,
     ) -> dict[str, Any]:
         captured: dict[str, Any] = {}
 
         def _persist(document: dict[str, Any]) -> None:
+            now = self.now()
+            if not_after is not None and (
+                not_after.tzinfo is None or not_after.utcoffset() is None or now >= not_after
+            ):
+                raise MutationIntentExpiredError("provider mutation intent deadline expired")
             self._require_claim(document, claim, mutation=True)
             leg = self._provider(document, provider)
             attempt = _active_attempt(document)
@@ -2428,7 +2438,7 @@ class DistributionOutboxRepository:
                 "provider": _require_token("provider", provider),
                 "operation": _require_token("operation", operation),
                 "operation_type": _recovery_operation_type(provider, operation),
-                "created_at": _iso(self.now()),
+                "created_at": _iso(now),
                 "created_fence": claim.fencing_token,
                 "consumed_at": None,
                 "consumed_fence": None,
@@ -2466,10 +2476,19 @@ class DistributionOutboxRepository:
         provider: str,
         provider_timeout_seconds: int,
         receipt_margin_seconds: int,
+        not_after: datetime | None = None,
     ) -> dict[str, Any]:
         captured: dict[str, Any] = {}
 
         def _consume(document: dict[str, Any]) -> None:
+            now = self.now()
+            required = provider_timeout_seconds + receipt_margin_seconds
+            if not_after is not None and (
+                not_after.tzinfo is None
+                or not_after.utcoffset() is None
+                or now + timedelta(seconds=required) >= not_after
+            ):
+                raise MutationIntentExpiredError("provider mutation intent deadline expired")
             self._require_claim(document, claim, mutation=True)
             leg = self._provider(document, provider)
             intent = leg.get("intent")
@@ -2478,13 +2497,12 @@ class DistributionOutboxRepository:
             if intent.get("consumed_at"):
                 raise DistributionOutboxError("provider mutation intent is already consumed")
             expiry = _parse_time(document["claim"]["lease_expires_at"])
-            remaining = (expiry - self.now()).total_seconds() if expiry else 0
-            required = provider_timeout_seconds + receipt_margin_seconds
+            remaining = (expiry - now).total_seconds() if expiry else 0
             if remaining <= required:
                 raise LeaseBudgetError(
                     f"remaining lease {remaining:.3f}s does not exceed required {required}s"
                 )
-            intent["consumed_at"] = _iso(self.now())
+            intent["consumed_at"] = _iso(now)
             intent["consumed_fence"] = claim.fencing_token
             intent["consumed_owner"] = claim.owner
             intent["consumed_attempt_id"] = claim.attempt_id

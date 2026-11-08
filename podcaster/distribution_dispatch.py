@@ -6,7 +6,7 @@ import hashlib
 import json
 from contextlib import nullcontext
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -14,6 +14,7 @@ from podcaster import publish
 from podcaster.distribution_outbox import (
     ArtifactReference,
     DistributionOutboxError,
+    MutationIntentExpiredError,
     exact_verification_proof,
     media_review_allows_distribution,
     outbox_id_for,
@@ -87,7 +88,9 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
     admitted_audio = None
     admitted_audio_sha256 = None
 
-    def validate(provider, operation=None, *, verify_media=True, provider_io=True):
+    def validate(
+        provider, operation=None, *, verify_media=True, provider_io=True, require_expiry=False
+    ):
         nonlocal admitted_audio, admitted_audio_sha256
         if provider_io and provider == "spotify" and not publish._spotify_reconcile_enabled():
             raise DistributionOutboxError("Spotify outbox requires strict reconcile-before-create")
@@ -139,7 +142,7 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
             == metadata,
             "expiry": (
                 (
-                    operation is None
+                    (operation is None and not require_expiry)
                     or (
                         datetime.fromisoformat(
                             current["providers"][provider]["verification_horizon_at"].replace(
@@ -210,7 +213,8 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
         local_version = _file_version(path)
 
         def mutate(provider, operation, call, *, provider_id=None):
-            state = validate(provider)
+            boundary_artifact_verified = False
+            state = validate(provider, verify_media=False)
             leg = state["providers"][provider]
             accepted = [
                 receipt
@@ -223,35 +227,105 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
                 return accepted[-1]["provider_item_id"]
             if claim.read_only:
                 raise DistributionOutboxError("ambiguous dispatch is reconciliation-only")
-            if private_release and _owner_release_horizon_expired(state, repository):
-                raise DistributionOutboxError("owner release verification horizon is exhausted")
-            repository.persist_intent(
-                claim,
-                provider=provider,
-                operation=operation,
-                expected_provider_item_id=provider_id,
-                precondition_fingerprint=document["publication_digest"],
-            )
-            state = validate(provider)
-            if private_release and _owner_release_horizon_expired(state, repository):
-                raise DistributionOutboxError("owner release verification horizon is exhausted")
-            repository.consume_intent(
-                claim, provider=provider, provider_timeout_seconds=120, receipt_margin_seconds=30
-            )
-
-            first_request = True
+            owner_release_mutation = private_release and provider == "youtube"
+            deadline = _owner_release_deadline(state) if owner_release_mutation else None
+            if owner_release_mutation and _owner_release_horizon_expired(state, repository):
+                raise _OwnerReleaseHorizonExpired(provider_item_id=provider_id)
+            try:
+                repository.persist_intent(
+                    claim,
+                    provider=provider,
+                    operation=operation,
+                    expected_provider_item_id=provider_id,
+                    precondition_fingerprint=document["publication_digest"],
+                    not_after=deadline,
+                )
+            except MutationIntentExpiredError as exc:
+                if owner_release_mutation:
+                    raise _OwnerReleaseHorizonExpired(provider_item_id=provider_id) from exc
+                raise
+            state = validate(provider, verify_media=False)
+            if owner_release_mutation and _owner_release_horizon_expired(state, repository):
+                raise _OwnerReleaseHorizonExpired(provider_item_id=provider_id)
 
             def authorize():
-                nonlocal first_request
-                validate(provider, operation, verify_media=first_request)
-                first_request = False
+                nonlocal boundary_artifact_verified
+                try:
+                    verify_media = operation == "draft_upload" and not boundary_artifact_verified
+                    current = validate(
+                        provider,
+                        operation,
+                        verify_media=verify_media,
+                    )
+                    boundary_artifact_verified = boundary_artifact_verified or verify_media
+                    if owner_release_mutation:
+                        deadline = _owner_release_deadline(current)
+                        if deadline is None or deadline - repository.now() <= timedelta(
+                            seconds=330
+                        ):
+                            raise _OwnerReleaseHorizonExpired(provider_item_id=provider_id)
+                except DistributionOutboxError as exc:
+                    latest = repository.read(claim.outbox_id) or state
+                    if owner_release_mutation and _owner_release_horizon_expired(
+                        latest, repository
+                    ):
+                        raise _OwnerReleaseHorizonExpired(provider_item_id=provider_id) from exc
+                    raise
 
-            validate(provider, operation)
             try:
+                state = validate(
+                    provider,
+                    verify_media=False,
+                    require_expiry=owner_release_mutation,
+                )
+                try:
+                    repository.consume_intent(
+                        claim,
+                        provider=provider,
+                        provider_timeout_seconds=300 if owner_release_mutation else 120,
+                        receipt_margin_seconds=30,
+                        not_after=(
+                            _owner_release_deadline(state) if owner_release_mutation else None
+                        ),
+                    )
+                except MutationIntentExpiredError as exc:
+                    if owner_release_mutation:
+                        raise _OwnerReleaseHorizonExpired(provider_item_id=provider_id) from exc
+                    raise
+                state = validate(provider, operation, verify_media=False)
                 item_id, native_state = call(authorize)
                 if not item_id:
                     raise DistributionOutboxError("provider did not return a confirmed identity")
-                validate(provider, operation)
+                # Persist the provider's confirmed identity before any post-call work;
+                # the authorization horizon may expire while the response is in flight.
+                repository.record_receipt(
+                    claim,
+                    provider=provider,
+                    transport_class="accepted",
+                    provider_item_id=str(item_id),
+                    native_state=native_state,
+                )
+                return str(item_id)
+            except _OwnerReleaseHorizonExpired:
+                intent_state = repository.read(claim.outbox_id) or {}
+                intent = intent_state.get("providers", {}).get(provider, {}).get("intent") or {}
+                if intent.get("consumed_at"):
+                    repository.record_receipt(
+                        claim,
+                        provider=provider,
+                        transport_class="unknown",
+                        provider_item_id=provider_id,
+                        ambiguous=True,
+                        code="provider_operation_unknown",
+                    )
+                    repository.record_verification(
+                        claim,
+                        provider=provider,
+                        result="publication_unknown",
+                        source="provider_operation_readback_required",
+                        provider_item_id=provider_id,
+                    )
+                raise
             except Exception:
                 repository.record_receipt(
                     claim,
@@ -269,14 +343,6 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
                     provider_item_id=provider_id,
                 )
                 raise
-            repository.record_receipt(
-                claim,
-                provider=provider,
-                transport_class="accepted",
-                provider_item_id=str(item_id),
-                native_state=native_state,
-            )
-            return str(item_id)
 
         for provider in active_providers:
             state = validate(provider)
@@ -299,18 +365,27 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
                     else nullcontext()
                 )
                 with scope:
-                    _youtube(
-                        repository,
-                        claim,
-                        state,
-                        identity,
-                        config,
-                        path,
-                        validate,
-                        mutate,
-                        transport or distribution._DefaultTransport(),
-                        metadata,
-                    )
+                    try:
+                        _youtube(
+                            repository,
+                            claim,
+                            state,
+                            identity,
+                            config,
+                            path,
+                            validate,
+                            mutate,
+                            transport or distribution._DefaultTransport(),
+                            metadata,
+                        )
+                    except _OwnerReleaseHorizonExpired as exc:
+                        _owner_release_expired_handoff(
+                            repository,
+                            claim,
+                            source="owner_release_horizon_expired_before_mutation",
+                            provider_item_id=exc.provider_item_id,
+                            native_state=exc.native_state,
+                        )
             elif provider == "spotify" and config.spotify_upload_enabled:
                 _spotify(
                     repository,
@@ -352,15 +427,21 @@ def _provider_id(leg):
 
 
 def _owner_release_horizon_expired(document, repository):
-    if not document.get("owner_release_authorization"):
+    deadline = _owner_release_deadline(document)
+    if deadline is None:
         return False
+    return deadline <= repository.now()
+
+
+def _owner_release_deadline(document):
+    if not document.get("owner_release_authorization"):
+        return None
     try:
-        horizon = datetime.fromisoformat(
+        return datetime.fromisoformat(
             document["providers"]["youtube"]["verification_horizon_at"].replace("Z", "+00:00")
-        )
+        ).astimezone(timezone.utc)
     except (AttributeError, KeyError, TypeError, ValueError):
-        return True
-    return horizon <= repository.now()
+        return datetime.min.replace(tzinfo=timezone.utc)
 
 
 def _owner_release_expired_handoff(
@@ -409,13 +490,49 @@ class _GuardedTransport:
         return self.transport.request_with_headers(*args, **kwargs)
 
 
+class _OwnerReleaseHorizonExpired(DistributionOutboxError):
+    def __init__(self, *, provider_item_id=None, native_state="unknown"):
+        self.provider_item_id = provider_item_id
+        self.native_state = native_state
+        super().__init__("owner release verification horizon is exhausted")
+
+
 def _youtube(repository, claim, document, identity, config, path, validate, mutate, http, metadata):
+    leg = document["providers"]["youtube"]
+    video_id = _provider_id(leg)
+    if video_id is None and _owner_release_horizon_expired(document, repository):
+        _owner_release_expired_handoff(
+            repository,
+            claim,
+            source="owner_release_horizon_expired_before_identity_readback",
+            native_state="unknown",
+        )
+        return
     validate("youtube")
     token = distribution._get_youtube_access_token(config, http)
-    status, body = http.request(
-        "https://www.googleapis.com/youtube/v3/channels?part=id&mine=true",
-        headers={"Authorization": f"Bearer {token}"},
-    )
+    try:
+        if video_id is None:
+
+            def authorize_identity_readback():
+                validate("youtube")
+                if _owner_release_horizon_expired(document, repository):
+                    raise _OwnerReleaseHorizonExpired(native_state="unknown")
+
+            identity_transport = _GuardedTransport(http, authorize_identity_readback)
+        else:
+            identity_transport = http
+        status, body = identity_transport.request(
+            "https://www.googleapis.com/youtube/v3/channels?part=id&mine=true",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    except _OwnerReleaseHorizonExpired:
+        _owner_release_expired_handoff(
+            repository,
+            claim,
+            source="owner_release_horizon_expired_before_identity_readback",
+            native_state="unknown",
+        )
+        return
     channels = json.loads(body).get("items") if status == 200 else None
     if not isinstance(channels, list) or len(channels) != 1 or not channels[0].get("id"):
         raise DistributionOutboxError("YouTube owner identity readback is incomplete")
@@ -432,15 +549,22 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
         f"sqmedia-{document['artifact']['sha256']}",
         f"sqreview-{document['publication_digest']}",
     ]
-    leg = document["providers"]["youtube"]
-    video_id = _provider_id(leg)
     if not video_id:
-        found = reconcile_youtube_upload(
-            tag,
-            token,
-            http,
-            not_before=datetime.fromisoformat(document["created_at"].replace("Z", "+00:00")),
-        )
+        try:
+            found = reconcile_youtube_upload(
+                tag,
+                token,
+                _GuardedTransport(http, authorize_identity_readback),
+                not_before=datetime.fromisoformat(document["created_at"].replace("Z", "+00:00")),
+            )
+        except _OwnerReleaseHorizonExpired:
+            _owner_release_expired_handoff(
+                repository,
+                claim,
+                source="owner_release_horizon_expired_before_identity_readback",
+                native_state="unknown",
+            )
+            return
         if found.matched:
             video_id = found.video_id
         elif (
@@ -521,7 +645,8 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
             _pending(repository, claim, "youtube", video_id, privacy, "youtube_media_readback")
             return
     else:
-        if _owner_release_horizon_expired(document, repository):
+        owner_release_expired = _owner_release_horizon_expired(document, repository)
+        if owner_release_expired and privacy != "public":
             _owner_release_expired_handoff(
                 repository,
                 claim,
@@ -547,18 +672,19 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
                     claim, provider="youtube", due_at=repository.now() + timedelta(minutes=5)
                 )
                 return
-        playlist = youtube_playlist.resolve_playlist_id(config, leg["context"].get("locale"))
-        if playlist and not youtube_playlist.playlist_contains_video(
-            playlist, video_id, token, transport=http, raise_on_error=True
-        ):
+        if not owner_release_expired:
+            playlist = youtube_playlist.resolve_playlist_id(config, leg["context"].get("locale"))
+            if playlist and not youtube_playlist.playlist_contains_video(
+                playlist, video_id, token, transport=http, raise_on_error=True
+            ):
 
-            def insert(authorize):
-                result = youtube_playlist.add_video_to_playlist(
-                    playlist, video_id, token, transport=_GuardedTransport(http, authorize)
-                )
-                return (video_id if result.succeeded else None), privacy
+                def insert(authorize):
+                    result = youtube_playlist.add_video_to_playlist(
+                        playlist, video_id, token, transport=_GuardedTransport(http, authorize)
+                    )
+                    return (video_id if result.succeeded else None), privacy
 
-            mutate("youtube", "playlist_insert", insert, provider_id=video_id)
+                mutate("youtube", "playlist_insert", insert, provider_id=video_id)
         if privacy != "public":
 
             def promote(authorize):

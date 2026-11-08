@@ -50,31 +50,52 @@ def test_authority_media_reads_use_conditional_get_not_repeated_full_wav(monkeyp
     assert all(r.get_header("If-none-match") == '"original"' for r in requests[1:])
 
 
-def test_selected_archive_reuses_bytes_only_after_conditional_etag_check(monkeypatch):
+def test_selected_archive_streams_once_and_reuses_only_unchanged_etag(monkeypatch):
     from podcaster.video.recovery import _verify_candidate_archive
 
     client = backend()
     payload = b"selected-private-video"
     digest = hashlib.sha256(payload).hexdigest()
+    etags = iter(['"original"', '"original"', '"original"', '"changed"', '"changed"'])
     requests = []
+    downloads = []
 
-    def get(request, *, timeout):
+    def head(request, *, timeout):
         requests.append(request)
-        if request.get_header("If-none-match") == '"original"':
-            raise HTTPError(request.full_url, 304, "unchanged", {}, None)
-        return Response(payload)
+        assert request.get_method() == "HEAD"
+        response = Response(b"", next(etags))
+        response.headers["Content-Length"] = str(len(payload))
+        return response
 
-    monkeypatch.setattr(storage, "urlopen", get)
+    def download(_path, target):
+        downloads.append(target)
+        target.write_bytes(payload)
+        return True
+
+    monkeypatch.setattr(storage, "urlopen", head)
     monkeypatch.setattr(client, "blob_size", lambda _path: len(payload))
-    monkeypatch.setattr(
-        client,
-        "download_file",
-        lambda *_: pytest.fail("verified archive reads must not download the full archive"),
-    )
-    for _ in range(10):
+    monkeypatch.setattr(client, "download_file", download)
+    for _ in range(2):
         _verify_candidate_archive(client, "jobs/original/selected.mp4", digest, len(payload))
-    assert requests[0].get_header("If-none-match") is None
-    assert all(request.get_header("If-none-match") == '"original"' for request in requests[1:])
+    assert len(downloads) == 1
+    _verify_candidate_archive(client, "jobs/original/selected.mp4", digest, len(payload))
+    assert len(downloads) == 2
+    assert all(request.get_method() == "HEAD" for request in requests)
+
+
+def test_large_verified_objects_are_rejected_by_memory_reader(monkeypatch):
+    client = backend()
+    monkeypatch.setattr(
+        storage,
+        "urlopen",
+        lambda *_args, **_kwargs: pytest.fail("large reads must use streaming verification"),
+    )
+    with pytest.raises(storage.StorageUnavailableError, match="in-memory limit"):
+        client.get_verified_bytes(
+            "jobs/original/video.mp4",
+            hashlib.sha256(b"video").hexdigest(),
+            storage._VERIFIED_BYTE_CACHE_MAX_BYTES + 1,
+        )
 
 
 @pytest.mark.parametrize("event", ["modified", "missing", "transport"])
