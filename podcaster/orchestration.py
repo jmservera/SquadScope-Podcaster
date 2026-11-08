@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -21,6 +22,7 @@ from podcaster.publication_state import (
     PUBLICATION_UNKNOWN,
     PUBLISHED,
     UPLOADED,
+    PublicationIdentity,
     PublicationStateError,
     canonical_identity_requested,
     new_publish_run_id,
@@ -235,6 +237,213 @@ def process_review_decision(
         trigger="review_approval",
         requested_at=reviewed_at,
     )
+
+
+def prepare_owner_authorized_video_release(
+    job_id: str,
+    *,
+    owner: str,
+    storage: StorageBackend | None = None,
+) -> dict[str, str]:
+    """Queue an exact selected W44/W45 artifact through normal provider dispatch."""
+    from podcaster.distribution_outbox import (
+        DistributionOutboxError,
+        DistributionOutboxRepository,
+        commit_immutable_artifact,
+        outbox_routing_enabled,
+    )
+    from podcaster.queue import enqueue_distribution_job
+    from podcaster.review import validate_private_media_inputs
+    from podcaster.video.distribution import (
+        VideoDistributionConfig,
+        provider_runtime_sha256,
+        youtube_enabled_for_language,
+    )
+    from podcaster.video.owner_release import (
+        OWNER_RELEASE_OWNER,
+        owner_release_evidence,
+        owner_release_matches_selected,
+    )
+    from podcaster.video.recovery import RecoveryDenied, read_selected, scoped_identity
+
+    if owner != OWNER_RELEASE_OWNER:
+        raise ReviewBindingError("owner release requires the designated owner")
+    if not isinstance(job_id, str):
+        raise ReviewBindingError("owner release job identity is invalid")
+    try:
+        authorized_identity = scoped_identity(job_id)
+    except RecoveryDenied as exc:
+        raise ReviewBindingError("owner release job identity is not authorized") from exc
+    backend = storage or create_storage_backend()
+    manifest = load_manifest(backend, job_id)
+    if not isinstance(manifest, dict):
+        raise ReviewBindingError("owner release manifest is missing")
+    try:
+        selected = read_selected(backend, job_id)
+    except RecoveryDenied as exc:
+        raise ReviewBindingError("owner release requires a verified selected artifact") from exc
+    identity_data = selected.get("identity")
+    if not isinstance(identity_data, dict):
+        raise ReviewBindingError("owner release publication identity is missing")
+    try:
+        identity = PublicationIdentity(**identity_data)
+    except (TypeError, ValueError) as exc:
+        raise ReviewBindingError("owner release publication identity is invalid") from exc
+    if identity != authorized_identity:
+        raise ReviewBindingError("owner release job identity does not match")
+    selected_digest = selected.get("mp4_sha256")
+    if (
+        owner_release_evidence(
+            identity,
+            selected,
+            {
+                "sha256": selected_digest,
+                "size_bytes": selected.get("size_bytes"),
+                "media_kind": "video",
+            },
+            {
+                "artifact_id": selected_digest,
+                "selection_version": "v1",
+                "selected": True,
+                "sha256": selected_digest,
+            },
+        )
+        is None
+    ):
+        raise ReviewBindingError("owner release identity or selected artifact is not authorized")
+    audio = validate_private_media_inputs(manifest, backend, job_id)
+    generation = manifest.get("generation")
+    runner = generation.get("video_runner") if isinstance(generation, dict) else None
+    metadata = runner.get("publication_metadata") if isinstance(runner, dict) else None
+    if (
+        not isinstance(metadata, dict)
+        or set(metadata) != {"title", "description"}
+        or not all(isinstance(value, str) and value.strip() for value in metadata.values())
+    ):
+        raise ReviewBindingError("owner release requires existing publication metadata")
+    request = manifest.get("request", {})
+    language = str(request.get("language") or "en")
+    config = VideoDistributionConfig.from_env()
+    if not outbox_routing_enabled() or config.dry_run:
+        raise ReviewBindingError("owner release requires normal production outbox routing")
+    objectives: dict[str, str] = {}
+    if youtube_enabled_for_language(config, language):
+        objectives["youtube"] = "public"
+    if not objectives:
+        raise ReviewBindingError("normal YouTube publication is not enabled for owner release")
+
+    scratch = Path(".scratch") / "owner-release"
+    scratch.mkdir(parents=True, exist_ok=True, mode=0o700)
+    local_path = scratch / f"{uuid4().hex}.mp4"
+    try:
+        if not backend.download_file(selected["archive_path"], local_path):
+            raise ReviewBindingError("selected owner-release artifact could not be staged")
+        digest_state = hashlib.sha256()
+        with local_path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest_state.update(chunk)
+        digest = digest_state.hexdigest()
+        if digest != selected["mp4_sha256"] or local_path.stat().st_size != selected["size_bytes"]:
+            raise ReviewBindingError("selected owner-release artifact changed during staging")
+        artifact = commit_immutable_artifact(
+            backend,
+            local_path,
+            media_kind="video",
+            content_type="video/mp4",
+            suffix=".mp4",
+        )
+    finally:
+        local_path.unlink(missing_ok=True)
+        try:
+            scratch.rmdir()
+        except OSError:
+            pass
+
+    metadata_sha256 = hashlib.sha256(
+        json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    provider_context: dict[str, dict[str, Any]] = {
+        "youtube": {"locale": language, "playlist_id": config.youtube_playlist_id}
+    }
+    for provider in objectives:
+        provider_context[provider]["publication_metadata_sha256"] = metadata_sha256
+        provider_context[provider]["runtime_sha256"] = provider_runtime_sha256(
+            provider, config, language
+        )
+        provider_context[provider]["synthesis_audio_path"] = audio.path
+        provider_context[provider]["synthesis_audio_sha256"] = hashlib.sha256(
+            audio.content
+        ).hexdigest()
+    repository = DistributionOutboxRepository(backend)
+    outbox, _created = repository.enqueue(
+        identity,
+        artifact,
+        provider_objectives=objectives,
+        enqueue_source="owner_authorized_release",
+        enqueue_version="v1",
+        provider_context={provider: provider_context[provider] for provider in objectives},
+        await_media_review=True,
+    )
+    outbox_id = outbox["outbox_id"]
+
+    def bind_owner_release(content: bytes | None) -> bytes:
+        if content is None:
+            raise ReviewBindingError("owner release manifest disappeared")
+        latest = json.loads(content)
+        try:
+            latest_selected = read_selected(backend, job_id)
+            latest_identity = publication_identity(latest, job_id, identity.publish_run_id)
+        except (RecoveryDenied, PublicationStateError, KeyError, TypeError, ValueError) as exc:
+            raise ReviewBindingError(
+                "owner release identity changed before outbox binding"
+            ) from exc
+        if latest_identity != identity or latest_selected != selected:
+            raise ReviewBindingError("owner release selection changed before outbox binding")
+        latest_generation = latest.setdefault("generation", {})
+        latest_runner = latest_generation.setdefault("video_runner", {})
+        distribution_state = latest_runner.setdefault("distribution", {})
+        current_outbox_id = distribution_state.get("outbox_id")
+        if current_outbox_id not in (None, outbox_id):
+            raise ReviewBindingError("another distribution outbox is already bound")
+        distribution_state["outbox_id"] = outbox_id
+        return manifest_bytes(latest)
+
+    backend.update_bytes(
+        manifest_path(job_id),
+        "application/json; charset=utf-8",
+        bind_owner_release,
+    )
+    try:
+        outbox = repository.record_owner_release_authorization(outbox_id, owner=owner)
+    except (DistributionOutboxError, ValueError, TypeError) as exc:
+        raise ReviewBindingError("owner release authorization binding conflict") from exc
+    release_id = hashlib.sha256(f"{outbox['outbox_id']}|{owner}".encode("utf-8")).hexdigest()
+    source_ownership = {"owner_release_id": release_id}
+
+    def authorize_notification() -> None:
+        latest = repository.read(outbox_id)
+        if latest is None or not owner_release_matches_selected(latest, backend):
+            raise ReviewBindingError("owner release changed before provider dispatch enqueue")
+
+    repository.reserve_notification(
+        outbox_id,
+        source_ownership=source_ownership,
+        authorize=authorize_notification,
+    )
+    enqueue_distribution_job(
+        outbox_id,
+        authorize_send=lambda: repository.authorize_notification_send(
+            outbox_id,
+            source_ownership=source_ownership,
+            authorize=authorize_notification,
+        ),
+        mark_accepted=lambda: repository.accept_notification_send(
+            outbox["outbox_id"],
+            source_ownership=source_ownership,
+            authorize=authorize_notification,
+        ),
+    )
+    return {"outbox_id": outbox["outbox_id"], "status": "queued_or_repairable"}
 
 
 def auto_publish_job(

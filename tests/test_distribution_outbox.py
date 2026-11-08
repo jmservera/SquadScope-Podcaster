@@ -16,6 +16,7 @@ from podcaster.distribution_outbox import (
     DistributionOutboxError,
     DistributionOutboxRepository,
     LeaseBudgetError,
+    MutationIntentExpiredError,
     OutboxConflictError,
     StaleClaimError,
     UnsafeOutboxValueError,
@@ -337,6 +338,66 @@ def test_lease_margin_is_required_before_intent_consumption(setup):
         repository.read(document["outbox_id"])["providers"]["youtube"]["intent"]["consumed_at"]
         is None
     )
+
+
+def test_expired_mutation_deadline_prevents_intent_creation_and_consumption(setup):
+    _storage, repository, clock, document, _created = setup
+    claim = repository.claim(
+        document["outbox_id"], owner="worker", execution_id="exec-1", lease_seconds=300
+    )
+    with pytest.raises(MutationIntentExpiredError):
+        repository.persist_intent(
+            claim,
+            provider="youtube",
+            operation="upload",
+            not_after=clock.value,
+        )
+    assert repository.read(document["outbox_id"])["providers"]["youtube"]["intent"] is None
+
+    deadline = clock.value + timedelta(seconds=60)
+    repository.persist_intent(
+        claim,
+        provider="youtube",
+        operation="upload",
+        not_after=deadline,
+    )
+    clock.advance(30)
+    with pytest.raises(MutationIntentExpiredError):
+        repository.consume_intent(
+            claim,
+            provider="youtube",
+            provider_timeout_seconds=30,
+            receipt_margin_seconds=10,
+            not_after=deadline,
+        )
+    intent = repository.read(document["outbox_id"])["providers"]["youtube"]["intent"]
+    assert intent["consumed_at"] is None
+
+
+def test_mutation_deadline_reserves_provider_timeout_and_receipt_budget(setup):
+    _storage, repository, clock, document, _created = setup
+    claim = repository.claim(
+        document["outbox_id"], owner="worker", execution_id="exec-1", lease_seconds=600
+    )
+    deadline = clock.value + timedelta(seconds=330)
+    repository.persist_intent(
+        claim,
+        provider="youtube",
+        operation="upload",
+        not_after=deadline,
+    )
+
+    with pytest.raises(MutationIntentExpiredError):
+        repository.consume_intent(
+            claim,
+            provider="youtube",
+            provider_timeout_seconds=300,
+            receipt_margin_seconds=30,
+            not_after=deadline,
+        )
+
+    intent = repository.read(document["outbox_id"])["providers"]["youtube"]["intent"]
+    assert intent["consumed_at"] is None
 
 
 def test_crash_after_mutation_before_receipt_preserves_consumed_intent(setup):

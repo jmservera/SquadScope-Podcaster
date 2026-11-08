@@ -41,7 +41,10 @@ from podcaster.jobs import (
     failed_response,
     run_generation_job,
 )
-from podcaster.orchestration import process_review_decision
+from podcaster.orchestration import (
+    prepare_owner_authorized_video_release,
+    process_review_decision,
+)
 from podcaster.podcast_config import PodcastConfigStore
 from podcaster.publication_status import PublicationStatusError, publication_status
 from podcaster.review import ReviewBindingError
@@ -205,7 +208,12 @@ class GenerateHandler(BaseHTTPRequestHandler):
             GenerateHandler._handle_podcast_config_save(self)
             return
 
-        if path not in {"/api/generate", "/api/review", "/api/dispatch-intents"}:
+        if path not in {
+            "/api/generate",
+            "/api/review",
+            "/api/dispatch-intents",
+            "/api/video/owner-release",
+        }:
             _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
 
@@ -237,6 +245,12 @@ class GenerateHandler(BaseHTTPRequestHandler):
             _json_response(self, HTTPStatus.BAD_REQUEST, response)
             return
 
+        if path == "/api/video/owner-release":
+            if not self._is_designated_owner_jwt(headers):
+                _json_response(self, HTTPStatus.FORBIDDEN, {"error": "designated_owner_required"})
+                return
+            self._handle_owner_authorized_video_release(payload)
+            return
         if path == "/api/generate":
             GenerateHandler._handle_generate(self, payload)
             return
@@ -244,6 +258,53 @@ class GenerateHandler(BaseHTTPRequestHandler):
             GenerateHandler._handle_dispatch_intent(self, payload)
             return
         GenerateHandler._handle_review(self, payload)
+
+    @staticmethod
+    def _is_designated_owner_jwt(headers: dict[str, str]) -> bool:
+        authorization = next(
+            (value for key, value in headers.items() if key.lower() == "authorization"),
+            "",
+        )
+        credentials = get_credentials()
+        if not authorization.startswith("Bearer ") or credentials is None:
+            return False
+        try:
+            claims = verify_token(authorization[7:], credentials[2])
+        except Exception:
+            return False
+        return claims.get("sub") == "jmservera"
+
+    def _handle_owner_authorized_video_release(self, payload: dict[str, Any]) -> None:
+        job_id = str(payload.get("job_id") or "").strip()
+        if not job_id:
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "job_id_required"})
+            return
+        try:
+            result = prepare_owner_authorized_video_release(
+                job_id,
+                owner="jmservera",
+                storage=create_storage_backend(),
+            )
+        except ReviewBindingError:
+            _json_response(self, HTTPStatus.CONFLICT, {"error": "owner_release_binding_conflict"})
+            return
+        except ValueError:
+            _json_response(self, HTTPStatus.NOT_FOUND, {"error": "owner_release_not_found"})
+            return
+        except Exception:
+            logger.exception("owner-authorized video release preparation failed")
+            report_failure(
+                container="podcaster-api",
+                error_type="OwnerReleaseEndpointError",
+                error_message="Unhandled error in /api/video/owner-release",
+            )
+            _json_response(
+                self,
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {"error": "internal server error"},
+            )
+            return
+        _json_response(self, HTTPStatus.ACCEPTED, result)
 
     def do_PUT(self) -> None:  # noqa: N802
         credential_id = GenerateHandler._credential_id_from_path(self)

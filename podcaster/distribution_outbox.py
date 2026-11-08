@@ -17,6 +17,12 @@ from typing import Any, Callable, Iterable, Mapping
 
 from podcaster.publication_state import PublicationIdentity
 from podcaster.storage import StorageBackend
+from podcaster.video.owner_release import (
+    OWNER_RELEASE_OWNER,
+    owner_release_evidence,
+    owner_release_matches_selected,
+    owner_release_record_is_valid,
+)
 
 OUTBOX_SCHEMA_VERSION = "squadscope-podcaster-distribution-outbox-v1"
 OUTBOX_PREFIX = "distribution-outbox"
@@ -102,6 +108,18 @@ _UNSAFE_KEY = re.compile(
     r"(authorization|bearer|cookie|credential|secret|token_value|signed.?url|body|content)",
     re.IGNORECASE,
 )
+_OWNER_RELEASE_EVIDENCE_FIELDS = frozenset(
+    {
+        "schema_version",
+        "source",
+        "owner",
+        "authorized_at",
+        "publication_identity",
+        "selected_artifact",
+        "canonical_artifact",
+        "publication_metadata_sha256",
+    }
+)
 
 
 class DistributionOutboxError(RuntimeError):
@@ -122,6 +140,10 @@ class StaleClaimError(DistributionOutboxError):
 
 class LeaseBudgetError(DistributionOutboxError):
     """Raised when insufficient lease remains for mutation and receipt persistence."""
+
+
+class MutationIntentExpiredError(DistributionOutboxError):
+    """Raised when an owner-authorized mutation deadline expires before intent I/O."""
 
 
 class UnsafeOutboxValueError(DistributionOutboxError):
@@ -183,7 +205,11 @@ def _require_token(name: str, value: str) -> str:
 
 
 def _safe_value(value: Any, *, key: str = "") -> Any:
-    if key and _UNSAFE_KEY.search(key):
+    if key == "owner_release_authorization" and (
+        type(value) is not dict or set(value) != _OWNER_RELEASE_EVIDENCE_FIELDS
+    ):
+        raise UnsafeOutboxValueError("owner release authorization evidence is malformed")
+    if key and _UNSAFE_KEY.search(key) and key != "owner_release_authorization":
         raise UnsafeOutboxValueError(f"unsafe durable field: {key}")
     if value is None or isinstance(value, (bool, int, float)):
         return value
@@ -1324,6 +1350,18 @@ def provider_approval_is_valid(
 
 def media_review_allows_distribution(document: Mapping[str, Any]) -> bool:
     """Keep normal jobs unchanged; exact-script media must retain its actual binding."""
+    identity = document.get("publication_identity")
+    job_id = identity.get("accepted_job_id") if isinstance(identity, Mapping) else None
+    from podcaster.video.recovery import private_original
+
+    if private_original(job_id):
+        providers = document.get("providers")
+        if not isinstance(providers, Mapping) or set(providers) != {"youtube"}:
+            return False
+        review = document.get("media_review")
+        if not isinstance(review, Mapping) or review.get("status") != "pending":
+            return False
+        return owner_release_record_is_valid(document)
     if "media_review" not in document:
         return True
     review = document.get("media_review")
@@ -1346,6 +1384,19 @@ def media_review_allows_distribution(document: Mapping[str, Any]) -> bool:
             provider_approval_is_valid(document, provider) for provider in document["providers"]
         )
     )
+
+
+def owner_release_allows_distribution(document: Mapping[str, Any], storage: StorageBackend) -> bool:
+    """Require both durable owner evidence and the currently selected verified bytes."""
+    identity = document.get("publication_identity")
+    job_id = identity.get("accepted_job_id") if isinstance(identity, Mapping) else None
+    from podcaster.video.recovery import private_original
+
+    if not private_original(job_id):
+        return media_review_allows_distribution(document)
+    if not media_review_allows_distribution(document):
+        return False
+    return owner_release_matches_selected(document, storage)
 
 
 def media_destination_sha256(document: Mapping[str, Any]) -> str:
@@ -1815,6 +1866,71 @@ class DistributionOutboxRepository:
 
         return self._update(outbox_id, _record)
 
+    def record_owner_release_authorization(self, outbox_id: str, *, owner: str) -> dict[str, Any]:
+        """Persist the exact owner exception separately from human media review."""
+        if owner != OWNER_RELEASE_OWNER:
+            raise OutboxConflictError("owner release requires the designated owner")
+        document = self.read(outbox_id)
+        if document is None:
+            raise OutboxConflictError("prepared video does not exist")
+
+        def _record(current: dict[str, Any]) -> None:
+            identity = current.get("publication_identity")
+            if not isinstance(identity, Mapping):
+                raise OutboxConflictError("owner release publication identity is missing")
+            from podcaster.video.recovery import read_selected
+
+            try:
+                selected = read_selected(self.storage, str(identity.get("accepted_job_id") or ""))
+            except (ValueError, TypeError, KeyError) as exc:
+                raise OutboxConflictError(
+                    "owner release selected artifact is unavailable or invalid"
+                ) from exc
+            providers = current.get("providers")
+            youtube = providers.get("youtube") if isinstance(providers, Mapping) else None
+            context = youtube.get("context") if isinstance(youtube, Mapping) else None
+            metadata_digest = (
+                context.get("publication_metadata_sha256") if isinstance(context, Mapping) else None
+            )
+            if not isinstance(metadata_digest, str):
+                raise OutboxConflictError("owner release publication metadata binding is missing")
+            evidence = owner_release_evidence(
+                identity,
+                selected,
+                current.get("artifact", {}),
+                current.get("canonical_artifact", {}),
+                publication_metadata_sha256=metadata_digest,
+            )
+            if evidence is None:
+                raise OutboxConflictError(
+                    "owner release identity or selected artifact does not match policy"
+                )
+            existing = current.get("owner_release_authorization")
+            if existing is not None:
+                if existing != evidence:
+                    raise OutboxConflictError(
+                        "owner release authorization already differs; reconcile explicitly"
+                    )
+                return
+            review = current.get("media_review")
+            if not isinstance(review, Mapping) or review.get("status") != "pending":
+                raise OutboxConflictError(
+                    "owner release requires an untouched pending media-review state"
+                )
+            if current.get("claim") is not None or any(
+                leg.get("intent") or leg.get("receipts")
+                for leg in current.get("providers", {}).values()
+                if isinstance(leg, Mapping)
+            ):
+                raise OutboxConflictError(
+                    "owner release cannot authorize ambiguous prior provider work"
+                )
+            current["owner_release_authorization"] = evidence
+            authorized_at = _parse_time(evidence.get("authorized_at"))
+            youtube["verification_horizon_at"] = _iso(authorized_at + timedelta(hours=24))
+
+        return self._update(outbox_id, _record)
+
     def _register_artifact_reference(self, artifact_sha256: str, outbox_id: str) -> None:
         path = f"{ARTIFACT_REFERENCE_PREFIX}/{artifact_sha256}.json"
 
@@ -1984,7 +2100,7 @@ class DistributionOutboxRepository:
         result: dict[str, Any] = {}
 
         def _claim(document: dict[str, Any]) -> None:
-            if not media_review_allows_distribution(document):
+            if not owner_release_allows_distribution(document, self.storage):
                 raise MediaReviewRequiredError("separate prepared-media review required")
             now = self.now()
             _ensure_truth_fields(document)
@@ -2220,13 +2336,25 @@ class DistributionOutboxRepository:
         ):
             raise DistributionOutboxError("canonical media identity changed")
         leg = self._provider(document, provider)
-        if not provider_approval_is_valid(document, provider):
+        identity = document.get("publication_identity")
+        from podcaster.video.recovery import private_original
+
+        owner_release_approved = (
+            provider == "youtube"
+            and isinstance(identity, Mapping)
+            and private_original(identity.get("accepted_job_id"))
+            and media_review_allows_distribution(document)
+        )
+        if not provider_approval_is_valid(document, provider) and not owner_release_approved:
             raise MediaReviewRequiredError("provider approval is missing or stale")
         horizon = _parse_time(leg.get("verification_horizon_at"))
+        horizon_expired = horizon is None or self.now() >= horizon
+        budget_exhausted = int(leg.get("verification_attempt") or 0) >= int(
+            leg.get("verification_budget") or 0
+        )
         if (provider_io or operation is not None) and (
-            horizon is None
-            or self.now() >= horizon
-            or int(leg.get("verification_attempt") or 0) >= int(leg.get("verification_budget") or 0)
+            budget_exhausted
+            or (horizon_expired and (operation is not None or not owner_release_approved))
         ):
             raise DistributionOutboxError("provider verification window is exhausted")
         if operation is not None:
@@ -2249,10 +2377,16 @@ class DistributionOutboxRepository:
         operation: str,
         expected_provider_item_id: str | None = None,
         precondition_fingerprint: str | None = None,
+        not_after: datetime | None = None,
     ) -> dict[str, Any]:
         captured: dict[str, Any] = {}
 
         def _persist(document: dict[str, Any]) -> None:
+            now = self.now()
+            if not_after is not None and (
+                not_after.tzinfo is None or not_after.utcoffset() is None or now >= not_after
+            ):
+                raise MutationIntentExpiredError("provider mutation intent deadline expired")
             self._require_claim(document, claim, mutation=True)
             leg = self._provider(document, provider)
             attempt = _active_attempt(document)
@@ -2304,7 +2438,7 @@ class DistributionOutboxRepository:
                 "provider": _require_token("provider", provider),
                 "operation": _require_token("operation", operation),
                 "operation_type": _recovery_operation_type(provider, operation),
-                "created_at": _iso(self.now()),
+                "created_at": _iso(now),
                 "created_fence": claim.fencing_token,
                 "consumed_at": None,
                 "consumed_fence": None,
@@ -2342,10 +2476,19 @@ class DistributionOutboxRepository:
         provider: str,
         provider_timeout_seconds: int,
         receipt_margin_seconds: int,
+        not_after: datetime | None = None,
     ) -> dict[str, Any]:
         captured: dict[str, Any] = {}
 
         def _consume(document: dict[str, Any]) -> None:
+            now = self.now()
+            required = provider_timeout_seconds + receipt_margin_seconds
+            if not_after is not None and (
+                not_after.tzinfo is None
+                or not_after.utcoffset() is None
+                or now + timedelta(seconds=required) >= not_after
+            ):
+                raise MutationIntentExpiredError("provider mutation intent deadline expired")
             self._require_claim(document, claim, mutation=True)
             leg = self._provider(document, provider)
             intent = leg.get("intent")
@@ -2354,13 +2497,12 @@ class DistributionOutboxRepository:
             if intent.get("consumed_at"):
                 raise DistributionOutboxError("provider mutation intent is already consumed")
             expiry = _parse_time(document["claim"]["lease_expires_at"])
-            remaining = (expiry - self.now()).total_seconds() if expiry else 0
-            required = provider_timeout_seconds + receipt_margin_seconds
+            remaining = (expiry - now).total_seconds() if expiry else 0
             if remaining <= required:
                 raise LeaseBudgetError(
                     f"remaining lease {remaining:.3f}s does not exceed required {required}s"
                 )
-            intent["consumed_at"] = _iso(self.now())
+            intent["consumed_at"] = _iso(now)
             intent["consumed_fence"] = claim.fencing_token
             intent["consumed_owner"] = claim.owner
             intent["consumed_attempt_id"] = claim.attempt_id

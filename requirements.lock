@@ -45,7 +45,7 @@ docutils==0.22.4
     # via
     #   myst-parser
     #   sphinx
-fastapi==0.162.0
+fastapi==0.162.2
     # via squadscope-podcaster (pyproject.toml)
 greenlet==3.5.6
     # via playwright

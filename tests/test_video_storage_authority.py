@@ -4,6 +4,7 @@ import hashlib
 import json
 import multiprocessing
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
@@ -48,6 +49,57 @@ def test_authority_media_reads_use_conditional_get_not_repeated_full_wav(monkeyp
         assert client.get_verified_bytes("jobs/original/audio.wav", digest, len(payload)) == payload
     assert requests[0].get_header("If-none-match") is None
     assert all(r.get_header("If-none-match") == '"original"' for r in requests[1:])
+
+
+def test_selected_archive_streams_once_and_reuses_only_unchanged_etag(monkeypatch):
+    from podcaster.video.recovery import _verify_candidate_archive
+
+    client = backend()
+    payload = b"selected-private-video"
+    digest = hashlib.sha256(payload).hexdigest()
+    etags = iter(['"original"', '"original"', '"original"', '"changed"', '"changed"'])
+    requests = []
+    downloads = []
+
+    def head(request, *, timeout):
+        requests.append(request)
+        assert request.get_method() == "HEAD"
+        response = Response(b"", next(etags))
+        response.headers["Content-Length"] = str(len(payload))
+        return response
+
+    def download(_path, target):
+        downloads.append(target)
+        target.write_bytes(payload)
+        return True
+
+    monkeypatch.setattr(storage, "urlopen", head)
+    monkeypatch.setattr(client, "blob_size", lambda _path: len(payload))
+    monkeypatch.setattr(client, "download_file", download)
+    for _ in range(2):
+        _verify_candidate_archive(client, "jobs/original/selected.mp4", digest, len(payload))
+    assert len(downloads) == 1
+    _verify_candidate_archive(client, "jobs/original/selected.mp4", digest, len(payload))
+    assert len(downloads) == 2
+    assert all(request.get_method() == "HEAD" for request in requests)
+
+
+@pytest.mark.parametrize("size", [11_664_239, 12_170_805])
+def test_large_audio_proofs_are_verified_without_memory_cache(monkeypatch, size):
+    client = backend()
+    payload = b"A" * size
+    digest = hashlib.sha256(payload).hexdigest()
+    requests = []
+
+    def get(request, *, timeout):
+        requests.append(request)
+        return Response(payload)
+
+    monkeypatch.setattr(storage, "urlopen", get)
+    assert client.get_verified_bytes("jobs/original/audio.mp3", digest, size) == payload
+    assert requests[0].get_header("If-none-match") is None
+    assert client._verified_reads == {}
+    assert client._verified_reads_bytes == 0
 
 
 @pytest.mark.parametrize("event", ["modified", "missing", "transport"])
@@ -133,6 +185,37 @@ def test_concurrent_forked_readers_reuse_verified_original_without_inherited_sdk
     with ThreadPoolExecutor(max_workers=4) as pool:
         assert list(pool.map(read, range(4))) == [payload] * 4
     assert requests.value == 5
+
+
+def test_forked_reader_reinitializes_cache_lock_held_by_another_thread(monkeypatch):
+    client = backend()
+    payload = b"original-wav"
+    digest = hashlib.sha256(payload).hexdigest()
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+
+    def hold_cache_lock():
+        with client._verified_cache_lock:
+            lock_held.set()
+            release_lock.wait(timeout=2)
+
+    monkeypatch.setattr(storage, "urlopen", lambda *args, **kwargs: Response(payload))
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        lock_holder = pool.submit(hold_cache_lock)
+        try:
+            assert lock_held.wait(timeout=1)
+            assert (
+                run_storage_operation(
+                    lambda: client.get_verified_bytes(
+                        "jobs/original/audio.wav", digest, len(payload)
+                    ),
+                    1,
+                )
+                == payload
+            )
+        finally:
+            release_lock.set()
+        lock_holder.result(timeout=1)
 
 
 def test_timeout_diagnostics_expose_only_verb_object_status_request_id(monkeypatch, caplog):

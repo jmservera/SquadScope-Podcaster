@@ -64,7 +64,10 @@ from podcaster.jobs import (
     failed_response,
     run_generation_job,
 )
-from podcaster.orchestration import process_review_decision
+from podcaster.orchestration import (
+    prepare_owner_authorized_video_release,
+    process_review_decision,
+)
 from podcaster.podcast_config import PodcastConfigStore
 from podcaster.progress import (
     filter_events_since,
@@ -747,6 +750,49 @@ async def api_review(request: Request):
             "manifest": outcome.manifest,
         },
     )
+
+
+@app.post("/api/video/owner-release", dependencies=[Depends(verify_auth)])
+async def api_owner_authorized_video_release(request: Request):
+    """Queue an exact W44/W45 private original through the standard outbox worker."""
+    authorization = request.headers.get("authorization", "")
+    credentials = get_credentials()
+    if not authorization.startswith("Bearer ") or credentials is None:
+        return JSONResponse(status_code=403, content={"error": "owner_jwt_required"})
+    try:
+        claims = verify_token(authorization[7:], credentials[2])
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_owner_jwt"})
+    if claims.get("sub") != "jmservera":
+        return JSONResponse(status_code=403, content={"error": "designated_owner_required"})
+
+    payload, error_response = await _read_json_object(request)
+    if error_response is not None:
+        return error_response
+    assert payload is not None
+    job_id = str(payload.get("job_id") or "").strip()
+    if not job_id:
+        return JSONResponse(status_code=400, content={"error": "job_id_required"})
+    try:
+        result = await asyncio.to_thread(
+            prepare_owner_authorized_video_release,
+            job_id,
+            owner=str(claims["sub"]),
+            storage=get_storage(),
+        )
+    except ReviewBindingError:
+        return JSONResponse(status_code=409, content={"error": "owner_release_binding_conflict"})
+    except ValueError:
+        return JSONResponse(status_code=404, content={"error": "owner_release_not_found"})
+    except Exception:
+        logger.exception("owner-authorized video release preparation failed")
+        report_failure(
+            container="podcaster-api",
+            error_type="OwnerReleaseEndpointError",
+            error_message="Unhandled error in /api/video/owner-release",
+        )
+        return JSONResponse(status_code=500, content={"error": "internal server error"})
+    return JSONResponse(status_code=202, content=result)
 
 
 @app.get("/api/publication-status")
