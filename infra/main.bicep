@@ -612,6 +612,7 @@ module acaDistribution 'modules/aca-distribution.bicep' = {
     distributionImage: synthesisImage
     containerRegistryServer: acrLoginServer
     providerMutationEnabled: distributionWorkerProviderMutationEnabled
+    spotifyPublishEnabled: spotifyPublishEnabled
     spotifySessionCookieDc: spotifySessionCookieDc
     spotifySessionCookieKey: spotifySessionCookieKey
     spotifyShowId: spotifyShowId

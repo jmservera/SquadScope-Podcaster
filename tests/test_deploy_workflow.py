@@ -455,6 +455,7 @@ def test_reusable_deploy_workflow_uses_oidc_auth() -> None:
 def test_reusable_deploy_workflow_threads_spotify_publish_settings() -> None:
     workflow = _reusable_workflow_text()
     aca_module = (ROOT / "infra/modules/aca.bicep").read_text(encoding="utf-8")
+    distribution_module = ACA_DISTRIBUTION_BICEP.read_text(encoding="utf-8")
     api_module = (ROOT / "infra/modules/api.bicep").read_text(encoding="utf-8")
     main_bicep = BICEP.read_text(encoding="utf-8")
 
@@ -488,6 +489,23 @@ def test_reusable_deploy_workflow_threads_spotify_publish_settings() -> None:
     assert "spotifyAllowLivePublish string = 'false'" in main_bicep, (
         "main.bicep must default spotifyAllowLivePublish to 'false'"
     )
+    distribution_binding = re.search(
+        r"module acaDistribution 'modules/aca-distribution\.bicep'.*?"
+        r"\n  params: \{(.*?)\n  \}",
+        main_bicep,
+        re.S,
+    )
+    assert '--parameters spotifyPublishEnabled="${SPOTIFY_PUBLISH_ENABLED:-false}"' in workflow
+    assert "param spotifyPublishEnabled string = 'false'" in main_bicep
+    assert distribution_binding
+    assert "spotifyPublishEnabled: spotifyPublishEnabled" in distribution_binding[1]
+    assert "param spotifyPublishEnabled string = 'false'" in distribution_module
+    assert (
+        "{ name: 'SPOTIFY_PUBLISH_ENABLED', value: spotifyPublishEnabled }" in distribution_module
+    )
+    assert "{ name: 'VIDEO_SPOTIFY_UPLOAD_ENABLED', value: 'true' }" in distribution_module
+    assert "param distributionOutboxEnabled string = 'false'" in main_bicep
+    assert "param distributionWorkerProviderMutationEnabled string = 'false'" in main_bicep
     # Workflow must export the value with a false default, never defaulting to true.
     assert "SPOTIFY_ALLOW_LIVE_PUBLISH_VAR:-true" not in workflow, (
         "workflow must not default SPOTIFY_ALLOW_LIVE_PUBLISH to true"

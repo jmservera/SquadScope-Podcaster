@@ -38,6 +38,9 @@ param containerRegistryServer string = ''
 @description('Whether the worker may invoke mutating provider dispatch. Defaults false until canary.')
 param providerMutationEnabled string = 'false'
 
+@description('Whether Spotify publishing is enabled for distribution runtime.')
+param spotifyPublishEnabled string = 'false'
+
 @secure()
 param spotifySessionCookieDc string = ''
 @secure()
@@ -198,7 +201,7 @@ resource distributionJob 'Microsoft.App/jobs@2025-01-01' = {
             { name: 'VIDEO_YOUTUBE_PRIVACY', value: videoYoutubePrivacy }
             { name: 'VIDEO_YOUTUBE_PLAYLIST_ID', value: videoYoutubePlaylistId }
             { name: 'VIDEO_SPOTIFY_UPLOAD_ENABLED', value: 'true' }
-            { name: 'SPOTIFY_PUBLISH_ENABLED', value: 'false' }
+            { name: 'SPOTIFY_PUBLISH_ENABLED', value: spotifyPublishEnabled }
             { name: 'SPOTIFY_SHOW_ID', value: spotifyShowId }
             { name: 'SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH', value: spotifyVideoAllowLivePublish }
             { name: 'SPOTIFY_VIDEO_PUBLISH_MODE', value: spotifyVideoPublishMode }
