@@ -557,6 +557,16 @@ class AzureBlobStorageBackend:
         self._verified_reads_bytes = 0
         self._verified_blob_etags: OrderedDict[tuple[str, str, int], str] = OrderedDict()
         self._verified_cache_lock = RLock()
+        self._verified_cache_pid = os.getpid()
+
+    def _ensure_process_local_cache(self) -> None:
+        process_id = os.getpid()
+        if self._verified_cache_pid != process_id:
+            self._verified_reads = OrderedDict()
+            self._verified_reads_bytes = 0
+            self._verified_blob_etags = OrderedDict()
+            self._verified_cache_lock = RLock()
+            self._verified_cache_pid = process_id
 
     def put_bytes(self, path: str, content: bytes, content_type: str) -> StoredArtifact:
         safe_path = _safe_blob_path(path)
@@ -615,6 +625,7 @@ class AzureBlobStorageBackend:
 
     def get_verified_bytes(self, path: str, sha256: str, size_bytes: int) -> bytes:
         """Verify media bytes; cache only objects that fit the bounded memory budget."""
+        self._ensure_process_local_cache()
         safe_path = _safe_blob_path(path)
         key = (safe_path, sha256, size_bytes)
         cacheable = size_bytes <= _VERIFIED_BYTE_CACHE_MAX_BYTES
@@ -652,6 +663,7 @@ class AzureBlobStorageBackend:
 
     def verify_blob_sha256(self, path: str, sha256: str, size_bytes: int) -> None:
         """Verify large immutable objects on disk and cache only a bounded ETag proof."""
+        self._ensure_process_local_cache()
         safe_path = _safe_blob_path(path)
         key = (safe_path, sha256, size_bytes)
         actual_size, etag = self._blob_properties(safe_path)

@@ -4,6 +4,7 @@ import hashlib
 import json
 import multiprocessing
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
@@ -184,6 +185,37 @@ def test_concurrent_forked_readers_reuse_verified_original_without_inherited_sdk
     with ThreadPoolExecutor(max_workers=4) as pool:
         assert list(pool.map(read, range(4))) == [payload] * 4
     assert requests.value == 5
+
+
+def test_forked_reader_reinitializes_cache_lock_held_by_another_thread(monkeypatch):
+    client = backend()
+    payload = b"original-wav"
+    digest = hashlib.sha256(payload).hexdigest()
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+
+    def hold_cache_lock():
+        with client._verified_cache_lock:
+            lock_held.set()
+            release_lock.wait(timeout=2)
+
+    monkeypatch.setattr(storage, "urlopen", lambda *args, **kwargs: Response(payload))
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        lock_holder = pool.submit(hold_cache_lock)
+        try:
+            assert lock_held.wait(timeout=1)
+            assert (
+                run_storage_operation(
+                    lambda: client.get_verified_bytes(
+                        "jobs/original/audio.wav", digest, len(payload)
+                    ),
+                    1,
+                )
+                == payload
+            )
+        finally:
+            release_lock.set()
+        lock_holder.result(timeout=1)
 
 
 def test_timeout_diagnostics_expose_only_verb_object_status_request_id(monkeypatch, caplog):
