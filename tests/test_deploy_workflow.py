@@ -504,6 +504,9 @@ def test_reusable_deploy_workflow_threads_spotify_publish_settings() -> None:
         "{ name: 'SPOTIFY_PUBLISH_ENABLED', value: spotifyPublishEnabled }" in distribution_module
     )
     assert "{ name: 'VIDEO_SPOTIFY_UPLOAD_ENABLED', value: 'true' }" in distribution_module
+    assert "{ name: 'VIDEO_YOUTUBE_ENABLED', value: videoYoutubeEnabled }" in distribution_module
+    assert re.search(r"name: 'PODCAST_AUTO_PUBLISH'\s+value: podcastAutoPublish", aca_module)
+    assert "param podcastAutoPublish string = 'false'" in main_bicep
     assert "param distributionOutboxEnabled string = 'false'" in main_bicep
     assert "param distributionWorkerProviderMutationEnabled string = 'false'" in main_bicep
     # Workflow must export the value with a false default, never defaulting to true.
