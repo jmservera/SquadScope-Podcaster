@@ -218,7 +218,7 @@ def test_image_input_is_validated_before_github_environment_write():
         assert script.index(f'validate_image_ref "${image}"') < script.index('>> "$GITHUB_ENV"')
 
 
-def test_api_youtube_status_credentials_are_optional_secret_refs_without_mutation_flags():
+def test_api_youtube_status_credentials_are_optional_secret_refs_without_required_flag():
     main = BICEP.read_text()
     api = (ROOT / "infra/modules/api.bicep").read_text()
     assert "param publicationStatusYoutubeReadbackEnabled bool = false" in main
@@ -246,12 +246,37 @@ def test_api_youtube_status_credentials_are_optional_secret_refs_without_mutatio
     assert "var youtubeReadbackSecrets = youtubeReadbackConfigured ? [" in api
     assert "var youtubeReadbackEnvironment = youtubeReadbackConfigured ? [" in api
     for forbidden in (
-        "VIDEO_YOUTUBE_ENABLED",
         "VIDEO_YOUTUBE_REQUIRED",
         "roleAssignments",
         "networkAcls",
     ):
         assert forbidden not in api
+
+
+def test_api_owner_release_enablement_is_wired_and_disabled_by_default():
+    main = BICEP.read_text(encoding="utf-8")
+    api = (ROOT / "infra/modules/api.bicep").read_text(encoding="utf-8")
+    containerfile = (ROOT / "Containerfile.api").read_text(encoding="utf-8")
+    binding = re.search(r"module api 'modules/api.bicep'.*?\n  params: \{(.*?)\n  \}", main, re.S)[
+        1
+    ]
+
+    for parameter, environment in (
+        ("distributionOutboxEnabled", "DISTRIBUTION_OUTBOX_ENABLED"),
+        ("videoYoutubeEnabled", "VIDEO_YOUTUBE_ENABLED"),
+    ):
+        assert f"{parameter}: {parameter}" in binding
+        assert f"param {parameter} string = 'false'" in api
+        assert f"name: '{environment}'" in api
+        assert f"value: {parameter}" in api
+
+    assert "param distributionOutboxEnabled string = 'false'" in main
+    assert "param videoYoutubeEnabled string = 'false'" in main
+    assert "DISTRIBUTION_WORKER_PROVIDER_MUTATION_ENABLED" not in api
+    assert (
+        "install -d --owner=api --group=api --mode=0700 /app/.scratch/owner-release"
+        in containerfile
+    )
 
 
 def _release_workflow_text() -> str:

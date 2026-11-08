@@ -26,7 +26,8 @@ WORKDIR /app
 
 # Non-root runtime user.
 RUN groupadd --system api \
-    && useradd --system --gid api --home-dir /app --shell /usr/sbin/nologin api
+    && useradd --system --gid api --home-dir /app --shell /usr/sbin/nologin api \
+    && install -d --owner=api --group=api --mode=0700 /app/.scratch/owner-release
 
 # Install from pyproject.toml (single source of dependency truth). The API only
 # needs the core deps — no [video]/[dev] extras — so the image stays lean.

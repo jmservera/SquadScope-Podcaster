@@ -741,6 +741,8 @@ module api 'modules/api.bicep' = if (deployApiApp) {
     storageAccountName: storage.name
     storageContainerName: storageContainerName
     synthesisQueueName: synthesisQueueName
+    distributionOutboxEnabled: distributionOutboxEnabled
+    videoYoutubeEnabled: videoYoutubeEnabled
     podcasterApiKey: podcasterApiKey
     apiImage: apiImage
     publicationStatusYoutubeReadbackEnabled: publicationStatusYoutubeReadbackEnabled
