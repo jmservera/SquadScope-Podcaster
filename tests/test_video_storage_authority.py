@@ -83,19 +83,22 @@ def test_selected_archive_streams_once_and_reuses_only_unchanged_etag(monkeypatc
     assert all(request.get_method() == "HEAD" for request in requests)
 
 
-def test_large_verified_objects_are_rejected_by_memory_reader(monkeypatch):
+@pytest.mark.parametrize("size", [11_664_239, 12_170_805])
+def test_large_audio_proofs_are_verified_without_memory_cache(monkeypatch, size):
     client = backend()
-    monkeypatch.setattr(
-        storage,
-        "urlopen",
-        lambda *_args, **_kwargs: pytest.fail("large reads must use streaming verification"),
-    )
-    with pytest.raises(storage.StorageUnavailableError, match="in-memory limit"):
-        client.get_verified_bytes(
-            "jobs/original/video.mp4",
-            hashlib.sha256(b"video").hexdigest(),
-            storage._VERIFIED_BYTE_CACHE_MAX_BYTES + 1,
-        )
+    payload = b"A" * size
+    digest = hashlib.sha256(payload).hexdigest()
+    requests = []
+
+    def get(request, *, timeout):
+        requests.append(request)
+        return Response(payload)
+
+    monkeypatch.setattr(storage, "urlopen", get)
+    assert client.get_verified_bytes("jobs/original/audio.mp3", digest, size) == payload
+    assert requests[0].get_header("If-none-match") is None
+    assert client._verified_reads == {}
+    assert client._verified_reads_bytes == 0
 
 
 @pytest.mark.parametrize("event", ["modified", "missing", "transport"])

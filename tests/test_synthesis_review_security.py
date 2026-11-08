@@ -4525,6 +4525,32 @@ def test_real_spotify_dispatcher_preserves_live_gate_and_exact_video_identity(
         assert state["aggregate"]["externally_verified_public"] is False
 
 
+@pytest.mark.parametrize("prepared_exact_video", ["spotify"], indirect=True)
+def test_spotify_create_revalidates_audio_at_provider_boundary(prepared_exact_video, monkeypatch):
+    from podcaster import publish
+    from podcaster.review import validate_private_media_inputs
+    from podcaster.video.distribution import VideoDistributionConfig
+
+    storage, job_id, _repository, document, config, _ = prepared_exact_video
+    _video_decision(storage, job_id, document)
+    audio = validate_private_media_inputs(load_manifest(storage, job_id), storage, job_id)
+    monkeypatch.setattr(VideoDistributionConfig, "from_env", lambda: config)
+    monkeypatch.setattr(
+        publish, "_get_credentials", lambda _: ("offline-show", "offline", "offline")
+    )
+
+    def tamper_before_mutation(_path, **kwargs):
+        storage.put_bytes(audio.path, b"X" * len(audio.content), "audio/mpeg")
+        kwargs["before_mutation"]()
+        pytest.fail("Spotify create proceeded after audio changed")
+
+    uploader = Mock(side_effect=tamper_before_mutation)
+    monkeypatch.setattr(publish, "upload_video_to_episode", uploader)
+    with pytest.raises(ReviewBindingError):
+        _run_reviewed_worker(storage, document)
+    uploader.assert_called_once()
+
+
 @pytest.mark.parametrize("prepared_exact_video", ["both", "both_live"], indirect=True)
 @pytest.mark.parametrize("terminal_exhaustion", [None, "budget", "horizon"])
 def test_real_adapters_continue_pending_leg_without_replaying_finished_mutations(

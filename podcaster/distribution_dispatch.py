@@ -251,7 +251,7 @@ def dispatch_reviewed_video(repository, claim, document, *, config=None, transpo
             def authorize():
                 nonlocal boundary_artifact_verified
                 try:
-                    verify_media = operation == "draft_upload" and not boundary_artifact_verified
+                    verify_media = not boundary_artifact_verified
                     current = validate(
                         provider,
                         operation,
@@ -514,7 +514,7 @@ def _youtube(repository, claim, document, identity, config, path, validate, muta
         if video_id is None:
 
             def authorize_identity_readback():
-                validate("youtube")
+                validate("youtube", verify_media=False)
                 if _owner_release_horizon_expired(document, repository):
                     raise _OwnerReleaseHorizonExpired(native_state="unknown")
 

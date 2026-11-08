@@ -614,17 +614,16 @@ class AzureBlobStorageBackend:
         return content
 
     def get_verified_bytes(self, path: str, sha256: str, size_bytes: int) -> bytes:
-        """Return small verified objects using a bounded conditional-ETag cache."""
-        if size_bytes > _VERIFIED_BYTE_CACHE_MAX_BYTES:
-            raise StorageUnavailableError(
-                "verified object exceeds the in-memory limit; use streaming verification"
-            )
+        """Verify media bytes; cache only objects that fit the bounded memory budget."""
         safe_path = _safe_blob_path(path)
         key = (safe_path, sha256, size_bytes)
-        with self._verified_cache_lock:
-            cached = self._verified_reads.get(key)
-            if cached is not None:
-                self._verified_reads.move_to_end(key)
+        cacheable = size_bytes <= _VERIFIED_BYTE_CACHE_MAX_BYTES
+        cached = None
+        if cacheable:
+            with self._verified_cache_lock:
+                cached = self._verified_reads.get(key)
+                if cached is not None:
+                    self._verified_reads.move_to_end(key)
         content, etag = self._get_blob_state(
             safe_path, if_none_match=cached[0] if cached is not None else None
         )
@@ -636,7 +635,7 @@ class AzureBlobStorageBackend:
             or hashlib.sha256(content).hexdigest() != sha256
         ):
             raise StorageUnavailableError("verified original media is missing or changed")
-        if etag and not etag.startswith("W/"):
+        if cacheable and etag and not etag.startswith("W/"):
             with self._verified_cache_lock:
                 previous = self._verified_reads.pop(key, None)
                 if previous is not None:
