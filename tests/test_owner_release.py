@@ -181,11 +181,13 @@ def test_unrelated_job_cannot_receive_owner_release_exception():
 
 
 @pytest.mark.parametrize("job_id", ["../outside", "podcast-2026-W46-unrelated"])
-def test_owner_release_rejects_unscoped_job_before_storage_access(job_id):
+def test_owner_release_rejects_unscoped_job_before_storage_access(job_id, monkeypatch):
     from podcaster.orchestration import prepare_owner_authorized_video_release
     from podcaster.review import ReviewBindingError
     from podcaster.video.owner_release import OWNER_RELEASE_OWNER
 
+    monkeypatch.setenv("DISTRIBUTION_OUTBOX_ENABLED", "false")
+    monkeypatch.setenv("OWNER_RELEASE_OUTBOX_ENABLED", "true")
     with pytest.raises(ReviewBindingError):
         prepare_owner_authorized_video_release(
             job_id,

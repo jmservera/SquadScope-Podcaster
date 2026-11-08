@@ -75,6 +75,16 @@ def _setup(tmp_path, *, job_id="podcast-2026-W40-comparative"):
 
 def test_worker_mutation_flag_defaults_disabled():
     assert provider_mutation_enabled({}) is False
+    assert provider_mutation_enabled({"OWNER_RELEASE_OUTBOX_ENABLED": "true"}) is False
+    assert (
+        provider_mutation_enabled(
+            {
+                "DISTRIBUTION_WORKER_PROVIDER_MUTATION_ENABLED": "false",
+                "OWNER_RELEASE_OUTBOX_ENABLED": "true",
+            }
+        )
+        is False
+    )
     assert (
         provider_mutation_enabled({"DISTRIBUTION_WORKER_PROVIDER_MUTATION_ENABLED": "false"})
         is False

@@ -1026,6 +1026,16 @@ def test_message_and_durable_fields_reject_secrets_and_urls(setup):
 
 def test_routing_flag_is_disabled_by_default():
     assert outbox_routing_enabled({}) is False
+    assert outbox_routing_enabled({"OWNER_RELEASE_OUTBOX_ENABLED": "true"}) is False
+    assert (
+        outbox_routing_enabled(
+            {
+                "DISTRIBUTION_OUTBOX_ENABLED": "false",
+                "OWNER_RELEASE_OUTBOX_ENABLED": "true",
+            }
+        )
+        is False
+    )
     assert outbox_routing_enabled({"DISTRIBUTION_OUTBOX_ENABLED": "true"}) is True
 
 

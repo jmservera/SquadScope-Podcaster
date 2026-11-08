@@ -263,6 +263,7 @@ def test_api_owner_release_enablement_is_wired_and_disabled_by_default():
 
     for parameter, environment in (
         ("distributionOutboxEnabled", "DISTRIBUTION_OUTBOX_ENABLED"),
+        ("ownerReleaseOutboxEnabled", "OWNER_RELEASE_OUTBOX_ENABLED"),
         ("videoYoutubeEnabled", "VIDEO_YOUTUBE_ENABLED"),
     ):
         assert f"{parameter}: {parameter}" in binding
@@ -271,12 +272,12 @@ def test_api_owner_release_enablement_is_wired_and_disabled_by_default():
         assert f"value: {parameter}" in api
 
     assert "param distributionOutboxEnabled string = 'false'" in main
+    assert "param ownerReleaseOutboxEnabled string = 'false'" in main
     assert "param videoYoutubeEnabled string = 'false'" in main
     assert "DISTRIBUTION_WORKER_PROVIDER_MUTATION_ENABLED" not in api
-    assert (
-        "install -d --owner=api --group=api --mode=0700 /app/.scratch/owner-release"
-        in containerfile
-    )
+    worker = (ROOT / "infra/modules/aca-distribution.bicep").read_text(encoding="utf-8")
+    assert "OWNER_RELEASE_OUTBOX_ENABLED" not in worker
+    assert "/app/.scratch/owner-release" not in containerfile
 
 
 def _release_workflow_text() -> str:

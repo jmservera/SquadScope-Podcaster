@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -250,7 +251,6 @@ def prepare_owner_authorized_video_release(
         DistributionOutboxError,
         DistributionOutboxRepository,
         commit_immutable_artifact,
-        outbox_routing_enabled,
     )
     from podcaster.queue import enqueue_distribution_job
     from podcaster.review import validate_private_media_inputs
@@ -324,20 +324,22 @@ def prepare_owner_authorized_video_release(
     request = manifest.get("request", {})
     language = str(request.get("language") or "en")
     config = VideoDistributionConfig.from_env()
-    if not outbox_routing_enabled() or config.dry_run:
-        raise ReviewBindingError("owner release requires normal production outbox routing")
+    owner_release_outbox_enabled = os.environ.get(
+        "OWNER_RELEASE_OUTBOX_ENABLED", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if not owner_release_outbox_enabled or config.dry_run:
+        raise ReviewBindingError("owner release requires route-specific outbox enablement")
     objectives: dict[str, str] = {}
     if youtube_enabled_for_language(config, language):
         objectives["youtube"] = "public"
     if not objectives:
         raise ReviewBindingError("normal YouTube publication is not enabled for owner release")
 
-    scratch = Path(".scratch") / "owner-release"
-    scratch.mkdir(parents=True, exist_ok=True, mode=0o700)
-    local_path = scratch / f"{uuid4().hex}.mp4"
-    try:
+    with tempfile.TemporaryDirectory(prefix="owner-release-", dir="/tmp") as scratch:
+        local_path = Path(scratch) / "selected.mp4"
         if not backend.download_file(selected["archive_path"], local_path):
             raise ReviewBindingError("selected owner-release artifact could not be staged")
+        local_path.chmod(0o600)
         digest_state = hashlib.sha256()
         with local_path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -352,12 +354,6 @@ def prepare_owner_authorized_video_release(
             content_type="video/mp4",
             suffix=".mp4",
         )
-    finally:
-        local_path.unlink(missing_ok=True)
-        try:
-            scratch.rmdir()
-        except OSError:
-            pass
 
     metadata_sha256 = hashlib.sha256(
         json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode("utf-8")

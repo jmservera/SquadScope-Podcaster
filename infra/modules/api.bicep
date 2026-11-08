@@ -47,6 +47,9 @@ param synthesisQueueName string = 'synthesis-jobs'
 @description('Route API owner-release work through the durable distribution outbox.')
 param distributionOutboxEnabled string = 'false'
 
+@description('Allow only validated owner-release API requests to create pending-review outbox records.')
+param ownerReleaseOutboxEnabled string = 'false'
+
 @description('Enable YouTube as a distribution target for the API owner-release route.')
 param videoYoutubeEnabled string = 'false'
 
@@ -250,6 +253,10 @@ resource apiApp 'Microsoft.App/containerApps@2025-01-01' = {
             {
               name: 'DISTRIBUTION_OUTBOX_ENABLED'
               value: distributionOutboxEnabled
+            }
+            {
+              name: 'OWNER_RELEASE_OUTBOX_ENABLED'
+              value: ownerReleaseOutboxEnabled
             }
             {
               name: 'VIDEO_YOUTUBE_ENABLED'
