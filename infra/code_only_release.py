@@ -315,6 +315,10 @@ def release(arm, api_image, worker_image, apply=False, sleep=time.sleep):
             raise RuntimeError(
                 "Unexpected image state outside original or requested target: " + target
             )
+    if images(baseline["api"]) == [api_image] and any(
+        images(baseline[target]) != [worker_image] for target in TARGETS[1:]
+    ):
+        raise RuntimeError("Requested API image is live before all worker target images")
     print(json.dumps(evidence(baseline, milestone="before", source=SOURCE)), flush=True)
     require_quiet_jobs()
     sleep(30)

@@ -77,6 +77,21 @@ def test_release_accepts_current_production_image_baseline(monkeypatch):
     ]
 
 
+def test_release_rejects_api_target_before_all_worker_targets():
+    state = snapshot()
+    state["api"]["properties"]["template"]["containers"][0]["image"] = "api-new"
+
+    class ReadOnlyArm:
+        def snapshots(self):
+            return copy.deepcopy(state)
+
+    with pytest.raises(
+        RuntimeError,
+        match="Requested API image is live before all worker target images",
+    ):
+        release.release(ReadOnlyArm(), "api-new", "worker-new", sleep=lambda _: None)
+
+
 @pytest.mark.parametrize(
     ("target", "image"),
     [

@@ -89,7 +89,8 @@ read and skipped rather than patched again. Every mutation still uses the
 current protected container array and fresh comparisons. Independently inspect
 and approve the current mixed state before rerunning, using the same exclusive
 window. Never replay old arrays, change holds, or run the ordinary full-stack
-defaults.
+defaults. A target API image is accepted only when all five worker resources
+already use the requested worker digest, preserving the worker-before-API order.
 
 The release neither admits recovery requests nor approves media/provider
 publication. After deployment, refresh exact-original W44 proof, both terminal
