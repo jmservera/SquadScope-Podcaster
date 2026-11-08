@@ -19,11 +19,11 @@ SUBSCRIPTION = "99d2c976-e2ca-4e54-ad12-0325e6a62b9e"
 GROUP = "squadscope-podcaster"
 PREFIX = "podcaster-yqabcnkm2junu-"
 REGISTRY = "podcasteryqabcnkm2junu.azurecr.io"
-SOURCE = "a30fbc599700d71b37532916e5813e3c2ddf27b6"
+SOURCE = "54ede8b5a240f1dd1d976c42cc9d036b55990a48"
 API_VERSION = "2025-01-01"
 TARGETS = ("api", "synth", "video", "recorder", "dist", "dsched")
-OLD_API = "sha256:56819d553629b39d7c4079fee6bcbb5338543a0f84f8c6c72a14796c52abb395"
-OLD_WORKER = "sha256:678878ab19778c85e72d977fe4f6ac9f9932b87dcd4ff71c01b8411839193b95"
+OLD_API = "sha256:76eb517d02f8b1c3a5881d416dc9074aa84deee6b5656b707a4c033aa2d7173d"
+OLD_WORKER = "sha256:0efeb80bdeb23ee76c5411c4c9ae5f75338cbc8b1237df32cfec501247065727"
 HOLDS = {
     "api": {"GROUNDING_MODE": "construct", "SPOTIFY_PUBLISH_ENABLED": "false"},
     "synth": {
@@ -347,10 +347,13 @@ def release(arm, api_image, worker_image, apply=False, sleep=time.sleep):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--source-commit", required=True)
     parser.add_argument("--api-digest", required=True)
     parser.add_argument("--worker-digest", required=True)
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
+    if not re.fullmatch(r"[0-9a-f]{40}", args.source_commit) or args.source_commit != SOURCE:
+        parser.error("Expected reviewed source commit " + SOURCE)
     for digest in (args.api_digest, args.worker_digest):
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
             parser.error("Expected immutable sha256 digest")

@@ -4,6 +4,7 @@ import copy
 import importlib.util
 import io
 import json
+import sys
 import urllib.error
 from pathlib import Path
 
@@ -50,6 +51,77 @@ def snapshot():
             },
         }
     return result
+
+
+def test_release_accepts_current_production_image_baseline(monkeypatch):
+    state = snapshot()
+    state["api"]["properties"]["template"]["containers"][0]["image"] = (
+        f"{release.REGISTRY}/podcaster-api@"
+        "sha256:76eb517d02f8b1c3a5881d416dc9074aa84deee6b5656b707a4c033aa2d7173d"
+    )
+    for target in release.TARGETS[1:]:
+        state[target]["properties"]["template"]["containers"][0]["image"] = (
+            f"{release.REGISTRY}/podcaster-synthesis@"
+            "sha256:0efeb80bdeb23ee76c5411c4c9ae5f75338cbc8b1237df32cfec501247065727"
+        )
+
+    class ReadOnlyArm:
+        def snapshots(self):
+            return copy.deepcopy(state)
+
+    monkeypatch.setattr(release, "require_quiet_jobs", lambda: None)
+    result = release.release(ReadOnlyArm(), "api-new", "worker-new", sleep=lambda _: None)
+    assert release.images(result["api"]) == [f"{release.REGISTRY}/podcaster-api@{release.OLD_API}"]
+    assert release.images(result["synth"]) == [
+        f"{release.REGISTRY}/podcaster-synthesis@{release.OLD_WORKER}"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("target", "image"),
+    [
+        (
+            "api",
+            "podcaster-api@sha256:56819d553629b39d7c4079fee6bcbb5338543a0f84f8c6c72a14796c52abb395",
+        ),
+        (
+            "synth",
+            "podcaster-synthesis@sha256:678878ab19778c85e72d977fe4f6ac9f9932b87dcd4ff71c01b8411839193b95",
+        ),
+    ],
+)
+def test_release_rejects_previous_baseline(monkeypatch, target, image):
+    state = snapshot()
+    state[target]["properties"]["template"]["containers"][0]["image"] = (
+        f"{release.REGISTRY}/{image}"
+    )
+
+    class ReadOnlyArm:
+        def snapshots(self):
+            return copy.deepcopy(state)
+
+    with pytest.raises(RuntimeError, match=f"Expected original rollback image not live: {target}"):
+        release.release(ReadOnlyArm(), "api-new", "worker-new", sleep=lambda _: None)
+
+
+def test_cli_rejects_source_not_pinned_by_release_procedure(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "code_only_release.py",
+            "--source-commit",
+            "a" * 40,
+            "--api-digest",
+            "sha256:" + "0" * 64,
+            "--worker-digest",
+            "sha256:" + "1" * 64,
+        ],
+    )
+    monkeypatch.setattr(release, "Arm", lambda: pytest.fail("Azure auth must not start"))
+    with pytest.raises(SystemExit) as error:
+        release.main()
+    assert error.value.code == 2
 
 
 def test_patch_preserves_full_container_and_does_not_replay_configuration():
